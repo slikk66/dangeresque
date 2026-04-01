@@ -261,20 +261,9 @@ export function runReview(
   });
 }
 
-function extractRunSummary(resultContent: string, mode: string): string {
-  const statusMatch = resultContent.match(/^-\s*Status:\s*(.+)/m);
-  const status = statusMatch?.[1]?.trim() ?? "unknown";
-
-  const sectionRe = (heading: string) =>
-    new RegExp(`## ${heading}\\n([\\s\\S]*?)(?=\\n## |$)`);
-
-  const whatIDid = sectionRe("What I Did").exec(resultContent)?.[1]?.trim();
-  const nextStep = sectionRe("Recommended Next Step").exec(resultContent)?.[1]?.trim();
-
+function formatRunComment(resultContent: string, mode: string): string {
   let comment = `**[dangeresque ${mode}]**\n\n`;
-  comment += `**Status:** ${status}\n\n`;
-  if (whatIDid) comment += `**Summary:** ${whatIDid}\n\n`;
-  if (nextStep) comment += `**Next step:** ${nextStep}\n`;
+  comment += resultContent;
 
   return comment;
 }
@@ -296,7 +285,7 @@ export function postRunComment(
   let comment: string;
   if (existsSync(resultPath)) {
     const content = readFileSync(resultPath, "utf-8");
-    comment = extractRunSummary(content, mode);
+    comment = formatRunComment(content, mode);
   } else {
     comment =
       `**[dangeresque ${mode}]** Run completed but no ${RESULT_FILE} found. ` +
