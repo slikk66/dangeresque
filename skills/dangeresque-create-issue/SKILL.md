@@ -31,7 +31,7 @@ If the conversation already established these, use what you know. Ask at most 1-
 Use `gh issue create` with this template:
 
 ```bash
-gh issue create -R slikk66/bubble-craps \
+gh issue create \
   --title "<concise title>" \
   --label "dangeresque" \
   --label "<bug|enhancement>" \
