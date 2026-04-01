@@ -2,32 +2,28 @@
 
 Orchestrate bounded AFK [Claude Code](https://docs.anthropic.com/en/docs/claude-code) runs in isolated git worktrees with automatic review and human merge control.
 
-dangeresque is a thin wrapper around Claude Code's built-in `--worktree`, `--tmux`, `--permission-mode`, and `--append-system-prompt-file` flags. It assembles the right CLI invocation, runs a worker pass, then a skeptical review pass, and hands control back to you.
+dangeresque is a thin wrapper around Claude Code's built-in `--worktree`, `-p`, `--permission-mode`, and `--append-system-prompt-file` flags. It assembles the right CLI invocation, runs a worker pass, then a skeptical review pass, and hands control back to you.
 
 ## How It Works
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌──────────────┐
-│  Your repo   │────▶│ Worker pass   │────▶│ Review pass   │
-│  (main)      │     │ (worktree)    │     │ (same wt)     │
-└─────────────┘     └──────────────┘     └──────────────┘
-                           │                      │
-                    Reads GitHub Issue,      Reads worker
-                    makes changes,           output, checks
-                    writes results           quality, appends
-                                             verdict
-                                                  │
-                                                  ▼
-                                     ┌──────────────────┐
-                                     │  You review diff   │
-                                     │  merge or discard   │
-                                     └──────────────────┘
+  Your repo          Worker pass          Review pass
+  (main)     ───>    (worktree)    ───>   (same worktree)
+                         │                      │
+                  Reads GitHub Issue,      Reads worker output,
+                  makes changes,           checks quality,
+                  writes RUN_RESULT.md     appends verdict
+                                                │
+                                                v
+                                    You review diff,
+                                    merge or discard
 ```
 
-1. **Worker** runs Claude Code in an isolated worktree with your AFK rules + GitHub Issue context
+1. **Worker** runs Claude Code headlessly (`-p`) in an isolated worktree with your AFK rules + GitHub Issue context
 2. **Reviewer** runs Claude Code in the same worktree with a skeptical review prompt
-3. **Summary comment** posted on the GitHub Issue with status + findings
-4. **You** inspect the diff, then `merge` or `discard`
+3. **Full RUN_RESULT.md** posted as a comment on the GitHub Issue
+4. **macOS notification** fires when the run completes
+5. **You** inspect the diff, then `merge` or `discard`
 
 No code touches your main branch until you explicitly merge.
 
@@ -37,7 +33,7 @@ No code touches your main branch until you explicitly merge.
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated
 - git
-- tmux (optional but recommended)
+- jq (for notification hooks)
 
 ## Install
 
@@ -72,25 +68,25 @@ This creates:
 dangeresque run --issue 63
 ```
 
-This launches a Claude Code worker session in a new worktree via tmux. The worker reads the issue, executes the task, writes `RUN_RESULT.md`, and commits. A review session runs automatically after.
+Runs headlessly with `-p` flag. The worker reads the issue, executes the task, writes `RUN_RESULT.md`, and commits. A review session runs automatically after. A macOS notification fires on completion.
 
 ### 3. Check results
 
 ```bash
-# Quick summary from your main Claude session
+# From your main Claude session
 ! dangeresque results --latest
 
 # Or review the worktree directly
 dangeresque status
-cd .claude/worktrees/<name> && git diff main
+cd .claude/worktrees/dangeresque-<name> && git diff main
 ```
 
 ### 4. Merge or discard
 
 ```bash
-dangeresque merge worktree-<name>
+dangeresque merge worktree-dangeresque-<name>
 # or
-dangeresque discard worktree-<name>
+dangeresque discard worktree-dangeresque-<name>
 ```
 
 ## CLI Reference
@@ -101,17 +97,17 @@ Execute a worker + review pass.
 
 ```
 Options:
-  --issue <number>  Read task from GitHub Issue (recommended)
-  --mode <mode>     Task mode (default: INVESTIGATE)
-                    [INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, PLAYTEST]
-  --name <name>     Custom worktree name (default: dangeresque-<timestamp>)
-  --no-review       Skip the review pass
-  --no-tmux         Run without tmux (foreground, blocks terminal)
-  --model <model>   Override model (default: claude-opus-4-6)
-  --effort <level>  Override effort (default: high) [low, medium, high, max]
+  --issue <number>    Read task from GitHub Issue (recommended)
+  --mode <mode>       Task mode (default: INVESTIGATE)
+                      [INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, or custom]
+  --name <name>       Custom worktree name (auto-prefixed with dangeresque-)
+  --no-review         Skip the review pass
+  --interactive       Run interactively instead of headless (for debugging)
+  --model <model>     Override model (default: claude-opus-4-6)
+  --effort <level>    Override effort (default: high) [low, medium, high, max]
 ```
 
-After completion, posts a summary comment on the GitHub Issue.
+After completion, posts the full RUN_RESULT.md as a comment on the GitHub Issue.
 
 ### `dangeresque results [--latest | <branch>]`
 
@@ -154,10 +150,10 @@ Re-run to refresh skills and config from the latest dangeresque version.
 ```
 You:    "Come odds paid wrong when I hit the point"
 Claude: *discusses, diagnoses*
-You:    /dangeresque-create-issue                              # creates issue #80 from conversation
-You:    ! dangeresque run --issue 80             # spawns worker in tmux
-        ... macOS notification: "Run complete" ...
-You:    ! dangeresque results --latest           # pull results into conversation
+You:    /dangeresque-create-issue               → creates issue #80
+You:    dangeresque run --issue 80              → headless worker + review
+        ... macOS notification: "dangeresque-80 complete" ...
+You:    ! dangeresque results --latest          → pull results into session
 Claude: *reads results, discusses*
 You:    "merge it" or "send it back as IMPLEMENT"
 ```
@@ -166,7 +162,7 @@ You:    "merge it" or "send it back as IMPLEMENT"
 
 ```bash
 dangeresque run --issue 82 --mode INVESTIGATE
-# ... notification ...
+# ... notification: "dangeresque-82 complete" ...
 dangeresque results --latest
 ```
 
@@ -175,6 +171,13 @@ dangeresque results --latest
 ```bash
 dangeresque stage 82 --comment "root cause is inverted payout table" --mode IMPLEMENT
 dangeresque run --issue 82 --mode IMPLEMENT
+```
+
+### Interactive debugging
+
+```bash
+dangeresque run --issue 63 --mode INVESTIGATE --interactive
+# Full interactive Claude session — you can answer questions, approve actions
 ```
 
 ## Configuration
@@ -195,18 +198,18 @@ dangeresque run --issue 82 --mode IMPLEMENT
 | `model` | string | `"claude-opus-4-6"` | Claude model ID |
 | `permissionMode` | string | `"acceptEdits"` | Claude Code permission mode |
 | `effort` | string | `"high"` | Effort level: low, medium, high, max |
-| `tmux` | boolean | `true` | Run in tmux session |
-| `tmuxStyle` | string | `"classic"` | tmux mode: `"classic"` or `"native"` |
+| `headless` | boolean | `true` | Run with `-p` flag (set false for interactive) |
 | `allowedTools` | string[] | *(see below)* | Tools auto-approved without prompting |
 | `disallowedTools` | string[] | *(see below)* | Tools hard-blocked from use |
 | `workerPrompt` | string | `"worker-prompt.md"` | Worker system prompt filename |
 | `reviewPrompt` | string | `"review-prompt.md"` | Review system prompt filename |
-| `notifications` | boolean | `true` | macOS notifications |
 
 ### Default Tool Permissions
 
 **Allowed (auto-approved):**
 - `Read`, `Edit`, `Write`, `Grep`, `Glob`
+- `WebSearch`, `WebFetch`
+- `mcp__*` (all MCP servers — Unity, browser, etc.)
 - `Bash(git status *)`, `Bash(git diff *)`, `Bash(git log *)`, `Bash(git add *)`, `Bash(git commit *)`, `Bash(git branch *)`
 
 **Disallowed (hard-blocked):**
@@ -219,14 +222,16 @@ dangeresque run --issue 82 --mode IMPLEMENT
 - **Notification** — macOS alert when the worker needs attention
 - **SessionEnd** — macOS alert when the run completes
 
-Both are guarded by a `$PWD` check so they only fire for dangeresque worktree sessions, not your main interactive session.
+Both read `cwd` from the hook's stdin JSON and check if the directory basename starts with `dangeresque-`. Only dangeresque worktree sessions trigger notifications — your main interactive session stays silent.
+
+All dangeresque worktrees are automatically prefixed with `dangeresque-` to enable this detection.
 
 ## Project Structure
 
 ```
 dangeresque/
 ├── src/
-│   ├── cli.ts        # CLI entry: run, results, stage, status, merge, discard, init
+│   ├── cli.ts        # CLI: run, results, stage, status, merge, discard, init
 │   ├── config.ts     # Load/validate .dangeresque/ config
 │   ├── runner.ts     # Assemble Claude CLI flags, spawn worker + review, post comments
 │   ├── worktree.ts   # List/merge/discard worktrees, dump results
