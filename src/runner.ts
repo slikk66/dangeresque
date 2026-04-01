@@ -199,8 +199,12 @@ function buildReviewArgs(opts: RunOptions, worktreeName: string): string[] {
   return args;
 }
 
+function ensureDangeresquePrefix(name: string): string {
+  return name.startsWith("dangeresque-") ? name : `dangeresque-${name}`;
+}
+
 export function runWorker(opts: RunOptions): Promise<RunResult> {
-  const worktreeName = opts.name ?? `dangeresque-${Date.now()}`;
+  const worktreeName = ensureDangeresquePrefix(opts.name ?? `${Date.now()}`);
   const args = buildWorkerArgs({ ...opts, name: worktreeName });
   const branch = `worktree-${worktreeName}`;
 

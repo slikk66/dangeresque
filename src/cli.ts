@@ -25,7 +25,7 @@ Commands:
 Run options:
   --issue <number>  Read task from GitHub Issue (recommended)
   --mode <mode>     Task mode (default: INVESTIGATE)
-                    [INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, PLAYTEST]
+                    [INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, or custom]
   --name <name>     Custom worktree name (default: dangeresque-<timestamp>)
   --no-review       Skip the review pass
   --interactive     Run interactively (default: headless with -p)
