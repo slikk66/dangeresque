@@ -59,16 +59,17 @@ function buildWorkerArgs(opts: RunOptions): string[] {
   const { config, projectRoot, name } = opts;
   const worktreeName = name ?? `dangeresque-${Date.now()}`;
   const configDir = join(projectRoot, CONFIG_DIR);
+  const headless = config.tmux; // tmux = headless mode
 
   const args: string[] = [];
 
+  // Headless mode: -p (non-interactive, exits when done)
+  if (headless) {
+    args.push("-p");
+  }
+
   // Worktree
   args.push("--worktree", worktreeName);
-
-  // tmux
-  if (config.tmux) {
-    args.push(config.tmuxStyle === "classic" ? "--tmux=classic" : "--tmux");
-  }
 
   // Model + effort
   args.push("--model", config.model);
@@ -79,7 +80,7 @@ function buildWorkerArgs(opts: RunOptions): string[] {
   // Permissions
   args.push("--permission-mode", config.permissionMode);
 
-  // Prompt injection — append to default system prompt (preserves CLAUDE.md)
+  // Worker-specific prompt (CLAUDE.md auto-discovered, this appends on top)
   const workerPromptPath = join(configDir, config.workerPrompt);
   args.push("--append-system-prompt-file", workerPromptPath);
 
@@ -139,22 +140,36 @@ function buildWorkerArgs(opts: RunOptions): string[] {
 function buildReviewArgs(opts: RunOptions, worktreeName: string): string[] {
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
+  const headless = config.tmux;
 
   const args: string[] = [];
 
-  // Resume in the same worktree — use continue flag
-  // Actually, review runs as a new session in the same worktree
-  args.push("--worktree", worktreeName);
-
-  if (config.tmux) {
-    args.push(config.tmuxStyle === "classic" ? "--tmux=classic" : "--tmux");
+  // Headless mode: -p (non-interactive, exits when done)
+  if (headless) {
+    args.push("-p");
   }
+
+  args.push("--worktree", worktreeName);
 
   args.push("--model", config.model);
   if (config.effort) {
     args.push("--effort", config.effort);
   }
   args.push("--permission-mode", "acceptEdits"); // Reviewer needs to append to RUN_RESULT.md
+
+  // Reviewer needs read/write + git commit for RUN_RESULT.md in headless mode
+  if (headless) {
+    args.push(
+      "--allowed-tools",
+      "Read", "Edit", "Write", "Grep", "Glob",
+      "Bash(git status *)", "Bash(git diff *)", "Bash(git log *)",
+      "Bash(git add *)", "Bash(git commit *)"
+    );
+    args.push(
+      "--disallowed-tools",
+      ...config.disallowedTools
+    );
+  }
 
   const reviewPromptPath = join(configDir, config.reviewPrompt);
   args.push("--append-system-prompt-file", reviewPromptPath);
