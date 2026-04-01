@@ -12,13 +12,21 @@ export {
 export {
   runWorker,
   runReview,
+  fetchIssue,
+  postRunComment,
   type RunOptions,
   type RunResult,
+  type IssueData,
 } from "./runner.js";
 
 export {
   listWorktrees,
   mergeWorktree,
   discardWorktree,
+  getWorktreeResults,
   type WorktreeInfo,
 } from "./worktree.js";
+
+export { initProject } from "./init.js";
+
+export { stageComment } from "./stage.js";

@@ -93,11 +93,6 @@ export function validateSetup(projectRoot: string): ValidationResult {
     errors.push(`Missing review prompt: ${reviewPromptPath}`);
   }
 
-  const taskPath = join(projectRoot, TASK_FILE);
-  if (!existsSync(taskPath)) {
-    errors.push(`Missing ${TASK_FILE} — stage a task before running`);
-  }
-
   return { valid: errors.length === 0, errors };
 }
 

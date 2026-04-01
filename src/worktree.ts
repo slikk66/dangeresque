@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { RESULT_FILE } from "./config.js";
 
 export interface WorktreeInfo {
   path: string;
@@ -111,4 +112,62 @@ export function discardWorktree(
       message: `Discard failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+}
+
+export function getWorktreeResults(
+  projectRoot: string,
+  branchOrLatest: string | "latest"
+): string {
+  const worktrees = listWorktrees(projectRoot);
+
+  if (worktrees.length === 0) {
+    return "No active dangeresque worktrees found.";
+  }
+
+  let targetWorktree: WorktreeInfo;
+
+  if (branchOrLatest === "latest") {
+    // Latest = last in list (most recently created)
+    targetWorktree = worktrees[worktrees.length - 1];
+  } else {
+    const found = worktrees.find(
+      (wt) => wt.branch === branchOrLatest || wt.path.includes(branchOrLatest)
+    );
+    if (!found) {
+      return `Worktree not found: ${branchOrLatest}\nActive worktrees: ${worktrees.map((w) => w.branch).join(", ")}`;
+    }
+    targetWorktree = found;
+  }
+
+  const resultPath = join(targetWorktree.path, RESULT_FILE);
+  const lines: string[] = [];
+
+  lines.push(`Worktree: ${targetWorktree.path}`);
+  lines.push(`Branch:   ${targetWorktree.branch}`);
+  lines.push(`HEAD:     ${targetWorktree.head.slice(0, 8)}`);
+  lines.push("");
+
+  // RUN_RESULT.md
+  if (existsSync(resultPath)) {
+    lines.push("--- RUN_RESULT.md ---");
+    lines.push(readFileSync(resultPath, "utf-8"));
+  } else {
+    lines.push("No RUN_RESULT.md found in worktree.");
+  }
+
+  // Diff summary
+  lines.push("");
+  lines.push("--- Diff Summary (vs main) ---");
+  try {
+    const diff = execSync("git diff main --stat", {
+      cwd: targetWorktree.path,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    lines.push(diff.trim() || "No changes.");
+  } catch {
+    lines.push("Could not generate diff summary.");
+  }
+
+  return lines.join("\n");
 }

@@ -23,7 +23,9 @@
   ],
   "license": "MIT",
   "files": [
-    "dist"
+    "dist",
+    "config-templates",
+    "skills"
   ],
   "devDependencies": {
     "@types/node": "^25.5.0",

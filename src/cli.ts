@@ -5,26 +5,40 @@ import {
   validateSetup,
   resolveProjectRoot,
 } from "./config.js";
-import { runWorker, runReview } from "./runner.js";
-import { listWorktrees, mergeWorktree, discardWorktree } from "./worktree.js";
+import { runWorker, runReview, fetchIssue, postRunComment } from "./runner.js";
+import { listWorktrees, mergeWorktree, discardWorktree, getWorktreeResults } from "./worktree.js";
+import { initProject } from "./init.js";
+import { stageComment } from "./stage.js";
 
 const USAGE = `
 dangeresque — bounded AFK Claude Code runs with human review
 
 Commands:
-  run [--name <name>] [--no-review] [--no-tmux]   Execute worker + review pass
-  status                                            List active dangeresque worktrees
-  merge <branch>                                    Merge a reviewed worktree
-  discard <branch>                                  Remove a worktree without merging
-  init                                              Scaffold .dangeresque/ config
+  run [options]                        Execute worker + review pass
+  results [--latest | <branch>]        Show run results from a worktree
+  stage <number> --comment "text"      Add context comment to an issue
+  status                               List active dangeresque worktrees
+  merge <branch>                       Merge a reviewed worktree
+  discard <branch>                     Remove a worktree without merging
+  init                                 Scaffold .dangeresque/ config + skills
 
-Options:
+Run options:
+  --issue <number>  Read task from GitHub Issue (recommended)
+  --mode <mode>     Task mode (default: INVESTIGATE)
+                    [INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, PLAYTEST]
   --name <name>     Custom worktree name (default: dangeresque-<timestamp>)
   --no-review       Skip the review pass
   --no-tmux         Run without tmux (foreground)
   --model <model>   Override model (default: claude-opus-4-6)
   --effort <level>  Override effort level (default: high) [low, medium, high, max]
   --help            Show this help
+
+Examples:
+  dangeresque run --issue 63
+  dangeresque run --issue 63 --mode IMPLEMENT
+  dangeresque results --latest
+  dangeresque stage 63 --comment "root cause confirmed" --mode IMPLEMENT
+  dangeresque init
 `;
 
 async function main() {
@@ -40,6 +54,12 @@ async function main() {
   switch (command) {
     case "run":
       await cmdRun(args.slice(1));
+      break;
+    case "results":
+      cmdResults(args.slice(1));
+      break;
+    case "stage":
+      cmdStage(args.slice(1));
       break;
     case "status":
       cmdStatus();
@@ -77,6 +97,8 @@ async function cmdRun(args: string[]) {
   // Parse CLI overrides
   let name: string | undefined;
   let review = true;
+  let issueNumber: number | undefined;
+  let mode: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--name" && args[i + 1]) {
@@ -89,11 +111,40 @@ async function cmdRun(args: string[]) {
       config.model = args[++i];
     } else if (args[i] === "--effort" && args[i + 1]) {
       config.effort = args[++i];
+    } else if (args[i] === "--issue" && args[i + 1]) {
+      issueNumber = parseInt(args[++i], 10);
+      if (isNaN(issueNumber)) {
+        console.error("--issue requires a numeric issue number");
+        process.exit(1);
+      }
+    } else if (args[i] === "--mode" && args[i + 1]) {
+      mode = args[++i].toUpperCase();
     }
   }
 
-  console.log("dangeresque — starting AFK run");
+  // Fetch issue if provided
+  let issueData;
+  if (issueNumber) {
+    try {
+      issueData = fetchIssue(projectRoot, issueNumber);
+      console.log(`Fetched issue #${issueNumber}: ${issueData.title}`);
+    } catch (err) {
+      console.error(
+        `Failed to fetch issue #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      console.error("Is `gh` installed and authenticated? Does the issue exist?");
+      process.exit(1);
+    }
+  }
+
+  const effectiveMode = mode ?? "INVESTIGATE";
+
+  console.log("\ndangeresque — starting AFK run");
   console.log(`  Project: ${projectRoot}`);
+  if (issueData) {
+    console.log(`  Issue: #${issueData.number} — ${issueData.title}`);
+    console.log(`  Mode: ${effectiveMode}`);
+  }
   console.log(`  Model: ${config.model} (effort: ${config.effort})`);
   console.log(`  tmux: ${config.tmux ? config.tmuxStyle : "off"}`);
   console.log(`  Review pass: ${review ? "yes" : "no"}`);
@@ -103,6 +154,8 @@ async function cmdRun(args: string[]) {
     projectRoot,
     config,
     name,
+    issueData,
+    mode: effectiveMode,
   });
 
   console.log(
@@ -112,12 +165,28 @@ async function cmdRun(args: string[]) {
   // Review pass
   if (review && workerResult.exitCode === 0) {
     const reviewResult = await runReview(
-      { projectRoot, config },
+      { projectRoot, config, issueData, mode: effectiveMode },
       workerResult.worktreeName
     );
     console.log(
       `Review exited with code ${reviewResult.exitCode}`
     );
+  }
+
+  // Post summary comment on issue
+  if (issueNumber) {
+    try {
+      postRunComment(
+        projectRoot,
+        issueNumber,
+        effectiveMode,
+        workerResult.worktreeName
+      );
+    } catch (err) {
+      console.error(
+        `Warning: failed to post comment on #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   // Summary
@@ -130,10 +199,10 @@ async function cmdRun(args: string[]) {
     `  Review:  cd .claude/worktrees/${workerResult.worktreeName} && git diff main`
   );
   console.log(
-    `  Merge:   npx dangeresque merge ${workerResult.branch}`
+    `  Merge:   dangeresque merge ${workerResult.branch}`
   );
   console.log(
-    `  Discard: npx dangeresque discard ${workerResult.branch}`
+    `  Discard: dangeresque discard ${workerResult.branch}`
   );
   console.log("=".repeat(60));
 }
@@ -192,13 +261,61 @@ function cmdDiscard(branch: string | undefined) {
   }
 }
 
+function cmdResults(args: string[]) {
+  const projectRoot = resolveProjectRoot();
+  const target = args.find((a) => !a.startsWith("-")) ?? "latest";
+  const isLatest = target === "latest" || args.includes("--latest");
+
+  const output = getWorktreeResults(projectRoot, isLatest ? "latest" : target);
+  console.log(output);
+}
+
+function cmdStage(args: string[]) {
+  if (args.length === 0) {
+    console.error("Usage: dangeresque stage <issue-number> --comment \"text\" [--mode MODE]");
+    process.exit(1);
+  }
+
+  const issueNumber = parseInt(args[0], 10);
+  if (isNaN(issueNumber)) {
+    console.error("First argument must be an issue number");
+    process.exit(1);
+  }
+
+  let comment: string | undefined;
+  let mode: string | undefined;
+
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--comment" && args[i + 1]) {
+      comment = args[++i];
+    } else if (args[i] === "--mode" && args[i + 1]) {
+      mode = args[++i].toUpperCase();
+    }
+  }
+
+  if (!comment) {
+    console.error("--comment is required");
+    console.error("Usage: dangeresque stage <issue-number> --comment \"text\" [--mode MODE]");
+    process.exit(1);
+  }
+
+  const projectRoot = resolveProjectRoot();
+  const result = stageComment(projectRoot, issueNumber, comment, mode);
+
+  if (result.success) {
+    console.log(result.message);
+    if (mode) {
+      console.log(`Run: dangeresque run --issue ${issueNumber} --mode ${mode}`);
+    }
+  } else {
+    console.error(result.message);
+    process.exit(1);
+  }
+}
+
 function cmdInit() {
-  console.log("TODO: scaffold .dangeresque/ config directory");
-  console.log("For now, create .dangeresque/ manually with:");
-  console.log("  worker-prompt.md");
-  console.log("  review-prompt.md");
-  console.log("  AFK_WORKER_RULES.md (optional)");
-  console.log("  config.json (optional, defaults apply)");
+  const projectRoot = resolveProjectRoot();
+  initProject(projectRoot);
 }
 
 main().catch((err) => {

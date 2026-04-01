@@ -1,0 +1,26 @@
+{
+    "hooks": {
+        "Notification": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "if echo \"$PWD\" | grep -q '.claude/worktrees/dangeresque'; then osascript -e 'display notification \"Worker needs attention\" with title \"dangeresque\"'; fi"
+                    }
+                ]
+            }
+        ],
+        "SessionEnd": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "if echo \"$PWD\" | grep -q '.claude/worktrees/dangeresque'; then osascript -e 'display notification \"Run complete\" with title \"dangeresque\"'; fi"
+                    }
+                ]
+            }
+        ]
+    }
+}
