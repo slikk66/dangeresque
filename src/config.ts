@@ -12,10 +12,8 @@ export interface DangeresqueConfig {
   permissionMode: string;
   /** Effort level (default: max) */
   effort: string;
-  /** Use tmux (default: true) */
-  tmux: boolean;
-  /** tmux style: "classic" or "native" (default: classic) */
-  tmuxStyle: string;
+  /** Run headless with -p flag (default: true). Set false for interactive mode. */
+  headless: boolean;
   /** Allowed tools patterns */
   allowedTools: string[];
   /** Disallowed tools patterns */
@@ -32,8 +30,7 @@ const DEFAULT_CONFIG: DangeresqueConfig = {
   model: "claude-opus-4-6",
   permissionMode: "acceptEdits",
   effort: "high",
-  tmux: true,
-  tmuxStyle: "classic",
+  headless: true,
   allowedTools: [
     "Read",
     "Edit",

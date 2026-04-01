@@ -28,7 +28,7 @@ Run options:
                     [INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, PLAYTEST]
   --name <name>     Custom worktree name (default: dangeresque-<timestamp>)
   --no-review       Skip the review pass
-  --no-tmux         Run without tmux (foreground)
+  --interactive     Run interactively (default: headless with -p)
   --model <model>   Override model (default: claude-opus-4-6)
   --effort <level>  Override effort level (default: high) [low, medium, high, max]
   --help            Show this help
@@ -105,8 +105,8 @@ async function cmdRun(args: string[]) {
       name = args[++i];
     } else if (args[i] === "--no-review") {
       review = false;
-    } else if (args[i] === "--no-tmux") {
-      config.tmux = false;
+    } else if (args[i] === "--interactive" || args[i] === "--no-tmux") {
+      config.headless = false;
     } else if (args[i] === "--model" && args[i + 1]) {
       config.model = args[++i];
     } else if (args[i] === "--effort" && args[i + 1]) {
@@ -146,7 +146,7 @@ async function cmdRun(args: string[]) {
     console.log(`  Mode: ${effectiveMode}`);
   }
   console.log(`  Model: ${config.model} (effort: ${config.effort})`);
-  console.log(`  tmux: ${config.tmux ? config.tmuxStyle : "off"}`);
+  console.log(`  Mode: ${config.headless ? "headless (-p)" : "interactive"}`);
   console.log(`  Review pass: ${review ? "yes" : "no"}`);
 
   // Worker pass

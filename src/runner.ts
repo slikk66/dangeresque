@@ -59,7 +59,7 @@ function buildWorkerArgs(opts: RunOptions): string[] {
   const { config, projectRoot, name } = opts;
   const worktreeName = name ?? `dangeresque-${Date.now()}`;
   const configDir = join(projectRoot, CONFIG_DIR);
-  const headless = config.tmux; // tmux = headless mode
+  const headless = config.headless;
 
   const args: string[] = [];
 
@@ -140,7 +140,7 @@ function buildWorkerArgs(opts: RunOptions): string[] {
 function buildReviewArgs(opts: RunOptions, worktreeName: string): string[] {
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
-  const headless = config.tmux;
+  const headless = config.headless;
 
   const args: string[] = [];
 
