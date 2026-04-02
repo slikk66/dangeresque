@@ -22,8 +22,9 @@ dangeresque is a thin wrapper around Claude Code's built-in `--worktree`, `-p`, 
 1. **Worker** runs Claude Code headlessly (`-p`) in an isolated worktree with your AFK rules + GitHub Issue context
 2. **Reviewer** runs Claude Code in the same worktree with a skeptical review prompt
 3. **Full RUN_RESULT.md** posted as a comment on the GitHub Issue
-4. **macOS notification** fires when the run completes
-5. **You** inspect the diff, then `merge` or `discard`
+4. **RUN_RESULT.md archived** locally to `.dangeresque/runs/` for future run context
+5. **macOS notification** fires when the run completes
+6. **You** inspect the diff, then `merge` or `discard`
 
 No code touches your main branch until you explicitly merge.
 
@@ -61,6 +62,7 @@ This creates:
 - `.dangeresque/` — worker-prompt.md, review-prompt.md, AFK_WORKER_RULES.md
 - `.claude/skills/dangeresque-create-issue/` — skill for creating issues from conversation context
 - Merges notification hooks into `.claude/settings.json`
+- Adds `.dangeresque/runs/` to `.gitignore`
 
 ### 2. Run against a GitHub Issue
 
@@ -76,6 +78,10 @@ Runs headlessly with `-p` flag. The worker reads the issue, executes the task, w
 # From your main Claude session
 ! dangeresque results --latest
 
+# Archived results for an issue (after merge/discard)
+dangeresque results --issue 63
+dangeresque results --issue 63 --all
+
 # Or review the worktree directly
 dangeresque status
 cd .claude/worktrees/dangeresque-<name> && git diff main
@@ -83,10 +89,14 @@ cd .claude/worktrees/dangeresque-<name> && git diff main
 
 ### 4. Merge or discard
 
+Branch names support shorthand — no need to type the full `worktree-dangeresque-` prefix:
+
 ```bash
-dangeresque merge worktree-dangeresque-<name>
-# or
-dangeresque discard worktree-dangeresque-<name>
+dangeresque merge investigate-63
+dangeresque discard investigate-63
+
+# Full names also work
+dangeresque merge worktree-dangeresque-investigate-63
 ```
 
 ## CLI Reference
@@ -107,11 +117,25 @@ Options:
   --effort <level>    Override effort (default: high) [low, medium, high, max]
 ```
 
-After completion, posts the full RUN_RESULT.md as a comment on the GitHub Issue.
+After completion, posts the full RUN_RESULT.md as a comment on the GitHub Issue and archives it locally.
 
-### `dangeresque results [--latest | <branch>]`
+**Comment filtering:** The worker prompt includes the issue body + all `[staged]` comments + last 3 human comments. Old `[dangeresque]` run result comments are skipped — the worker gets prior run context from the local archive instead.
 
-Dump `RUN_RESULT.md` + `git diff --stat` from a worktree to stdout. Use `! dangeresque results --latest` in your main Claude session to pull results into the conversation.
+### `dangeresque results`
+
+Show run results from active worktrees or the local archive.
+
+```bash
+# Active worktree results
+dangeresque results --latest
+dangeresque results investigate-63
+
+# Archived results (after merge/discard)
+dangeresque results --issue 63         # One-line summaries + full latest
+dangeresque results --issue 63 --all   # Full content of all runs
+```
+
+Active worktree results also show one-line summaries of any prior archived runs for the same issue.
 
 ### `dangeresque stage <number> --comment "text" [--mode MODE]`
 
@@ -128,11 +152,19 @@ List active dangeresque worktrees with branch names and HEAD commits.
 
 ### `dangeresque merge <branch>`
 
-Merge the worktree branch into your current branch, then clean up the worktree and branch.
+Merge the worktree branch into your current branch, then clean up the worktree and branch. Archives RUN_RESULT.md to `.dangeresque/runs/` before merging. Supports branch shorthand.
 
 ### `dangeresque discard <branch>`
 
-Force-remove the worktree and delete the branch without merging.
+Force-remove the worktree and delete the branch without merging. Archives RUN_RESULT.md to `.dangeresque/runs/` before discarding. Supports branch shorthand.
+
+### `dangeresque clean --issue <N>`
+
+Delete archived runs for an issue. Use after closing an issue to free up local storage.
+
+```bash
+dangeresque clean --issue 63
+```
 
 ### `dangeresque init`
 
@@ -140,8 +172,53 @@ Set up a project for dangeresque:
 - Creates `.dangeresque/` with default config templates
 - Copies `/dangeresque-create-issue` skill to `.claude/skills/`
 - Merges notification hooks into `.claude/settings.json` (preserves existing hooks)
+- Adds `.dangeresque/runs/` to `.gitignore`
 
 Re-run to refresh skills and config from the latest dangeresque version.
+
+## Key Concepts
+
+### One Run = One Slice
+
+Each AFK run should complete a bounded slice of work, not an entire issue. The typical flow:
+
+```
+INVESTIGATE → stage guidance → IMPLEMENT → merge → VERIFY → close
+```
+
+Or for simple issues: `IMPLEMENT → merge → close`
+
+### RUN_RESULT.md Summary Block
+
+Every RUN_RESULT.md must start with a machine-parseable summary:
+
+```markdown
+<!-- SUMMARY -->
+Mode: IMPLEMENT | Status: implemented, unverified
+Files: 3 changed (BettingManager.cs, CrapsRules.cs, BettingManagerTests.cs)
+Proof: 8/8 tests pass | Not verified: WebGL build
+Risks: none | Next: VERIFY
+<!-- /SUMMARY -->
+```
+
+The `results` command parses this for one-line summaries of prior runs. The reviewer must verify it exists but not modify it.
+
+### Local Run Archive
+
+RUN_RESULT.md files are archived to `.dangeresque/runs/issue-<N>/` before merge or discard. This provides:
+- **Reliable context** — subsequent runs read from local files, not GitHub comment parsing
+- **Survives failures** — if the GitHub comment post fails, the archive persists
+- **Clean separation** — GitHub comments are for human review, local archive is for machine context
+
+### Comment Filtering
+
+When building the worker prompt, `runner.ts` filters issue comments:
+- **Included:** issue body + all `[staged]` comments + last 3 untagged human comments
+- **Skipped:** old `[dangeresque]` run result comments (replaced by local archive)
+
+### Review System
+
+The reviewer checks: scope compliance, verification honesty, status language, code quality, handoff quality. For each acceptance criterion, the reviewer must distinguish **VERIFIED** (tested/proven) from **ADDRESSED** (code written but unverified).
 
 ## Typical Workflows
 
@@ -155,15 +232,22 @@ You:    dangeresque run --issue 80              → headless worker + review
         ... macOS notification: "dangeresque-80 complete" ...
 You:    ! dangeresque results --latest          → pull results into session
 Claude: *reads results, discusses*
-You:    "merge it" or "send it back as IMPLEMENT"
+You:    dangeresque merge investigate-80
 ```
 
-### External user files a bug (issue already exists)
+### Multi-step: investigate then implement
 
 ```bash
 dangeresque run --issue 82 --mode INVESTIGATE
-# ... notification: "dangeresque-82 complete" ...
+# ... notification ...
 dangeresque results --latest
+dangeresque merge investigate-82
+
+dangeresque stage 82 --comment "go with approach A" --mode IMPLEMENT
+dangeresque run --issue 82 --mode IMPLEMENT
+# ... notification ...
+dangeresque results --latest
+dangeresque merge implement-82
 ```
 
 ### Adding guidance before an IMPLEMENT run
@@ -180,6 +264,14 @@ dangeresque run --issue 63 --mode INVESTIGATE --interactive
 # Full interactive Claude session — you can answer questions, approve actions
 ```
 
+### Reviewing archived history
+
+```bash
+dangeresque results --issue 63           # Summary + latest
+dangeresque results --issue 63 --all     # Full history
+dangeresque clean --issue 63             # Prune after closing
+```
+
 ## Configuration
 
 ### .dangeresque/ directory
@@ -190,6 +282,7 @@ dangeresque run --issue 63 --mode INVESTIGATE --interactive
 | `review-prompt.md` | System prompt for the review pass |
 | `AFK_WORKER_RULES.md` | Operating modes, scope rules, status language |
 | `config.json` | Optional overrides (model, tools, permissions) |
+| `runs/` | Local archive of RUN_RESULT.md files (gitignored) |
 
 ### config.json
 
@@ -231,11 +324,11 @@ All dangeresque worktrees are automatically prefixed with `dangeresque-` to enab
 ```
 dangeresque/
 ├── src/
-│   ├── cli.ts        # CLI: run, results, stage, status, merge, discard, init
+│   ├── cli.ts        # CLI: run, results, stage, status, merge, discard, clean, init
 │   ├── config.ts     # Load/validate .dangeresque/ config
-│   ├── runner.ts     # Assemble Claude CLI flags, spawn worker + review, post comments
-│   ├── worktree.ts   # List/merge/discard worktrees, dump results
-│   ├── init.ts       # Scaffold config, copy skills, merge hooks
+│   ├── runner.ts     # Assemble Claude CLI flags, spawn worker + review, post comments, filter comments
+│   ├── worktree.ts   # List/merge/discard worktrees, archive results, resolve branch shorthand
+│   ├── init.ts       # Scaffold config, copy skills, merge hooks, update .gitignore
 │   ├── stage.ts      # Post structured comments on issues
 │   └── index.ts      # Public API exports
 ├── config-templates/ # Default config files for dangeresque init
