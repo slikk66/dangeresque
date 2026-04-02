@@ -89,7 +89,7 @@ Before ending your session:
 
 ## Critical Rules
 
-- **No cd before git**: You are already in the worktree directory. Run `git` commands directly without `cd` — compound `cd && git` commands trigger permission blocks.
+- **Already in worktree**: Your cwd is the worktree. Do not `cd` before `git` commands — you are already there.
 - **Read first**: Read files before editing. The world is never as you assume.
 - **Verify after**: Grep/read to confirm your changes landed correctly.
 - **No band-aids**: Every fix must be researched and confirmed correct.
