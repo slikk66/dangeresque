@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { RESULT_FILE } from "./config.js";
+import { existsSync, readFileSync, mkdirSync, copyFileSync, readdirSync, rmSync } from "node:fs";
+import { join, basename } from "node:path";
+import { CONFIG_DIR, RUNS_DIR, RESULT_FILE } from "./config.js";
 
 export interface WorktreeInfo {
   path: string;
@@ -68,14 +68,152 @@ export function resolveBranch(projectRoot: string, input: string): string {
   );
 }
 
+// --- Archive functions ---
+
+function getRunsDir(projectRoot: string): string {
+  return join(projectRoot, CONFIG_DIR, RUNS_DIR);
+}
+
+function getIssueRunsDir(projectRoot: string, issueNumber: number): string {
+  return join(getRunsDir(projectRoot), `issue-${issueNumber}`);
+}
+
+/**
+ * Archive RUN_RESULT.md from a worktree to .dangeresque/runs/issue-<N>/
+ * Returns the archive path, or null if no RUN_RESULT.md found.
+ */
+export function archiveRunResult(
+  projectRoot: string,
+  worktreePath: string,
+  issueNumber: number | undefined,
+  mode: string
+): string | null {
+  const resultPath = join(worktreePath, RESULT_FILE);
+  if (!existsSync(resultPath)) return null;
+  if (!issueNumber) return null;
+
+  const issueDir = getIssueRunsDir(projectRoot, issueNumber);
+  mkdirSync(issueDir, { recursive: true });
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const archiveName = `${timestamp}-${mode}.md`;
+  const archivePath = join(issueDir, archiveName);
+
+  copyFileSync(resultPath, archivePath);
+  return archivePath;
+}
+
+/**
+ * List archived run results for an issue, sorted chronologically.
+ */
+export function listArchivedRuns(projectRoot: string, issueNumber: number): string[] {
+  const issueDir = getIssueRunsDir(projectRoot, issueNumber);
+  if (!existsSync(issueDir)) return [];
+  return readdirSync(issueDir).filter((f) => f.endsWith(".md")).sort();
+}
+
+/**
+ * Read an archived run result file.
+ */
+export function readArchivedRun(projectRoot: string, issueNumber: number, filename: string): string {
+  return readFileSync(join(getIssueRunsDir(projectRoot, issueNumber), filename), "utf-8");
+}
+
+/**
+ * Get the latest archived run result for an issue.
+ */
+export function getLatestArchivedRun(projectRoot: string, issueNumber: number): string | null {
+  const files = listArchivedRuns(projectRoot, issueNumber);
+  if (files.length === 0) return null;
+  return readArchivedRun(projectRoot, issueNumber, files[files.length - 1]);
+}
+
+/**
+ * Parse the <!-- SUMMARY --> block from a RUN_RESULT.md content string.
+ * Returns the summary lines, or null if no block found.
+ */
+export function parseSummaryBlock(content: string): string | null {
+  const match = content.match(/<!-- SUMMARY -->\n([\s\S]*?)\n<!-- \/SUMMARY -->/);
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * Extract a one-line summary from an archived run filename + content.
+ * Format: "Run N (MODE): status — files, verdict"
+ */
+export function formatRunOneLiner(filename: string, content: string, index: number): string {
+  // Extract mode from filename: 2026-04-02T14-30-00-IMPLEMENT.md → IMPLEMENT
+  const modeMatch = filename.match(/-([A-Z]+)\.md$/);
+  const mode = modeMatch ? modeMatch[1] : "UNKNOWN";
+
+  const summary = parseSummaryBlock(content);
+  if (summary) {
+    // Parse first line: "Mode: IMPLEMENT | Status: implemented, unverified"
+    const statusMatch = summary.match(/Status:\s*(.+)/);
+    const status = statusMatch ? statusMatch[1].trim() : "unknown";
+    const filesMatch = summary.match(/Files:\s*(.+)/);
+    const files = filesMatch ? filesMatch[1].trim() : "";
+    return `Run ${index + 1} (${mode}): ${status}${files ? ` — ${files}` : ""}`;
+  }
+
+  // Fallback: no summary block (older run)
+  return `Run ${index + 1} (${mode}): ${filename}`;
+}
+
+/**
+ * Delete archived runs for an issue.
+ */
+export function cleanArchivedRuns(projectRoot: string, issueNumber: number): { success: boolean; message: string } {
+  const issueDir = getIssueRunsDir(projectRoot, issueNumber);
+  if (!existsSync(issueDir)) {
+    return { success: false, message: `No archived runs found for issue #${issueNumber}` };
+  }
+
+  const files = listArchivedRuns(projectRoot, issueNumber);
+  rmSync(issueDir, { recursive: true });
+  return { success: true, message: `Deleted ${files.length} archived run(s) for issue #${issueNumber}` };
+}
+
+// --- Worktree operations ---
+
+/**
+ * Extract issue number from branch name.
+ * worktree-dangeresque-investigate-63 → 63
+ */
+export function extractIssueNumber(branch: string): number | undefined {
+  const match = branch.match(/-(\d+)$/);
+  return match ? parseInt(match[1], 10) : undefined;
+}
+
+/**
+ * Extract mode from branch name.
+ * worktree-dangeresque-investigate-63 → INVESTIGATE
+ */
+function extractMode(branch: string): string {
+  // Remove worktree- and dangeresque- prefixes, then take the part before the issue number
+  const stripped = branch.replace(/^worktree-/, "").replace(/^dangeresque-/, "");
+  const modeMatch = stripped.match(/^([a-z]+)-\d+$/);
+  return modeMatch ? modeMatch[1].toUpperCase() : "UNKNOWN";
+}
+
 export function mergeWorktree(
   projectRoot: string,
-  branch: string
+  branch: string,
+  issueNumber?: number,
+  mode?: string
 ): { success: boolean; message: string } {
   try {
-    // Strip RUN_RESULT.md from worktree branch before merging (it's gitignored on main)
     const worktreePathForClean = join(projectRoot, ".claude", "worktrees", branch.replace("worktree-", ""));
     const resultFile = join(worktreePathForClean, RESULT_FILE);
+
+    // Archive RUN_RESULT.md before removing it
+    const effectiveIssue = issueNumber ?? extractIssueNumber(branch);
+    const effectiveMode = mode ?? extractMode(branch);
+    if (existsSync(resultFile) && effectiveIssue) {
+      archiveRunResult(projectRoot, worktreePathForClean, effectiveIssue, effectiveMode);
+    }
+
+    // Strip RUN_RESULT.md from worktree branch before merging (it's gitignored on main)
     if (existsSync(resultFile)) {
       try {
         execSync(`git rm -f "${RESULT_FILE}"`, { cwd: worktreePathForClean, encoding: "utf-8", stdio: "pipe" });
@@ -122,11 +260,20 @@ export function mergeWorktree(
 
 export function discardWorktree(
   projectRoot: string,
-  branch: string
+  branch: string,
+  issueNumber?: number,
+  mode?: string
 ): { success: boolean; message: string } {
   try {
     const worktreeName = branch.replace("worktree-", "");
     const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
+
+    // Archive RUN_RESULT.md before discarding
+    const effectiveIssue = issueNumber ?? extractIssueNumber(branch);
+    const effectiveMode = mode ?? extractMode(branch);
+    if (existsSync(worktreePath) && effectiveIssue) {
+      archiveRunResult(projectRoot, worktreePath, effectiveIssue, effectiveMode);
+    }
 
     let removedWorktree = false;
     let removedBranch = false;
@@ -197,7 +344,21 @@ export function getWorktreeResults(
   lines.push(`HEAD:     ${targetWorktree.head.slice(0, 8)}`);
   lines.push("");
 
-  // RUN_RESULT.md
+  // Show archived prior runs as one-liners
+  const issueNum = extractIssueNumber(targetWorktree.branch);
+  if (issueNum) {
+    const archived = listArchivedRuns(projectRoot, issueNum);
+    if (archived.length > 0) {
+      lines.push("--- Previous runs (use --all for full details) ---");
+      for (let i = 0; i < archived.length; i++) {
+        const content = readArchivedRun(projectRoot, issueNum, archived[i]);
+        lines.push(formatRunOneLiner(archived[i], content, i));
+      }
+      lines.push("");
+    }
+  }
+
+  // Current RUN_RESULT.md
   if (existsSync(resultPath)) {
     lines.push("--- RUN_RESULT.md ---");
     lines.push(readFileSync(resultPath, "utf-8"));
@@ -217,6 +378,45 @@ export function getWorktreeResults(
     lines.push(diff.trim() || "No changes.");
   } catch {
     lines.push("Could not generate diff summary.");
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Show archived results for a specific issue (used by `results --issue`)
+ */
+export function getArchivedResults(
+  projectRoot: string,
+  issueNumber: number,
+  showAll: boolean
+): string {
+  const archived = listArchivedRuns(projectRoot, issueNumber);
+  if (archived.length === 0) {
+    return `No archived runs found for issue #${issueNumber}`;
+  }
+
+  const lines: string[] = [];
+  lines.push(`Archived runs for issue #${issueNumber} (${archived.length} total)\n`);
+
+  if (showAll) {
+    for (let i = 0; i < archived.length; i++) {
+      const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
+      lines.push(`=== Run ${i + 1}: ${archived[i]} ===`);
+      lines.push(content);
+      lines.push("");
+    }
+  } else {
+    // One-liners for all but latest, full content for latest
+    for (let i = 0; i < archived.length - 1; i++) {
+      const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
+      lines.push(formatRunOneLiner(archived[i], content, i));
+    }
+    if (archived.length > 1) lines.push("");
+
+    const latestContent = readArchivedRun(projectRoot, issueNumber, archived[archived.length - 1]);
+    lines.push(`--- Latest: Run ${archived.length} ---`);
+    lines.push(latestContent);
   }
 
   return lines.join("\n");

@@ -7,6 +7,7 @@ import {
   TASK_FILE,
   RESULT_FILE,
 } from "./config.js";
+import { getLatestArchivedRun } from "./worktree.js";
 
 export interface RunOptions {
   projectRoot: string;
@@ -107,11 +108,27 @@ function buildWorkerArgs(opts: RunOptions): string[] {
       `# #${issueData.number}: ${issueData.title}\n\n` +
       `${issueData.body}`;
 
-    if (issueData.comments.length > 0) {
-      prompt += `\n\n## Previous Comments\n`;
-      for (const c of issueData.comments) {
+    // Filter comments: staged + last N human comments (skip [dangeresque] run results)
+    const stagedComments = issueData.comments.filter(
+      (c) => c.body.startsWith("**[staged")
+    );
+    const humanComments = issueData.comments.filter(
+      (c) => !c.body.startsWith("**[staged") && !c.body.startsWith("**[dangeresque")
+    );
+    const recentHuman = humanComments.slice(-3);
+
+    const filteredComments = [...stagedComments, ...recentHuman];
+    if (filteredComments.length > 0) {
+      prompt += `\n\n## Context Comments\n`;
+      for (const c of filteredComments) {
         prompt += `\n**${c.author.login}:**\n${c.body}\n`;
       }
+    }
+
+    // Include latest archived run result (if any prior run exists)
+    const archivedResult = getLatestArchivedRun(opts.projectRoot, issueData.number);
+    if (archivedResult) {
+      prompt += `\n\n## Previous Run Result (from archive)\n\n${archivedResult}`;
     }
 
     prompt +=

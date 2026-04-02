@@ -6,7 +6,7 @@ import {
   resolveProjectRoot,
 } from "./config.js";
 import { runWorker, runReview, fetchIssue, postRunComment } from "./runner.js";
-import { listWorktrees, mergeWorktree, discardWorktree, getWorktreeResults, resolveBranch } from "./worktree.js";
+import { listWorktrees, mergeWorktree, discardWorktree, getWorktreeResults, getArchivedResults, resolveBranch, cleanArchivedRuns } from "./worktree.js";
 import { initProject } from "./init.js";
 import { stageComment } from "./stage.js";
 
@@ -16,10 +16,12 @@ dangeresque — bounded AFK Claude Code runs with human review
 Commands:
   run [options]                        Execute worker + review pass
   results [--latest | <branch>]        Show run results from a worktree
+  results --issue <N> [--all]          Show archived results for an issue
   stage <number> --comment "text"      Add context comment to an issue
   status                               List active dangeresque worktrees
   merge <branch>                       Merge a reviewed worktree
   discard <branch>                     Remove a worktree without merging
+  clean --issue <N>                    Delete archived runs for an issue
   init                                 Scaffold .dangeresque/ config + skills
 
 Run options:
@@ -69,6 +71,9 @@ async function main() {
       break;
     case "discard":
       cmdDiscard(args[1]);
+      break;
+    case "clean":
+      cmdClean(args.slice(1));
       break;
     case "init":
       cmdInit();
@@ -280,6 +285,21 @@ function cmdDiscard(branch: string | undefined) {
 
 function cmdResults(args: string[]) {
   const projectRoot = resolveProjectRoot();
+
+  // Check for --issue flag (show archived results)
+  const issueIdx = args.indexOf("--issue");
+  if (issueIdx !== -1 && args[issueIdx + 1]) {
+    const issueNumber = parseInt(args[issueIdx + 1], 10);
+    if (isNaN(issueNumber)) {
+      console.error("--issue requires a numeric issue number");
+      process.exit(1);
+    }
+    const showAll = args.includes("--all");
+    const output = getArchivedResults(projectRoot, issueNumber, showAll);
+    console.log(output);
+    return;
+  }
+
   const target = args.find((a) => !a.startsWith("-")) ?? "latest";
   const isLatest = target === "latest" || args.includes("--latest");
 
@@ -296,6 +316,30 @@ function cmdResults(args: string[]) {
 
   const output = getWorktreeResults(projectRoot, branchOrLatest);
   console.log(output);
+}
+
+function cmdClean(args: string[]) {
+  const issueIdx = args.indexOf("--issue");
+  if (issueIdx === -1 || !args[issueIdx + 1]) {
+    console.error("Usage: dangeresque clean --issue <N>");
+    process.exit(1);
+  }
+
+  const issueNumber = parseInt(args[issueIdx + 1], 10);
+  if (isNaN(issueNumber)) {
+    console.error("--issue requires a numeric issue number");
+    process.exit(1);
+  }
+
+  const projectRoot = resolveProjectRoot();
+  const result = cleanArchivedRuns(projectRoot, issueNumber);
+
+  if (result.success) {
+    console.log(result.message);
+  } else {
+    console.error(result.message);
+    process.exit(1);
+  }
 }
 
 function cmdStage(args: string[]) {

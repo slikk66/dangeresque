@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const CONFIG_DIR = ".dangeresque";
+export const RUNS_DIR = "runs";
 export const TASK_FILE = "NEXT_TASK.md";
 export const RESULT_FILE = "RUN_RESULT.md";
 

@@ -77,7 +77,21 @@ export function initProject(projectRoot: string): void {
     }
   }
 
-  // 2. Merge notification hooks into .claude/settings.json
+  // 2. Ensure .dangeresque/runs/ is gitignored
+  const gitignorePath = join(projectRoot, ".gitignore");
+  const runsPattern = ".dangeresque/runs/";
+  if (existsSync(gitignorePath)) {
+    const gitignore = readFileSync(gitignorePath, "utf-8");
+    if (!gitignore.includes(runsPattern)) {
+      writeFileSync(gitignorePath, gitignore.trimEnd() + `\n${runsPattern}\n`);
+      console.log(`\nAdded ${runsPattern} to .gitignore`);
+    }
+  } else {
+    writeFileSync(gitignorePath, `${runsPattern}\n`);
+    console.log(`\nCreated .gitignore with ${runsPattern}`);
+  }
+
+  // 3. Merge notification hooks into .claude/settings.json
   const hooksTemplate = join(templatesDir, "claude-settings.json");
   const settingsPath = join(projectRoot, ".claude", "settings.json");
 
