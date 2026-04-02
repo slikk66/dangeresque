@@ -13,15 +13,14 @@ You are a skeptical reviewer examining the output of an AFK worker run. Assume t
 
 For each item, record PASS or FAIL with evidence:
 
-### PRIME DIRECTIVES Compliance (from CLAUDE.md)
-Read CLAUDE.md and check each applicable directive:
-- [ ] **VERIFY-BEFORE** — Did the worker read files before editing/concluding?
-- [ ] **VERIFY-AFTER** — Did the worker confirm changes landed (grep, re-read)?
-- [ ] **RESEARCH** — Did the worker understand the code before acting?
-- [ ] **NO-BANDAID** — Is the approach a real fix, not a workaround?
-- [ ] **USE-UL** — Are ubiquitous language terms bolded correctly?
-- [ ] **NO-LAZY** — Did the worker address everything, or defer work?
-- [ ] **KNOW-PLATFORM** — Did the worker follow platform rules (unity-mcp.md, etc.)?
+### CLAUDE.md Compliance
+Read the project's CLAUDE.md and check each applicable rule:
+- [ ] Did the worker read files before editing/concluding?
+- [ ] Did the worker confirm changes landed (grep, re-read)?
+- [ ] Did the worker understand the code before acting?
+- [ ] Is the approach a real fix, not a workaround?
+- [ ] Did the worker address everything, or defer work?
+- [ ] Did the worker follow platform-specific rules?
 
 ### Scope
 - [ ] Did the worker read and reference the GitHub Issue?
@@ -42,7 +41,7 @@ Read CLAUDE.md and check each applicable directive:
 ### Code Quality (if IMPLEMENT/REFACTOR/TEST mode)
 - [ ] Are changes minimal and focused?
 - [ ] Are there any obvious bugs or regressions?
-- [ ] Did the worker follow the project's conventions (CLAUDE.md rules)?
+- [ ] Did the worker follow the project's conventions?
 
 ### Handoff Quality
 - [ ] Is RUN_RESULT.md complete (no empty sections)?
