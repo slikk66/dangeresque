@@ -1,4 +1,4 @@
-# dangeresque
+# Dangeresque
 
 Orchestrate bounded AFK [Claude Code](https://docs.anthropic.com/en/docs/claude-code) runs in isolated git worktrees with automatic review and human merge control.
 
@@ -59,6 +59,7 @@ dangeresque init
 ```
 
 This creates:
+
 - `.dangeresque/` — worker-prompt.md, review-prompt.md, AFK_WORKER_RULES.md
 - `.claude/skills/dangeresque-create-issue/` — skill for creating issues from conversation context
 - Merges notification hooks into `.claude/settings.json`
@@ -169,6 +170,7 @@ dangeresque clean --issue 63
 ### `dangeresque init`
 
 Set up a project for dangeresque:
+
 - Creates `.dangeresque/` with default config templates
 - Copies `/dangeresque-create-issue` skill to `.claude/skills/`
 - Merges notification hooks into `.claude/settings.json` (preserves existing hooks)
@@ -194,10 +196,12 @@ Every RUN_RESULT.md must start with a machine-parseable summary:
 
 ```markdown
 <!-- SUMMARY -->
+
 Mode: IMPLEMENT | Status: implemented, unverified
 Files: 3 changed (BettingManager.cs, CrapsRules.cs, BettingManagerTests.cs)
 Proof: 8/8 tests pass | Not verified: WebGL build
 Risks: none | Next: VERIFY
+
 <!-- /SUMMARY -->
 ```
 
@@ -206,6 +210,7 @@ The `results` command parses this for one-line summaries of prior runs. The revi
 ### Local Run Archive
 
 RUN_RESULT.md files are archived to `.dangeresque/runs/issue-<N>/` before merge or discard. This provides:
+
 - **Reliable context** — subsequent runs read from local files, not GitHub comment parsing
 - **Survives failures** — if the GitHub comment post fails, the archive persists
 - **Clean separation** — GitHub comments are for human review, local archive is for machine context
@@ -213,6 +218,7 @@ RUN_RESULT.md files are archived to `.dangeresque/runs/issue-<N>/` before merge 
 ### Comment Filtering
 
 When building the worker prompt, `runner.ts` filters issue comments:
+
 - **Included:** issue body + all `[staged]` comments + last 3 untagged human comments
 - **Skipped:** old `[dangeresque]` run result comments (replaced by local archive)
 
@@ -276,36 +282,38 @@ dangeresque clean --issue 63             # Prune after closing
 
 ### .dangeresque/ directory
 
-| File | Purpose |
-|------|---------|
-| `worker-prompt.md` | System prompt appended for the worker pass |
-| `review-prompt.md` | System prompt for the review pass |
-| `AFK_WORKER_RULES.md` | Operating modes, scope rules, status language |
-| `config.json` | Optional overrides (model, tools, permissions) |
-| `runs/` | Local archive of RUN_RESULT.md files (gitignored) |
+| File                  | Purpose                                           |
+| --------------------- | ------------------------------------------------- |
+| `worker-prompt.md`    | System prompt appended for the worker pass        |
+| `review-prompt.md`    | System prompt for the review pass                 |
+| `AFK_WORKER_RULES.md` | Operating modes, scope rules, status language     |
+| `config.json`         | Optional overrides (model, tools, permissions)    |
+| `runs/`               | Local archive of RUN_RESULT.md files (gitignored) |
 
 ### config.json
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `model` | string | `"claude-opus-4-6"` | Claude model ID |
-| `permissionMode` | string | `"acceptEdits"` | Claude Code permission mode |
-| `effort` | string | `"high"` | Effort level: low, medium, high, max |
-| `headless` | boolean | `true` | Run with `-p` flag (set false for interactive) |
-| `allowedTools` | string[] | *(see below)* | Tools auto-approved without prompting |
-| `disallowedTools` | string[] | *(see below)* | Tools hard-blocked from use |
-| `workerPrompt` | string | `"worker-prompt.md"` | Worker system prompt filename |
-| `reviewPrompt` | string | `"review-prompt.md"` | Review system prompt filename |
+| Key               | Type     | Default              | Description                                    |
+| ----------------- | -------- | -------------------- | ---------------------------------------------- |
+| `model`           | string   | `"claude-opus-4-6"`  | Claude model ID                                |
+| `permissionMode`  | string   | `"acceptEdits"`      | Claude Code permission mode                    |
+| `effort`          | string   | `"high"`             | Effort level: low, medium, high, max           |
+| `headless`        | boolean  | `true`               | Run with `-p` flag (set false for interactive) |
+| `allowedTools`    | string[] | _(see below)_        | Tools auto-approved without prompting          |
+| `disallowedTools` | string[] | _(see below)_        | Tools hard-blocked from use                    |
+| `workerPrompt`    | string   | `"worker-prompt.md"` | Worker system prompt filename                  |
+| `reviewPrompt`    | string   | `"review-prompt.md"` | Review system prompt filename                  |
 
 ### Default Tool Permissions
 
 **Allowed (auto-approved):**
+
 - `Read`, `Edit`, `Write`, `Grep`, `Glob`
 - `WebSearch`, `WebFetch`
 - `mcp__*` (all MCP servers — Unity, browser, etc.)
 - `Bash(git status *)`, `Bash(git diff *)`, `Bash(git log *)`, `Bash(git add *)`, `Bash(git commit *)`, `Bash(git branch *)`
 
 **Disallowed (hard-blocked):**
+
 - `Bash(git push *)`, `Bash(git reset --hard *)`, `Bash(rm -rf *)`, `Bash(git branch -D *)`
 
 ### Notification Hooks
@@ -318,6 +326,45 @@ dangeresque clean --issue 63             # Prune after closing
 Both read `cwd` from the hook's stdin JSON and check if the directory basename starts with `dangeresque-`. Only dangeresque worktree sessions trigger notifications — your main interactive session stays silent.
 
 All dangeresque worktrees are automatically prefixed with `dangeresque-` to enable this detection.
+
+## Why Worktrees Instead of Docker
+
+Some agent orchestration tools run each agent in a Docker container with a bind-mounted worktree. dangeresque skips Docker entirely and runs Claude Code directly on the host in a git worktree. This is a deliberate tradeoff.
+
+### What Docker gives you
+
+- **Container isolation** — agent can't affect files outside its mount
+- **Reproducible environments** — Dockerfile controls exact dependencies
+- **CI/CD friendly** — runs in cloud pipelines without a local dev machine
+- **Parallelization** — framework-level orchestration across containers
+
+### What Docker costs you
+
+- **No MCP servers** — host-bound tools (Unity Editor, Chrome automation, local databases) can't run inside a container without complex networking or socket forwarding. For projects that rely on MCP, this is a dealbreaker.
+- **Docker overhead** — image builds, container startup, bind-mount permissions, daemon dependency
+- **Heavier setup** — requires Docker Desktop, Dockerfile authoring, and orchestration scripts to define workflows
+- **`--dangerously-skip-permissions`** — container-based configurations where this flag is more viable disable ALL permission checks. dangeresque uses `--permission-mode acceptEdits` with explicit `allowedTools`/`disallowedTools` lists — more granular control over what the agent can and cannot do.
+
+### What dangeresque trades for
+
+dangeresque runs on the host filesystem. The agent has real access to your tools, your MCP servers, and your files. The safety model is different:
+
+| Layer | Docker-based | Dangeresque |
+|-------|-------------|-------------|
+| **Filesystem** | Container sandbox | Git worktree (isolated branch, shared repo) |
+| **Permissions** | `--dangerously-skip-permissions` (all tools allowed) | `acceptEdits` + allowedTools/disallowedTools (granular) |
+| **MCP servers** | Not practical (host-bound servers can't reach container) | Native access (Unity, Chrome, etc.) |
+| **Review** | Template pattern (you write the orchestration) | Built-in second pass with skeptical reviewer |
+| **Merge control** | Varies — some auto-merge temp branches on success | Always manual — nothing touches main without `dangeresque merge` |
+| **Parallelism** | Framework-level orchestration | Manual (multiple terminals) |
+
+### When to use which
+
+**Use Docker-based orchestration** if you need container isolation, CI/CD pipelines, or cloud-based agent runs where no human is present.
+
+**Use dangeresque** if you need MCP server access, want a lightweight single-command workflow, or prefer human-in-the-loop review before any code touches main.
+
+The name is intentional — running agents on your host filesystem without Docker is slightly more dangerous. The mitigation is the human review loop: worker → reviewer → you inspect the diff → explicit merge. No code lands without your approval.
 
 ## Project Structure
 
