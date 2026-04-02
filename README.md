@@ -327,7 +327,7 @@ Both read `cwd` from the hook's stdin JSON and check if the directory basename s
 
 All dangeresque worktrees are automatically prefixed with `dangeresque-` to enable this detection.
 
-## Why Worktrees Instead of Docker
+## Why Host-Native Instead of Containerized
 
 Some agent orchestration tools run each agent in a Docker container with a bind-mounted worktree. dangeresque skips Docker entirely and runs Claude Code directly on the host in a git worktree. This is a deliberate tradeoff.
 
