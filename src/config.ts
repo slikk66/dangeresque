@@ -7,11 +7,11 @@ export const TASK_FILE = "NEXT_TASK.md";
 export const RESULT_FILE = "RUN_RESULT.md";
 
 export interface DangeresqueConfig {
-  /** Model to use (default: claude-sonnet-4-6) */
+  /** Model to use (default: claude-opus-4-6) */
   model: string;
   /** Permission mode (default: acceptEdits) */
   permissionMode: string;
-  /** Effort level (default: max) */
+  /** Effort level (default: high) */
   effort: string;
   /** Run headless with -p flag (default: true). Set false for interactive mode. */
   headless: boolean;

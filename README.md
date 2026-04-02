@@ -2,7 +2,7 @@
 
 Orchestrate bounded AFK [Claude Code](https://docs.anthropic.com/en/docs/claude-code) runs in isolated git worktrees with automatic review and human merge control.
 
-dangeresque is a thin wrapper around Claude Code's built-in `--worktree`, `-p`, `--permission-mode`, and `--append-system-prompt-file` flags. It assembles the right CLI invocation, runs a worker pass, then a skeptical review pass, and hands control back to you.
+dangeresque is a thin wrapper around Claude Code's CLI flags (`--worktree`, `-p`, `--permission-mode`, `--append-system-prompt-file`, `--model`, `--effort`, `--allowed-tools`, `--disallowed-tools`). It assembles the right invocation, runs a worker pass, then a skeptical review pass, and hands control back to you.
 
 ## How It Works
 
@@ -22,9 +22,9 @@ dangeresque is a thin wrapper around Claude Code's built-in `--worktree`, `-p`, 
 1. **Worker** runs Claude Code headlessly (`-p`) in an isolated worktree with your AFK rules + GitHub Issue context
 2. **Reviewer** runs Claude Code in the same worktree with a skeptical review prompt
 3. **Full RUN_RESULT.md** posted as a comment on the GitHub Issue
-4. **RUN_RESULT.md archived** locally to `.dangeresque/runs/` for future run context
-5. **macOS notification** fires when the run completes
-6. **You** inspect the diff, then `merge` or `discard`
+4. **macOS notification** fires when the run completes
+5. **You** inspect the diff, then `merge` or `discard`
+6. **RUN_RESULT.md archived** locally to `.dangeresque/runs/` on merge or discard for future run context
 
 No code touches your main branch until you explicitly merge.
 
@@ -118,7 +118,7 @@ Options:
   --effort <level>    Override effort (default: high) [low, medium, high, max]
 ```
 
-After completion, posts the full RUN_RESULT.md as a comment on the GitHub Issue and archives it locally.
+After completion, posts the full RUN_RESULT.md as a comment on the GitHub Issue. The run result is archived locally to `.dangeresque/runs/` when you later `merge` or `discard` the worktree.
 
 **Comment filtering:** The worker prompt includes the issue body + all `[staged]` comments + last 3 human comments. Old `[dangeresque]` run result comments are skipped — the worker gets prior run context from the local archive instead.
 
@@ -172,11 +172,11 @@ dangeresque clean --issue 63
 Set up a project for dangeresque:
 
 - Creates `.dangeresque/` with default config templates
-- Copies `/dangeresque-create-issue` skill to `.claude/skills/`
+- Copies `dangeresque-create-issue` skill to `.claude/skills/`
 - Merges notification hooks into `.claude/settings.json` (preserves existing hooks)
 - Adds `.dangeresque/runs/` to `.gitignore`
 
-Re-run to refresh skills and config from the latest dangeresque version.
+Re-run to refresh skills from the latest dangeresque version. Existing config files are not overwritten.
 
 ## Key Concepts
 
@@ -302,6 +302,7 @@ dangeresque clean --issue 63             # Prune after closing
 | `disallowedTools` | string[] | _(see below)_        | Tools hard-blocked from use                    |
 | `workerPrompt`    | string   | `"worker-prompt.md"` | Worker system prompt filename                  |
 | `reviewPrompt`    | string   | `"review-prompt.md"` | Review system prompt filename                  |
+| `notifications`   | boolean  | `true`               | Enable macOS notification hooks                |
 
 ### Default Tool Permissions
 
@@ -341,6 +342,7 @@ Some agent orchestration tools run each agent in a Docker container with a bind-
 ### What Docker costs you
 
 - **No MCP servers** — host-bound tools (Unity Editor, Chrome automation, local databases) can't run inside a container without complex networking or socket forwarding. For projects that rely on MCP, this is a dealbreaker.
+- **No host binaries** — tools already installed on your machine (`gh`, language runtimes, build tools, SDKs) must be baked into the Docker image or installed at container startup. dangeresque workers inherit the host environment directly.
 - **Docker overhead** — image builds, container startup, bind-mount permissions, daemon dependency
 - **Heavier setup** — requires Docker Desktop, Dockerfile authoring, and orchestration scripts to define workflows
 - **`--dangerously-skip-permissions`** — container-based configurations where this flag is more viable disable ALL permission checks. dangeresque uses `--permission-mode acceptEdits` with explicit `allowedTools`/`disallowedTools` lists — more granular control over what the agent can and cannot do.
