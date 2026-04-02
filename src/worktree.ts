@@ -39,6 +39,35 @@ export function listWorktrees(projectRoot: string): WorktreeInfo[] {
   return worktrees;
 }
 
+/**
+ * Resolve a shorthand branch name to the actual branch.
+ * Tries: exact → worktree-dangeresque-<input> → worktree-<input>
+ */
+export function resolveBranch(projectRoot: string, input: string): string {
+  const candidates = [
+    input,
+    `worktree-dangeresque-${input}`,
+    `worktree-${input}`,
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      execSync(`git rev-parse --verify ${candidate}`, {
+        cwd: projectRoot,
+        encoding: "utf-8",
+        stdio: "pipe",
+      });
+      return candidate;
+    } catch {
+      // Not found, try next
+    }
+  }
+
+  throw new Error(
+    `Branch not found. Tried: ${candidates.join(", ")}\nRun 'dangeresque status' to see active worktrees.`
+  );
+}
+
 export function mergeWorktree(
   projectRoot: string,
   branch: string
@@ -99,12 +128,16 @@ export function discardWorktree(
     const worktreeName = branch.replace("worktree-", "");
     const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
 
+    let removedWorktree = false;
+    let removedBranch = false;
+
     if (existsSync(worktreePath)) {
       execSync(`git worktree remove --force "${worktreePath}"`, {
         cwd: projectRoot,
         encoding: "utf-8",
         stdio: "pipe",
       });
+      removedWorktree = true;
     }
 
     try {
@@ -113,8 +146,13 @@ export function discardWorktree(
         encoding: "utf-8",
         stdio: "pipe",
       });
+      removedBranch = true;
     } catch {
-      // Branch may not exist
+      // Branch may already be deleted by worktree remove
+    }
+
+    if (!removedWorktree && !removedBranch) {
+      return { success: false, message: `Nothing to discard: no worktree or branch found for ${branch}` };
     }
 
     return { success: true, message: `Discarded ${branch} and cleaned up` };

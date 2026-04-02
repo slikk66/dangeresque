@@ -24,7 +24,7 @@ Execute these steps IN ORDER before doing anything else:
 
 ### IMPLEMENT
 - Read the relevant files first
-- Make the smallest change that satisfies the Goal
+- Make a focused change that fully solves the Goal — no wider, no shallower
 - Write or update tests that prove the change works
 - Run tests if possible to verify
 - Commit your changes with a descriptive message
@@ -36,7 +36,11 @@ Execute these steps IN ORDER before doing anything else:
 - Run existing tests, grep for expected values, read files
 - Compare actual behavior against the GitHub Issue's success criteria
 - Record exact observations — what passed, what failed, what you checked
-- Output: pass/fail evidence in RUN_RESULT.md
+- Output in RUN_RESULT.md must include:
+  - **Checks Run**: exact commands/tests executed
+  - **Observations**: actual output vs expected, with evidence
+  - **Original Criteria Status**: each success criterion from the issue, individually marked pass/fail
+  - **Unverified Items**: anything you could not check and why
 
 ### REFACTOR
 - Read the code thoroughly first

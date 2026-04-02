@@ -6,7 +6,7 @@ import {
   resolveProjectRoot,
 } from "./config.js";
 import { runWorker, runReview, fetchIssue, postRunComment } from "./runner.js";
-import { listWorktrees, mergeWorktree, discardWorktree, getWorktreeResults } from "./worktree.js";
+import { listWorktrees, mergeWorktree, discardWorktree, getWorktreeResults, resolveBranch } from "./worktree.js";
 import { initProject } from "./init.js";
 import { stageComment } from "./stage.js";
 
@@ -238,12 +238,18 @@ function cmdMerge(branch: string | undefined) {
   }
 
   const projectRoot = resolveProjectRoot();
-  const result = mergeWorktree(projectRoot, branch);
+  try {
+    const resolved = resolveBranch(projectRoot, branch);
+    const result = mergeWorktree(projectRoot, resolved);
 
-  if (result.success) {
-    console.log(result.message);
-  } else {
-    console.error(result.message);
+    if (result.success) {
+      console.log(result.message);
+    } else {
+      console.error(result.message);
+      process.exit(1);
+    }
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
 }
@@ -256,12 +262,18 @@ function cmdDiscard(branch: string | undefined) {
   }
 
   const projectRoot = resolveProjectRoot();
-  const result = discardWorktree(projectRoot, branch);
+  try {
+    const resolved = resolveBranch(projectRoot, branch);
+    const result = discardWorktree(projectRoot, resolved);
 
-  if (result.success) {
-    console.log(result.message);
-  } else {
-    console.error(result.message);
+    if (result.success) {
+      console.log(result.message);
+    } else {
+      console.error(result.message);
+      process.exit(1);
+    }
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
 }
@@ -271,7 +283,18 @@ function cmdResults(args: string[]) {
   const target = args.find((a) => !a.startsWith("-")) ?? "latest";
   const isLatest = target === "latest" || args.includes("--latest");
 
-  const output = getWorktreeResults(projectRoot, isLatest ? "latest" : target);
+  let branchOrLatest: string | "latest";
+  if (isLatest) {
+    branchOrLatest = "latest";
+  } else {
+    try {
+      branchOrLatest = resolveBranch(projectRoot, target);
+    } catch {
+      branchOrLatest = target; // Fall through to getWorktreeResults which has its own error message
+    }
+  }
+
+  const output = getWorktreeResults(projectRoot, branchOrLatest);
   console.log(output);
 }
 

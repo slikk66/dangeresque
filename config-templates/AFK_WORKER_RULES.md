@@ -33,6 +33,7 @@ Projects may define additional custom modes in their copy of this file.
 ## Scope Rules
 
 - Stay within the GitHub Issue. Period.
+- **One run = one slice.** Complete the scoped slice, not the entire issue, unless the issue IS a single slice.
 - Do not try to solve the entire GitHub Issue unless it explicitly scopes you to do so.
 - If you discover a related problem, note it in RUN_RESULT.md under "Risks / Uncertainty" — do not fix it.
 - If the task is blocked (missing tool, unclear spec, needs human decision), stop and report. Do not guess.
