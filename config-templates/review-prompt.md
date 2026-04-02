@@ -45,6 +45,7 @@ Read the project's CLAUDE.md and check each applicable rule:
 
 ### Handoff Quality
 - [ ] Is RUN_RESULT.md complete (no empty sections)?
+- [ ] Is the `<!-- SUMMARY -->` block present at the top? Do NOT modify it — it reflects the worker's assessment.
 - [ ] Is the recommended next step actionable?
 - [ ] Are risks/uncertainties documented?
 

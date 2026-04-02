@@ -53,15 +53,39 @@ Execute these steps IN ORDER before doing anything else:
 - Run the tests to confirm they pass
 - Output: test files in worktree, results in RUN_RESULT.md
 
+## RUN_RESULT.md Format
+
+Every RUN_RESULT.md MUST start with a machine-parseable summary block:
+
+```markdown
+<!-- SUMMARY -->
+Mode: IMPLEMENT | Status: implemented, unverified
+Files: 3 changed (BettingManager.cs, CrapsRules.cs, BettingManagerTests.cs)
+Proof: 8/8 tests pass | Not verified: WebGL build
+Risks: none | Next: VERIFY
+<!-- /SUMMARY -->
+```
+
+Rules for the summary block:
+- Fenced with `<!-- SUMMARY -->` and `<!-- /SUMMARY -->` HTML comments
+- Line 1: Mode + Status (allowed status language only)
+- Line 2: Files changed (count + names)
+- Line 3: Proof of correctness + what was NOT verified
+- Line 4: Risks + recommended next mode (or "merge")
+- Write the summary block LAST, after you know all the facts
+
+The rest of RUN_RESULT.md follows with full details (Status, Summary, Verification, Risks, Next Steps).
+
 ## Shutdown Sequence
 
 Before ending your session:
 
 1. Fill out ALL sections of `RUN_RESULT.md` — no empty sections, use "N/A" if truly not applicable
-2. Set the Status field to one of the allowed statuses (see AFK_WORKER_RULES.md)
-3. If you made code changes: `git add` relevant files and `git commit`
-4. Include RUN_RESULT.md: `git add -f RUN_RESULT.md` (force-add — it is gitignored on main)
-5. Do NOT push. Do NOT close GitHub Issues. Your changes live in this worktree for human review.
+2. Ensure the `<!-- SUMMARY -->` block is present at the top
+3. Set the Status field to one of the allowed statuses (see AFK_WORKER_RULES.md)
+4. If you made code changes: `git add` relevant files and `git commit`
+5. Include RUN_RESULT.md: `git add -f RUN_RESULT.md` (force-add — it is gitignored on main)
+6. Do NOT push. Do NOT close GitHub Issues. Your changes live in this worktree for human review.
 
 ## Critical Rules
 
