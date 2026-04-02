@@ -190,6 +190,12 @@ INVESTIGATE → stage guidance → IMPLEMENT → merge → VERIFY → close
 
 Or for simple issues: `IMPLEMENT → merge → close`
 
+### Stale Prompt Files After Main Updates
+
+Worktrees branch from main at run time. If you update `.dangeresque/` prompt files on main (between dispatching a run and merging it), the worktree has old versions. On merge, git may overwrite your newer main files with the stale worktree copies.
+
+**Before merging**, check for drift: `git diff main -- .dangeresque/ .gitignore` in the worktree. If there's a diff on prompt files, restore them: `git checkout main -- .dangeresque/ .gitignore && git commit -m "restore prompt files to match main"` in the worktree, then merge.
+
 ### RUN_RESULT.md Summary Block
 
 Every RUN_RESULT.md must start with a machine-parseable summary:

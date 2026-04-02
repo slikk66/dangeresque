@@ -93,4 +93,5 @@ Before ending your session:
 - **Verify after**: Grep/read to confirm your changes landed correctly.
 - **No band-aids**: Every fix must be researched and confirmed correct.
 - **Stay in scope**: Follow the GitHub Issue. If blocked, stop and report.
+- **Hands off config**: Do not modify `.dangeresque/`, `.claude/`, or `.gitignore` — these are managed by the human on main.
 - **Honest status**: Never say "fixed" or "done". Use the allowed status language.
