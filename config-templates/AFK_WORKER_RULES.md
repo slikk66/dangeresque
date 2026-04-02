@@ -57,7 +57,7 @@ Use ONLY these statuses in RUN_RESULT.md:
 Before ending your session, you MUST:
 
 1. Update `RUN_RESULT.md` with all required sections
-2. `git add` and `git commit` your changes (including RUN_RESULT.md)
+2. `git add` your code changes + `git add -f RUN_RESULT.md` (force-add — gitignored on main), then `git commit`
 3. Your commit message should summarize what was done
 
 ## Stop Conditions

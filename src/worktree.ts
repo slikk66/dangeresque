@@ -44,6 +44,18 @@ export function mergeWorktree(
   branch: string
 ): { success: boolean; message: string } {
   try {
+    // Strip RUN_RESULT.md from worktree branch before merging (it's gitignored on main)
+    const worktreePathForClean = join(projectRoot, ".claude", "worktrees", branch.replace("worktree-", ""));
+    const resultFile = join(worktreePathForClean, RESULT_FILE);
+    if (existsSync(resultFile)) {
+      try {
+        execSync(`git rm -f "${RESULT_FILE}"`, { cwd: worktreePathForClean, encoding: "utf-8", stdio: "pipe" });
+        execSync(`git commit -m "remove ${RESULT_FILE} before merge"`, { cwd: worktreePathForClean, encoding: "utf-8", stdio: "pipe" });
+      } catch {
+        // May not be tracked — fine
+      }
+    }
+
     execSync(`git merge ${branch}`, {
       cwd: projectRoot,
       encoding: "utf-8",

@@ -65,7 +65,7 @@ Before ending your session:
 1. Fill out ALL sections of `RUN_RESULT.md` — no empty sections, use "N/A" if truly not applicable
 2. Set the Status field to one of the allowed statuses (see AFK_WORKER_RULES.md)
 3. If you made code changes: `git add` relevant files and `git commit`
-4. Include `RUN_RESULT.md` in your commit
+4. Include RUN_RESULT.md: `git add -f RUN_RESULT.md` (force-add — it is gitignored on main)
 5. Do NOT push. Do NOT close GitHub Issues. Your changes live in this worktree for human review.
 
 ## Critical Rules
