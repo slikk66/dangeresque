@@ -139,6 +139,11 @@ async function cmdRun(args: string[]) {
 
   const effectiveMode = mode ?? "INVESTIGATE";
 
+  // Auto-generate name from mode + issue when not explicitly provided
+  if (!name && issueNumber) {
+    name = `${effectiveMode.toLowerCase()}-${issueNumber}`;
+  }
+
   console.log("\ndangeresque — starting AFK run");
   console.log(`  Project: ${projectRoot}`);
   if (issueData) {
