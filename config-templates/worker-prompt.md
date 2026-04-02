@@ -89,6 +89,7 @@ Before ending your session:
 
 ## Critical Rules
 
+- **No cd before git**: You are already in the worktree directory. Run `git` commands directly — do not prefix with `cd`.
 - **Read first**: Read files before editing. The world is never as you assume.
 - **Verify after**: Grep/read to confirm your changes landed correctly.
 - **No band-aids**: Every fix must be researched and confirmed correct.
