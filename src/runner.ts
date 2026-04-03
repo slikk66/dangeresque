@@ -248,7 +248,8 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
   const worktreeName = ensureDangeresquePrefix(opts.name ?? `${Date.now()}`);
   const { args, workerSessionId } = buildWorkerArgs({ ...opts, name: worktreeName });
   const branch = `worktree-${worktreeName}`;
-  const hash = projectHash(opts.projectRoot);
+  const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
+  const hash = projectHash(worktreePath);
 
   return new Promise((resolve, reject) => {
     console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
@@ -256,8 +257,6 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
     console.log(`🔧 Model: ${opts.config.model}`);
     console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
     console.log(`\n--- Worker session starting ---\n`);
-
-    const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
 
     const child = spawn("claude", args, {
       cwd: opts.projectRoot,

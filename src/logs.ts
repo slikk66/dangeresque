@@ -1,7 +1,7 @@
 import { createReadStream, existsSync, statSync, watch } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { CLAUDE_PROJECTS_DIR } from "./config.js";
+import { CLAUDE_PROJECTS_DIR, projectHash } from "./config.js";
 import type { PidInfo } from "./worktree.js";
 
 // --- ANSI colors (respects NO_COLOR) ---
@@ -24,10 +24,20 @@ function truncate(s: string, max = 200): string {
 
 // --- Session path resolution ---
 
-export function resolveSessionPath(pidInfo: PidInfo, phase: "worker" | "review"): string | null {
+export function resolveSessionPath(pidInfo: PidInfo, phase: "worker" | "review", worktreePath?: string): string | null {
   const sessionId = phase === "review" ? pidInfo.reviewSessionId : pidInfo.workerSessionId;
-  if (!sessionId || !pidInfo.projectHash) return null;
-  return join(CLAUDE_PROJECTS_DIR, pidInfo.projectHash, `${sessionId}.jsonl`);
+  if (!sessionId) return null;
+
+  // Try stored hash first, then fall back to worktree path hash
+  if (pidInfo.projectHash) {
+    const p = join(CLAUDE_PROJECTS_DIR, pidInfo.projectHash, `${sessionId}.jsonl`);
+    if (existsSync(p)) return p;
+  }
+  if (worktreePath) {
+    const p = join(CLAUDE_PROJECTS_DIR, projectHash(worktreePath), `${sessionId}.jsonl`);
+    if (existsSync(p)) return p;
+  }
+  return null;
 }
 
 // --- JSONL line formatter ---

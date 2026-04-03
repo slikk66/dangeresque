@@ -258,7 +258,7 @@ async function cmdLogs(args: string[]) {
   }
 
   const phase = review ? "review" : "worker";
-  const sessionPath = resolveSessionPath(pidInfo, phase);
+  const sessionPath = resolveSessionPath(pidInfo, phase, target.path);
   if (!sessionPath) {
     console.error(`No ${phase} session ID tracked for this run`);
     process.exit(1);
