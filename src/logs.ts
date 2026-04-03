@@ -171,12 +171,12 @@ export async function tailLog(opts: TailOptions): Promise<void> {
   }
 
   // Keep process alive until watcher closes or ctrl-c
+  process.on("SIGINT", () => {
+    watcher.close();
+    process.exit(0);
+  });
   await new Promise<void>((resolve) => {
     watcher.on("close", resolve);
-    process.on("SIGINT", () => {
-      watcher.close();
-      resolve();
-    });
   });
 }
 
