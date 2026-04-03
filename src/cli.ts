@@ -258,7 +258,9 @@ async function cmdLogs(args: string[]) {
     process.exit(1);
   }
 
-  const phase = review ? "review" : "worker";
+  // Auto-select review phase if review is running (PID file has review PID)
+  const autoReview = !review && pidInfo.reviewSessionId && target.running;
+  const phase = (review || autoReview) ? "review" : "worker";
   const sessionPath = resolveSessionPath(pidInfo, phase, target.path);
   if (!sessionPath) {
     console.error(`No ${phase} session ID tracked for this run`);
