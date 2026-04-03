@@ -181,7 +181,8 @@ async function cmdRun(args: string[]) {
   if (review && workerResult.exitCode === 0) {
     const reviewResult = await runReview(
       { projectRoot, config, issueData, mode: effectiveMode },
-      workerResult.worktreeName
+      workerResult.worktreeName,
+      workerResult.workerSessionId
     );
     console.log(
       `Review exited with code ${reviewResult.exitCode}`

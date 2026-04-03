@@ -27,6 +27,7 @@ export interface RunResult {
   worktreeName: string;
   branch: string;
   exitCode: number;
+  workerSessionId?: string;
 }
 
 export interface IssueData {
@@ -283,6 +284,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
         worktreeName,
         branch,
         exitCode: code ?? 0,
+        workerSessionId,
       });
     });
   });
@@ -290,7 +292,8 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
 
 export function runReview(
   opts: RunOptions,
-  worktreeName: string
+  worktreeName: string,
+  workerSessionId?: string
 ): Promise<RunResult> {
   const { args, reviewSessionId } = buildReviewArgs(opts, worktreeName);
   const branch = `worktree-${worktreeName}`;
@@ -305,14 +308,19 @@ export function runReview(
       env: { ...process.env },
     });
 
-    // Store review session ID in existing PID file
-    updatePidFile(worktreePath, { reviewSessionId });
+    // Write PID file for review process (worker's PID file was removed on close)
+    if (child.pid) {
+      const hash = projectHash(worktreePath);
+      writePidFile(worktreePath, child.pid, { reviewSessionId, workerSessionId, projectHash: hash });
+    }
 
     child.on("error", (err: Error) => {
+      removePidFile(worktreePath);
       reject(new Error(`Failed to start claude review: ${err.message}`));
     });
 
     child.on("close", (code: number | null) => {
+      removePidFile(worktreePath);
       resolve({
         worktreeName,
         branch,

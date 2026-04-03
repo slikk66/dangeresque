@@ -9,9 +9,9 @@ export const RESULT_FILE = "RUN_RESULT.md";
 export const PID_FILE = ".dangeresque.pid";
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
-/** Convert absolute path to claude project hash (e.g. /Users/foo/bar → -Users-foo-bar) */
+/** Convert absolute path to claude project hash (e.g. /Users/foo/.bar → -Users-foo--bar) */
 export function projectHash(cwd: string): string {
-  return cwd.replace(/\//g, "-");
+  return cwd.replace(/[/.]/g, "-");
 }
 
 export interface DangeresqueConfig {
