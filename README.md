@@ -131,7 +131,7 @@ Options:
   --no-review         Skip the review pass
   --interactive       Run interactively instead of headless (for debugging)
   --model <model>     Override model (default: claude-opus-4-6)
-  --effort <level>    Override effort (default: high) [low, medium, high, max]
+  --effort <level>    Override effort (default: max) [low, medium, high, max]
 ```
 
 After completion, posts the full RUN_RESULT.md as a comment on the GitHub Issue. The run result is archived locally to `.dangeresque/runs/` when you later `merge` or `discard` the worktree.
@@ -337,7 +337,7 @@ dangeresque clean --issue 63             # Prune after closing
 | ----------------- | -------- | -------------------- | ---------------------------------------------- |
 | `model`           | string   | `"claude-opus-4-6"`  | Claude model ID                                |
 | `permissionMode`  | string   | `"acceptEdits"`      | Claude Code permission mode                    |
-| `effort`          | string   | `"high"`             | Effort level: low, medium, high, max           |
+| `effort`          | string   | `"max"`             | Effort level: low, medium, high, max           |
 | `headless`        | boolean  | `true`               | Run with `-p` flag (set false for interactive) |
 | `allowedTools`    | string[] | _(see below)_        | Tools auto-approved without prompting          |
 | `disallowedTools` | string[] | _(see below)_        | Tools hard-blocked from use                    |

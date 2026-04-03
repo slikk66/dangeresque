@@ -34,7 +34,7 @@ Run options:
   --no-review       Skip the review pass
   --interactive     Run interactively (default: headless with -p)
   --model <model>   Override model (default: claude-opus-4-6)
-  --effort <level>  Override effort level (default: high) [low, medium, high, max]
+  --effort <level>  Override effort level (default: max) [low, medium, high, max]
   --help            Show this help
 
 Examples:

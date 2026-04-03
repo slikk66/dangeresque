@@ -19,7 +19,7 @@ export interface DangeresqueConfig {
   model: string;
   /** Permission mode (default: acceptEdits) */
   permissionMode: string;
-  /** Effort level (default: high) */
+  /** Effort level (default: max) */
   effort: string;
   /** Run headless with -p flag (default: true). Set false for interactive mode. */
   headless: boolean;
@@ -38,7 +38,7 @@ export interface DangeresqueConfig {
 const DEFAULT_CONFIG: DangeresqueConfig = {
   model: "claude-opus-4-6",
   permissionMode: "acceptEdits",
-  effort: "high",
+  effort: "max",
   headless: true,
   allowedTools: [
     "Read",
