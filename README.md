@@ -73,7 +73,23 @@ dangeresque run --issue 63
 
 Runs headlessly with `-p` flag. The worker reads the issue, executes the task, writes `RUN_RESULT.md`, and commits. A review session runs automatically after. A macOS notification fires on completion.
 
-### 3. Check results
+### 3. Check on a running session
+
+```bash
+# Pretty-print live session transcript (auto-follows while running)
+dangeresque logs
+
+# Specific worktree
+dangeresque logs investigate-63
+
+# Review pass transcript
+dangeresque logs --review
+
+# Raw JSONL output
+dangeresque logs --raw
+```
+
+### 4. Check results
 
 ```bash
 # From your main Claude session
@@ -88,7 +104,7 @@ dangeresque status
 cd .claude/worktrees/dangeresque-<name> && git diff main
 ```
 
-### 4. Merge or discard
+### 5. Merge or discard
 
 Branch names support shorthand — no need to type the full `worktree-dangeresque-` prefix:
 
@@ -121,6 +137,31 @@ Options:
 After completion, posts the full RUN_RESULT.md as a comment on the GitHub Issue. The run result is archived locally to `.dangeresque/runs/` when you later `merge` or `discard` the worktree.
 
 **Comment filtering:** The worker prompt includes the issue body + all `[staged]` comments + last 3 human comments. Old `[dangeresque]` run result comments are skipped — the worker gets prior run context from the local archive instead.
+
+### `dangeresque logs`
+
+Pretty-print Claude Code session transcripts. Reads the JSONL session files that Claude Code already stores locally.
+
+```
+Options:
+  [branch]       Target worktree (default: latest by commit timestamp)
+  -f, --follow   Follow mode — tail new output (default when worker is RUNNING)
+  --review       Show review session instead of worker
+  --raw          Output raw JSONL without formatting
+```
+
+Shows color-coded output: `[assistant]` messages, `[tool]` calls with args, `[result]` summaries, `[error]` messages. Respects `NO_COLOR` env var.
+
+```bash
+# Peek at a long-running session from another terminal
+dangeresque logs
+
+# Post-mortem: what did the worker do?
+dangeresque logs investigate-63
+
+# Pipe raw JSONL for custom processing
+dangeresque logs --raw | jq '.message.content[]?.text'
+```
 
 ### `dangeresque results`
 
@@ -373,8 +414,9 @@ The name is intentional — running agents on your host filesystem without Docke
 ```
 dangeresque/
 ├── src/
-│   ├── cli.ts        # CLI: run, results, stage, status, merge, discard, clean, init
+│   ├── cli.ts        # CLI: run, logs, results, stage, status, merge, discard, clean, init
 │   ├── config.ts     # Load/validate .dangeresque/ config
+│   ├── logs.ts       # JSONL session parser, pretty-printer, tail/follow
 │   ├── runner.ts     # Assemble Claude CLI flags, spawn worker + review, post comments, filter comments
 │   ├── worktree.ts   # List/merge/discard worktrees, archive results, resolve branch shorthand
 │   ├── init.ts       # Scaffold config, copy skills, merge hooks, update .gitignore
