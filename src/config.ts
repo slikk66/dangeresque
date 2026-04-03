@@ -5,6 +5,7 @@ export const CONFIG_DIR = ".dangeresque";
 export const RUNS_DIR = "runs";
 export const TASK_FILE = "NEXT_TASK.md";
 export const RESULT_FILE = "RUN_RESULT.md";
+export const PID_FILE = ".dangeresque.pid";
 
 export interface DangeresqueConfig {
   /** Model to use (default: claude-opus-4-6) */

@@ -7,7 +7,7 @@ import {
   TASK_FILE,
   RESULT_FILE,
 } from "./config.js";
-import { getLatestArchivedRun } from "./worktree.js";
+import { getLatestArchivedRun, writePidFile, removePidFile } from "./worktree.js";
 
 export interface RunOptions {
   projectRoot: string;
@@ -250,17 +250,29 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
     console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
     console.log(`\n--- Worker session starting ---\n`);
 
+    const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
+
     const child = spawn("claude", args, {
       cwd: opts.projectRoot,
       stdio: "inherit",
       env: { ...process.env },
     });
 
+    // Write PID file once spawned (worktree may not exist yet — write after short delay)
+    if (child.pid) {
+      // Worktree is created by claude CLI; wait briefly for it to exist
+      setTimeout(() => {
+        try { writePidFile(worktreePath, child.pid!); } catch { /* worktree not ready yet — ok */ }
+      }, 3000);
+    }
+
     child.on("error", (err: Error) => {
+      removePidFile(worktreePath);
       reject(new Error(`Failed to start claude: ${err.message}`));
     });
 
     child.on("close", (code: number | null) => {
+      removePidFile(worktreePath);
       resolve({
         worktreeName,
         branch,

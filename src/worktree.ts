@@ -1,12 +1,20 @@
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, copyFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, rmSync } from "node:fs";
 import { join, basename } from "node:path";
-import { CONFIG_DIR, RUNS_DIR, RESULT_FILE } from "./config.js";
+import { CONFIG_DIR, RUNS_DIR, RESULT_FILE, PID_FILE } from "./config.js";
+
+export interface PidInfo {
+  pid: number;
+  startedAt: number; // epoch ms
+}
 
 export interface WorktreeInfo {
   path: string;
   branch: string;
   head: string;
+  commitEpoch: number;
+  pidInfo?: PidInfo;
+  running: boolean;
 }
 
 export function listWorktrees(projectRoot: string): WorktreeInfo[] {
@@ -32,11 +40,52 @@ export function listWorktrees(projectRoot: string): WorktreeInfo[] {
 
     // Include all Claude Code worktrees (they live under .claude/worktrees/)
     if (path.includes(".claude/worktrees/")) {
-      worktrees.push({ path, branch, head });
+      let commitEpoch = 0;
+      try {
+        const ts = execSync(`git log -1 --format=%ct ${head}`, {
+          cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+        }).trim();
+        commitEpoch = parseInt(ts, 10) || 0;
+      } catch { /* fallback to 0 */ }
+
+      // Check PID file for running state
+      const { pidInfo, running } = readPidState(path);
+      worktrees.push({ path, branch, head, commitEpoch, pidInfo, running });
     }
   }
 
   return worktrees;
+}
+
+// --- PID file management ---
+
+function readPidState(worktreePath: string): { pidInfo?: PidInfo; running: boolean } {
+  const pidPath = join(worktreePath, PID_FILE);
+  if (!existsSync(pidPath)) return { running: false };
+
+  try {
+    const pidInfo: PidInfo = JSON.parse(readFileSync(pidPath, "utf-8"));
+    // Check if process is alive
+    try {
+      process.kill(pidInfo.pid, 0);
+      return { pidInfo, running: true };
+    } catch {
+      return { pidInfo, running: false };
+    }
+  } catch {
+    return { running: false };
+  }
+}
+
+export function writePidFile(worktreePath: string, pid: number): void {
+  const pidPath = join(worktreePath, PID_FILE);
+  const info: PidInfo = { pid, startedAt: Date.now() };
+  writeFileSync(pidPath, JSON.stringify(info));
+}
+
+export function removePidFile(worktreePath: string): void {
+  const pidPath = join(worktreePath, PID_FILE);
+  if (existsSync(pidPath)) rmSync(pidPath);
 }
 
 /**
@@ -223,11 +272,26 @@ export function mergeWorktree(
       }
     }
 
-    execSync(`git merge ${branch}`, {
+    const headBefore = execSync("git rev-parse HEAD", {
+      cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+    }).trim();
+
+    const mergeOutput = execSync(`git merge ${branch}`, {
       cwd: projectRoot,
       encoding: "utf-8",
       stdio: "pipe",
     });
+
+    const headAfter = execSync("git rev-parse HEAD", {
+      cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+    }).trim();
+
+    if (headBefore === headAfter) {
+      return {
+        success: false,
+        message: `Merge had no effect — HEAD unchanged (${headBefore.slice(0, 8)}). git said: "${mergeOutput.trim()}". Worktree NOT cleaned up.`,
+      };
+    }
 
     // Clean up worktree and branch
     const worktreePath = join(projectRoot, ".claude", "worktrees", branch.replace("worktree-", ""));
@@ -324,8 +388,8 @@ export function getWorktreeResults(
   let targetWorktree: WorktreeInfo;
 
   if (branchOrLatest === "latest") {
-    // Latest = last in list (most recently created)
-    targetWorktree = worktrees[worktrees.length - 1];
+    // Latest = most recent commit timestamp
+    targetWorktree = worktrees.reduce((a, b) => a.commitEpoch >= b.commitEpoch ? a : b);
   } else {
     const found = worktrees.find(
       (wt) => wt.branch === branchOrLatest || wt.path.includes(branchOrLatest)

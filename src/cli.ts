@@ -217,6 +217,15 @@ async function cmdRun(args: string[]) {
   console.log("=".repeat(60));
 }
 
+function formatElapsed(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
 function cmdStatus() {
   const projectRoot = resolveProjectRoot();
   const worktrees = listWorktrees(projectRoot);
@@ -228,7 +237,15 @@ function cmdStatus() {
 
   console.log(`Active dangeresque worktrees (${worktrees.length}):\n`);
   for (const wt of worktrees) {
-    console.log(`  Branch: ${wt.branch}`);
+    let state = "IDLE";
+    if (wt.running && wt.pidInfo) {
+      const elapsed = formatElapsed(Date.now() - wt.pidInfo.startedAt);
+      state = `RUNNING (pid ${wt.pidInfo.pid}, ${elapsed} elapsed)`;
+    } else if (wt.pidInfo && !wt.running) {
+      state = "IDLE (worker exited)";
+    }
+
+    console.log(`  Branch: ${wt.branch}  ${state}`);
     console.log(`  Path:   ${wt.path}`);
     console.log(`  HEAD:   ${wt.head.slice(0, 8)}`);
     console.log();
