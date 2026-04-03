@@ -1,4 +1,5 @@
 import { spawn, execSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
 import {
@@ -6,8 +7,9 @@ import {
   CONFIG_DIR,
   TASK_FILE,
   RESULT_FILE,
+  projectHash,
 } from "./config.js";
-import { getLatestArchivedRun, writePidFile, removePidFile } from "./worktree.js";
+import { getLatestArchivedRun, writePidFile, updatePidFile, removePidFile } from "./worktree.js";
 
 export interface RunOptions {
   projectRoot: string;
@@ -56,7 +58,7 @@ export function fetchIssue(
   };
 }
 
-function buildWorkerArgs(opts: RunOptions): string[] {
+function buildWorkerArgs(opts: RunOptions): { args: string[]; workerSessionId: string } {
   const { config, projectRoot, name } = opts;
   const worktreeName = name ?? `dangeresque-${Date.now()}`;
   const configDir = join(projectRoot, CONFIG_DIR);
@@ -93,8 +95,10 @@ function buildWorkerArgs(opts: RunOptions): string[] {
     args.push("--disallowed-tools", ...config.disallowedTools);
   }
 
-  // Session name for easy identification
+  // Session name + ID for identification and log retrieval
   args.push("--name", `dangeresque-worker-${worktreeName}`);
+  const workerSessionId = randomUUID();
+  args.push("--session-id", workerSessionId);
 
   // Initial prompt: issue-driven or file-driven
   const mode = opts.mode ?? "INVESTIGATE";
@@ -151,10 +155,10 @@ function buildWorkerArgs(opts: RunOptions): string[] {
     );
   }
 
-  return args;
+  return { args, workerSessionId };
 }
 
-function buildReviewArgs(opts: RunOptions, worktreeName: string): string[] {
+function buildReviewArgs(opts: RunOptions, worktreeName: string): { args: string[]; reviewSessionId: string } {
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
   const headless = config.headless;
@@ -192,6 +196,8 @@ function buildReviewArgs(opts: RunOptions, worktreeName: string): string[] {
   args.push("--append-system-prompt-file", reviewPromptPath);
 
   args.push("--name", `dangeresque-review-${worktreeName}`);
+  const reviewSessionId = randomUUID();
+  args.push("--session-id", reviewSessionId);
 
   if (opts.issueData) {
     const { issueData } = opts;
@@ -213,7 +219,7 @@ function buildReviewArgs(opts: RunOptions, worktreeName: string): string[] {
     );
   }
 
-  return args;
+  return { args, reviewSessionId };
 }
 
 function ensureDangeresquePrefix(name: string): string {
@@ -240,8 +246,9 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
   checkRemoteBehind(opts.projectRoot);
 
   const worktreeName = ensureDangeresquePrefix(opts.name ?? `${Date.now()}`);
-  const args = buildWorkerArgs({ ...opts, name: worktreeName });
+  const { args, workerSessionId } = buildWorkerArgs({ ...opts, name: worktreeName });
   const branch = `worktree-${worktreeName}`;
+  const hash = projectHash(opts.projectRoot);
 
   return new Promise((resolve, reject) => {
     console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
@@ -262,7 +269,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
     if (child.pid) {
       // Worktree is created by claude CLI; wait briefly for it to exist
       setTimeout(() => {
-        try { writePidFile(worktreePath, child.pid!); } catch { /* worktree not ready yet — ok */ }
+        try { writePidFile(worktreePath, child.pid!, { workerSessionId, projectHash: hash }); } catch { /* worktree not ready yet — ok */ }
       }, 3000);
     }
 
@@ -286,8 +293,9 @@ export function runReview(
   opts: RunOptions,
   worktreeName: string
 ): Promise<RunResult> {
-  const args = buildReviewArgs(opts, worktreeName);
+  const { args, reviewSessionId } = buildReviewArgs(opts, worktreeName);
   const branch = `worktree-${worktreeName}`;
+  const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
 
   return new Promise((resolve, reject) => {
     console.log(`\n--- Review session starting ---\n`);
@@ -297,6 +305,9 @@ export function runReview(
       stdio: "inherit",
       env: { ...process.env },
     });
+
+    // Store review session ID in existing PID file
+    updatePidFile(worktreePath, { reviewSessionId });
 
     child.on("error", (err: Error) => {
       reject(new Error(`Failed to start claude review: ${err.message}`));

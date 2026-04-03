@@ -6,6 +6,9 @@ import { CONFIG_DIR, RUNS_DIR, RESULT_FILE, PID_FILE } from "./config.js";
 export interface PidInfo {
   pid: number;
   startedAt: number; // epoch ms
+  workerSessionId?: string;
+  reviewSessionId?: string;
+  projectHash?: string;
 }
 
 export interface WorktreeInfo {
@@ -77,10 +80,27 @@ function readPidState(worktreePath: string): { pidInfo?: PidInfo; running: boole
   }
 }
 
-export function writePidFile(worktreePath: string, pid: number): void {
+export function writePidFile(worktreePath: string, pid: number, extra?: Partial<PidInfo>): void {
   const pidPath = join(worktreePath, PID_FILE);
-  const info: PidInfo = { pid, startedAt: Date.now() };
+  const info: PidInfo = { pid, startedAt: Date.now(), ...extra };
   writeFileSync(pidPath, JSON.stringify(info));
+}
+
+export function updatePidFile(worktreePath: string, partial: Partial<PidInfo>): void {
+  const pidPath = join(worktreePath, PID_FILE);
+  if (!existsSync(pidPath)) return;
+  try {
+    const existing: PidInfo = JSON.parse(readFileSync(pidPath, "utf-8"));
+    writeFileSync(pidPath, JSON.stringify({ ...existing, ...partial }));
+  } catch { /* ignore */ }
+}
+
+export function readPidFile(worktreePath: string): PidInfo | undefined {
+  const pidPath = join(worktreePath, PID_FILE);
+  if (!existsSync(pidPath)) return undefined;
+  try {
+    return JSON.parse(readFileSync(pidPath, "utf-8"));
+  } catch { return undefined; }
 }
 
 export function removePidFile(worktreePath: string): void {

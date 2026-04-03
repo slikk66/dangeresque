@@ -6,15 +6,17 @@ import {
   resolveProjectRoot,
 } from "./config.js";
 import { runWorker, runReview, fetchIssue, postRunComment } from "./runner.js";
-import { listWorktrees, mergeWorktree, discardWorktree, getWorktreeResults, getArchivedResults, resolveBranch, cleanArchivedRuns } from "./worktree.js";
+import { listWorktrees, mergeWorktree, discardWorktree, getWorktreeResults, getArchivedResults, resolveBranch, cleanArchivedRuns, readPidFile } from "./worktree.js";
 import { initProject } from "./init.js";
 import { stageComment } from "./stage.js";
+import { resolveSessionPath, tailLog } from "./logs.js";
 
 const USAGE = `
 dangeresque — bounded AFK Claude Code runs with human review
 
 Commands:
   run [options]                        Execute worker + review pass
+  logs [branch] [options]              Pretty-print session transcript
   results [--latest | <branch>]        Show run results from a worktree
   results --issue <N> [--all]          Show archived results for an issue
   stage <number> --comment "text"      Add context comment to an issue
@@ -56,6 +58,9 @@ async function main() {
   switch (command) {
     case "run":
       await cmdRun(args.slice(1));
+      break;
+    case "logs":
+      await cmdLogs(args.slice(1));
       break;
     case "results":
       cmdResults(args.slice(1));
@@ -215,6 +220,59 @@ async function cmdRun(args: string[]) {
     `  Discard: dangeresque discard ${workerResult.branch}`
   );
   console.log("=".repeat(60));
+}
+
+async function cmdLogs(args: string[]) {
+  const projectRoot = resolveProjectRoot();
+  const worktrees = listWorktrees(projectRoot);
+
+  if (worktrees.length === 0) {
+    console.error("No active dangeresque worktrees");
+    process.exit(1);
+  }
+
+  const raw = args.includes("--raw");
+  const review = args.includes("--review");
+  const followFlag = args.includes("-f") || args.includes("--follow");
+  const positional = args.find((a) => !a.startsWith("-"));
+
+  // Resolve target worktree
+  let target;
+  if (positional) {
+    const branch = resolveBranch(projectRoot, positional);
+    target = worktrees.find((wt) => wt.branch === branch);
+    if (!target) {
+      console.error(`Worktree not found for branch: ${branch}`);
+      process.exit(1);
+    }
+  } else {
+    // Latest by commit timestamp
+    target = worktrees.reduce((a, b) => a.commitEpoch >= b.commitEpoch ? a : b);
+  }
+
+  // Read PID file for session IDs
+  const pidInfo = readPidFile(target.path);
+  if (!pidInfo) {
+    console.error(`No PID file found in ${target.path} — run predates session tracking`);
+    process.exit(1);
+  }
+
+  const phase = review ? "review" : "worker";
+  const sessionPath = resolveSessionPath(pidInfo, phase);
+  if (!sessionPath) {
+    console.error(`No ${phase} session ID tracked for this run`);
+    process.exit(1);
+  }
+
+  console.error(`Branch: ${target.branch}  Phase: ${phase}  ${target.running ? "RUNNING" : "IDLE"}`);
+
+  const follow = followFlag || target.running;
+  await tailLog({
+    sessionPath,
+    follow,
+    raw,
+    pid: target.running ? pidInfo.pid : undefined,
+  });
 }
 
 function formatElapsed(ms: number): string {

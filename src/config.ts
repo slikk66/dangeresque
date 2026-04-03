@@ -1,11 +1,18 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 
 export const CONFIG_DIR = ".dangeresque";
 export const RUNS_DIR = "runs";
 export const TASK_FILE = "NEXT_TASK.md";
 export const RESULT_FILE = "RUN_RESULT.md";
 export const PID_FILE = ".dangeresque.pid";
+export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
+
+/** Convert absolute path to claude project hash (e.g. /Users/foo/bar → -Users-foo-bar) */
+export function projectHash(cwd: string): string {
+  return cwd.replace(/\//g, "-");
+}
 
 export interface DangeresqueConfig {
   /** Model to use (default: claude-opus-4-6) */
