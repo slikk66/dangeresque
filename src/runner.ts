@@ -220,7 +220,25 @@ function ensureDangeresquePrefix(name: string): string {
   return name.startsWith("dangeresque-") ? name : `dangeresque-${name}`;
 }
 
+function checkRemoteBehind(projectRoot: string): void {
+  try {
+    const ahead = execSync("git rev-list --count origin/HEAD..HEAD", {
+      cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+    }).trim();
+    const count = parseInt(ahead, 10);
+    if (count > 0) {
+      console.warn(
+        `\n⚠️  Local main is ${count} commit${count > 1 ? "s" : ""} ahead of origin. Worktree will branch from origin — run 'git push' first.\n`
+      );
+    }
+  } catch {
+    // Silently ignore — no remote, detached HEAD, etc.
+  }
+}
+
 export function runWorker(opts: RunOptions): Promise<RunResult> {
+  checkRemoteBehind(opts.projectRoot);
+
   const worktreeName = ensureDangeresquePrefix(opts.name ?? `${Date.now()}`);
   const args = buildWorkerArgs({ ...opts, name: worktreeName });
   const branch = `worktree-${worktreeName}`;
