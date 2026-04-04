@@ -66,7 +66,7 @@ export function initProject(projectRoot: string): void {
   // Copy config templates (only if file doesn't exist — don't overwrite config)
   let configCopied = 0;
   for (const file of readdirSync(templatesDir)) {
-    if (file === "claude-settings.json") continue; // handled separately
+    if (file === "claude-settings.json" || file === "CLAUDE.md.sample") continue; // handled separately
     const destPath = join(configDir, file);
     if (!existsSync(destPath)) {
       copyFileSync(join(templatesDir, file), destPath);
@@ -129,7 +129,20 @@ export function initProject(projectRoot: string): void {
     }
   }
 
-  // 3. Copy skills to .claude/skills/
+  // 4. Copy CLAUDE.md.sample to .dangeresque/ for reference
+  const claudeMdSample = join(templatesDir, "CLAUDE.md.sample");
+  const claudeMdSampleDest = join(configDir, "CLAUDE.md.sample");
+  if (existsSync(claudeMdSample)) {
+    copyFileSync(claudeMdSample, claudeMdSampleDest);
+  }
+  const hasClaudeMd = existsSync(join(projectRoot, "CLAUDE.md")) ||
+    existsSync(join(projectRoot, ".claude", "CLAUDE.md"));
+  if (!hasClaudeMd) {
+    console.log(`\nNo CLAUDE.md found — see ${CONFIG_DIR}/CLAUDE.md.sample for a recommended starting point`);
+    console.log("  Copy to CLAUDE.md or .claude/CLAUDE.md and customize for your project");
+  }
+
+  // 5. Copy skills to .claude/skills/
   const skillsSource = join(packageRoot, "skills");
   const skillsDest = join(projectRoot, ".claude", "skills");
 
@@ -151,7 +164,8 @@ export function initProject(projectRoot: string): void {
   }
 
   console.log("\nDone. Next steps:");
-  console.log("  1. Review .dangeresque/ config files and customize for your project");
-  console.log("  2. Run: dangeresque run --issue <number>");
+  console.log("  1. Customize CLAUDE.md with your project's rules (workers read this first)");
+  console.log("  2. Review .dangeresque/ prompts and customize for your project");
+  console.log("  3. Create a GitHub Issue, then: dangeresque run --issue <number>");
   console.log("\nRe-run 'dangeresque init' to refresh skills from the latest version.");
 }
