@@ -34,7 +34,7 @@ export interface IssueData {
   number: number;
   title: string;
   body: string;
-  comments: Array<{ body: string; author: { login: string } }>;
+  comments: Array<{ body: string; author: { login: string }; isMinimized: boolean }>;
 }
 
 export function fetchIssue(
@@ -51,9 +51,10 @@ export function fetchIssue(
     title: data.title,
     body: data.body,
     comments: (data.comments ?? []).map(
-      (c: { body: string; author: { login: string } }) => ({
+      (c: { body: string; author: { login: string }; isMinimized: boolean }) => ({
         body: c.body,
         author: c.author,
+        isMinimized: c.isMinimized,
       })
     ),
   };
@@ -113,11 +114,12 @@ function buildWorkerArgs(opts: RunOptions): { args: string[]; workerSessionId: s
       `# #${issueData.number}: ${issueData.title}\n\n` +
       `${issueData.body}`;
 
-    // Filter comments: staged + last N human comments (skip [dangeresque] run results)
-    const stagedComments = issueData.comments.filter(
+    // Filter comments: skip minimized, then staged + last N human (skip [dangeresque] run results)
+    const visibleComments = issueData.comments.filter(c => !c.isMinimized);
+    const stagedComments = visibleComments.filter(
       (c) => c.body.startsWith("**[staged")
     );
-    const humanComments = issueData.comments.filter(
+    const humanComments = visibleComments.filter(
       (c) => !c.body.startsWith("**[staged") && !c.body.startsWith("**[dangeresque")
     );
     const recentHuman = humanComments.slice(-3);
