@@ -476,31 +476,73 @@ export function getArchivedResults(
   showAll: boolean
 ): string {
   const archived = listArchivedRuns(projectRoot, issueNumber);
-  if (archived.length === 0) {
+
+  // Check for active worktree with results for this issue
+  const worktrees = listWorktrees(projectRoot);
+  const activeWorktree = worktrees.find(
+    (wt) => extractIssueNumber(wt.branch) === issueNumber
+  );
+  const activeResultPath = activeWorktree
+    ? join(activeWorktree.path, RESULT_FILE)
+    : undefined;
+  const hasActiveResult = activeResultPath && existsSync(activeResultPath);
+
+  if (archived.length === 0 && !hasActiveResult) {
     return `No archived runs found for issue #${issueNumber}`;
   }
 
   const lines: string[] = [];
-  lines.push(`Archived runs for issue #${issueNumber} (${archived.length} total)\n`);
 
-  if (showAll) {
-    for (let i = 0; i < archived.length; i++) {
-      const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
-      lines.push(`=== Run ${i + 1}: ${archived[i]} ===`);
-      lines.push(content);
-      lines.push("");
-    }
-  } else {
-    // One-liners for all but latest, full content for latest
-    for (let i = 0; i < archived.length - 1; i++) {
-      const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
-      lines.push(formatRunOneLiner(archived[i], content, i));
-    }
-    if (archived.length > 1) lines.push("");
+  // Show archived runs
+  if (archived.length > 0) {
+    lines.push(`Archived runs for issue #${issueNumber} (${archived.length} total)\n`);
 
-    const latestContent = readArchivedRun(projectRoot, issueNumber, archived[archived.length - 1]);
-    lines.push(`--- Latest: Run ${archived.length} ---`);
-    lines.push(latestContent);
+    if (showAll && !hasActiveResult) {
+      for (let i = 0; i < archived.length; i++) {
+        const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
+        lines.push(`=== Run ${i + 1}: ${archived[i]} ===`);
+        lines.push(content);
+        lines.push("");
+      }
+    } else {
+      // One-liners for archived runs (all of them if active worktree has results)
+      const showUntil = hasActiveResult ? archived.length : archived.length - 1;
+      for (let i = 0; i < showUntil; i++) {
+        const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
+        lines.push(formatRunOneLiner(archived[i], content, i));
+      }
+
+      if (!hasActiveResult) {
+        if (archived.length > 1) lines.push("");
+        const latestContent = readArchivedRun(projectRoot, issueNumber, archived[archived.length - 1]);
+        lines.push(`--- Latest: Run ${archived.length} ---`);
+        lines.push(latestContent);
+      }
+    }
+  }
+
+  // Show active worktree results (takes priority as latest)
+  if (hasActiveResult && activeWorktree) {
+    if (archived.length > 0) lines.push("");
+    lines.push(`--- Active worktree: ${activeWorktree.branch} ---`);
+    lines.push(`Worktree: ${activeWorktree.path}`);
+    lines.push(`Status:   ${activeWorktree.running ? "RUNNING" : "IDLE"}`);
+    lines.push("");
+    lines.push(readFileSync(activeResultPath!, "utf-8"));
+
+    // Diff summary
+    lines.push("");
+    lines.push("--- Diff Summary (vs main) ---");
+    try {
+      const diff = execSync("git diff main --stat", {
+        cwd: activeWorktree.path,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      lines.push(diff.trim() || "No changes.");
+    } catch {
+      lines.push("Could not generate diff summary.");
+    }
   }
 
   return lines.join("\n");

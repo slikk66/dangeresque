@@ -95,7 +95,7 @@ dangeresque logs --raw
 # From your main Claude session
 ! dangeresque results --latest
 
-# Archived results for an issue (after merge/discard)
+# Results for an issue (active worktree + archived)
 dangeresque results --issue 63
 dangeresque results --issue 63 --all
 
@@ -172,12 +172,12 @@ Show run results from active worktrees or the local archive.
 dangeresque results --latest
 dangeresque results investigate-63
 
-# Archived results (after merge/discard)
+# Results by issue (checks active worktree first, then archives)
 dangeresque results --issue 63         # One-line summaries + full latest
 dangeresque results --issue 63 --all   # Full content of all runs
 ```
 
-Active worktree results also show one-line summaries of any prior archived runs for the same issue.
+When an active worktree exists for the issue, `--issue` shows its results (with diff summary) as the latest, with archived runs as one-liners above. Active worktree results via `--latest` also show one-line summaries of any prior archived runs.
 
 ### `dangeresque stage <number> --comment "text" [--mode MODE]`
 
