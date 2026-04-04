@@ -402,7 +402,7 @@ export function getWorktreeResults(
   const worktrees = listWorktrees(projectRoot);
 
   if (worktrees.length === 0) {
-    return "No active dangeresque worktrees found.";
+    return `No active dangeresque worktrees found. (cwd=${process.cwd()})`;
   }
 
   let targetWorktree: WorktreeInfo;

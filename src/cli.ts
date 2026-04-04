@@ -231,7 +231,7 @@ async function cmdLogs(args: string[]) {
   const worktrees = listWorktrees(projectRoot);
 
   if (worktrees.length === 0) {
-    console.error("No active dangeresque worktrees");
+    console.error(`No active dangeresque worktrees (cwd=${process.cwd()})`);
     process.exit(1);
   }
 
@@ -295,7 +295,7 @@ function cmdStatus() {
   const worktrees = listWorktrees(projectRoot);
 
   if (worktrees.length === 0) {
-    console.log("No active dangeresque worktrees");
+    console.log(`No active dangeresque worktrees (cwd=${process.cwd()})`);
     return;
   }
 
