@@ -215,7 +215,7 @@ async function cmdRun(args: string[]) {
   console.log(`  Branch: ${workerResult.branch}`);
   console.log(`\nNext steps:`);
   console.log(
-    `  Review:  cd .claude/worktrees/${workerResult.worktreeName} && git diff main`
+    `  Review:  dangeresque results --latest`
   );
   console.log(
     `  Merge:   dangeresque merge ${workerResult.branch}`

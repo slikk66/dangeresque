@@ -196,11 +196,8 @@ The worker reads the issue + your staged comment + archived investigation result
 ### 7. Review and merge
 
 ```bash
-# Read results
+# Read results (includes RUN_RESULT.md + diff summary vs main)
 ! dangeresque results --latest
-
-# Inspect the actual diff
-cd .claude/worktrees/dangeresque-implement-63 && git diff main
 
 # Discuss with Claude — ask about edge cases, risks, test coverage
 # Then merge when satisfied
