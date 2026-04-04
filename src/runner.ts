@@ -19,7 +19,7 @@ export interface RunOptions {
   review?: boolean;
   /** GitHub Issue number (replaces NEXT_TASK.md) */
   issueData?: IssueData;
-  /** Task mode: INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, PLAYTEST */
+  /** Task mode: INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST */
   mode?: string;
 }
 
@@ -206,19 +206,19 @@ function buildReviewArgs(opts: RunOptions, worktreeName: string): { args: string
     const { issueData } = opts;
     const mode = opts.mode ?? "INVESTIGATE";
     args.push(
-      `You are a skeptical reviewer of an AFK worker run.\n` +
+      `You are an adversarial reviewer of an AFK worker run.\n` +
         `The task was GitHub Issue #${issueData.number}: ${issueData.title}\n` +
         `Mode: ${mode}\n\n` +
-        `Read RUN_RESULT.md and review the changes against the issue requirements. ` +
-        `Check: did the worker address the issue? Is verification honest? Any scope creep? ` +
-        `Append your review findings to RUN_RESULT.md.`
+        `Start by running git diff main to see actual code changes. ` +
+        `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
+        `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
     );
   } else {
     args.push(
-      `You are a skeptical reviewer of an AFK worker run. ` +
-        `Read RUN_RESULT.md and review the changes. ` +
-        `Check: did verification match the task? Is status language honest? Any scope creep? ` +
-        `Append your review findings to RUN_RESULT.md.`
+      `You are an adversarial reviewer of an AFK worker run. ` +
+        `Start by running git diff main to see actual code changes. ` +
+        `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
+        `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
     );
   }
 

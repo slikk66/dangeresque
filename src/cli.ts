@@ -177,8 +177,11 @@ async function cmdRun(args: string[]) {
     `\nWorker exited with code ${workerResult.exitCode}`
   );
 
-  // Review pass
-  if (review && workerResult.exitCode === 0) {
+  // Review pass — skip for modes that don't produce code changes
+  const SKIP_REVIEW_MODES = new Set(["INVESTIGATE", "VERIFY"]);
+  if (review && workerResult.exitCode === 0 && SKIP_REVIEW_MODES.has(effectiveMode)) {
+    console.log(`\nSkipping review (no code changes in ${effectiveMode} mode)`);
+  } else if (review && workerResult.exitCode === 0) {
     const reviewResult = await runReview(
       { projectRoot, config, issueData, mode: effectiveMode },
       workerResult.worktreeName,
