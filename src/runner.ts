@@ -202,6 +202,18 @@ function buildReviewArgs(opts: RunOptions, worktreeName: string): { args: string
   const reviewSessionId = randomUUID();
   args.push("--session-id", reviewSessionId);
 
+  // Capture actual diff stat as ground truth for the reviewer
+  let diffStat = "";
+  try {
+    diffStat = execSync("git diff main --stat", {
+      cwd: join(opts.projectRoot, ".claude", "worktrees", worktreeName),
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    diffStat = "(could not capture diff stat)";
+  }
+
   if (opts.issueData) {
     const { issueData } = opts;
     const mode = opts.mode ?? "INVESTIGATE";
@@ -209,14 +221,18 @@ function buildReviewArgs(opts: RunOptions, worktreeName: string): { args: string
       `You are an adversarial reviewer of an AFK worker run.\n` +
         `The task was GitHub Issue #${issueData.number}: ${issueData.title}\n` +
         `Mode: ${mode}\n\n` +
-        `Start by running git diff main to see actual code changes. ` +
+        `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
+        `Compare this against the worker's claimed file count in RUN_RESULT.md. ` +
+        `Any discrepancy is an automatic FAIL.\n\n` +
+        `Start by running git diff main to see full code changes. ` +
         `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
         `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
     );
   } else {
     args.push(
-      `You are an adversarial reviewer of an AFK worker run. ` +
-        `Start by running git diff main to see actual code changes. ` +
+      `You are an adversarial reviewer of an AFK worker run.\n\n` +
+        `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
+        `Start by running git diff main to see full code changes. ` +
         `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
         `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
     );

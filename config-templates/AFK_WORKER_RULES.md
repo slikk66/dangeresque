@@ -38,6 +38,14 @@ Projects may define additional custom modes in their copy of this file.
 - If you discover a related problem, note it in RUN_RESULT.md under "Risks / Uncertainty" — do not fix it.
 - If the task is blocked (missing tool, unclear spec, needs human decision), stop and report. Do not guess.
 
+## File Scope Enforcement
+
+- **DO NOT modify, delete, or create files outside the scope defined in the GitHub Issue.**
+- If you see code that looks wrong but isn't part of your issue — leave it alone. Note the concern in RUN_RESULT.md under "Observations", do not fix it.
+- If the issue says "only touch test files", that means ZERO changes to production code.
+- **Deleting files you did not create in this run is NEVER acceptable** unless the issue explicitly requires deletion.
+- Your worktree branched from `origin/HEAD` at creation time. Other workers may have merged changes to main since then. Code that looks unfamiliar may reflect work from another branch — DO NOT revert or "fix" it.
+
 ## Status Language
 
 Use ONLY these statuses in RUN_RESULT.md:

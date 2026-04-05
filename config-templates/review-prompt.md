@@ -34,7 +34,7 @@ Verify each of these against the **diff**, not the narrative:
 - Did the worker implement the full issue or just part of it?
 
 ### 5. Claims Check
-- Does the file count in RUN_RESULT.md match the actual diff?
+- **File count integrity**: Run `git diff main --name-only | grep -v RUN_RESULT` and count the results. Compare against the `Files:` line in `<!-- SUMMARY -->`. If they don't match, this is an **automatic FAIL** — the worker is concealing changes.
 - Do test counts (if claimed) match reality? Run tests if feasible.
 - Does the stated status match what the diff shows?
 - Did the worker claim "verified" but skip verification steps?

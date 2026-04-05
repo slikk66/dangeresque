@@ -87,6 +87,13 @@ Before ending your session:
 5. Include RUN_RESULT.md: `git add -f RUN_RESULT.md` (force-add — it is gitignored on main)
 6. Do NOT push. Do NOT close GitHub Issues. Your changes live in this worktree for human review.
 
+## Parallel Worker Awareness
+
+Your worktree branched from `origin/HEAD` at creation time. Other workers may be running simultaneously on different issues, and their changes may have merged to main since your branch was created. If you encounter code that looks different from what you expected:
+- It may reflect work from another branch that already merged
+- DO NOT revert, refactor, or "fix" code outside your issue scope
+- Note observations in RUN_RESULT.md under an "Observations" section if relevant
+
 ## Critical Rules
 
 - **Read first**: Read files before editing. The world is never as you assume.

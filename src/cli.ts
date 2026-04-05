@@ -177,6 +177,28 @@ async function cmdRun(args: string[]) {
     `\nWorker exited with code ${workerResult.exitCode}`
   );
 
+  // Post-worker scope check: flag files changed that aren't mentioned in the issue body
+  if (issueData && workerResult.exitCode === 0) {
+    try {
+      const { execSync } = await import("node:child_process");
+      const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
+      const changedFiles = execSync("git diff main --name-only", {
+        cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+      }).trim().split("\n").filter(f => f && f !== "RUN_RESULT.md");
+
+      const unexpected = changedFiles.filter(f => !issueData.body.includes(f));
+      if (unexpected.length > 0) {
+        console.warn(`\n⚠️  Worker modified files not mentioned in issue body:`);
+        for (const f of unexpected) {
+          console.warn(`   ${f}`);
+        }
+        console.warn(`   Review carefully for scope violations.\n`);
+      }
+    } catch {
+      // Silently ignore — worktree may not exist if worker failed
+    }
+  }
+
   // Review pass — skip for modes that don't produce code changes
   const SKIP_REVIEW_MODES = new Set(["INVESTIGATE", "VERIFY"]);
   if (review && workerResult.exitCode === 0 && SKIP_REVIEW_MODES.has(effectiveMode)) {
