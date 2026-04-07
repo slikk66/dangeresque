@@ -1,7 +1,7 @@
 {
   "name": "dangeresque",
   "version": "0.1.0",
-  "description": "Orchestrate bounded AFK Claude Code runs in git worktrees with human review",
+  "description": "Orchestrate bounded AFK Claude Code or OpenAI Codex runs in git worktrees with human review",
   "type": "module",
   "packageManager": "yarn@4.9.2",
   "bin": "./dist/cli.js",
@@ -16,6 +16,7 @@
   },
   "keywords": [
     "claude",
+    "codex",
     "ai",
     "agent",
     "worktree",

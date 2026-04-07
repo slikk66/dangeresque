@@ -4,6 +4,7 @@ import {
   loadConfig,
   validateSetup,
   resolveProjectRoot,
+  type Engine,
 } from "./config.js";
 import { runWorker, runReview, fetchIssue, postRunComment } from "./runner.js";
 import { listWorktrees, mergeWorktree, discardWorktree, getWorktreeResults, getArchivedResults, resolveBranch, cleanArchivedRuns, readPidFile } from "./worktree.js";
@@ -11,8 +12,17 @@ import { initProject } from "./init.js";
 import { stageComment } from "./stage.js";
 import { resolveSessionPath, tailLog } from "./logs.js";
 
-const USAGE = `
-dangeresque — bounded AFK Claude Code runs with human review
+function usageForEngine(engine: Engine): string {
+  const engineLine = engine === "codex"
+    ? "Engine: codex • codex exec --full-auto --json\nModel: gpt-5.4 (override with --model)"
+    : "Engine: claude (default) • headless -p mode";
+  const engineRunNotes = engine === "codex"
+    ? ""
+    : "  --effort <level>  Override effort level (default: max) [low, medium, high, max]\n";
+
+  return `
+dangeresque — bounded AFK Claude Code or Codex runs with human review
+${engineLine}
 
 Commands:
   run [options]                        Execute worker + review pass
@@ -33,8 +43,8 @@ Run options:
   --name <name>     Custom worktree name (default: dangeresque-<timestamp>)
   --no-review       Skip the review pass
   --interactive     Run interactively (default: headless with -p)
-  --model <model>   Override model (default: claude-opus-4-6)
-  --effort <level>  Override effort level (default: max) [low, medium, high, max]
+  --model <model>   Override model (default: ${engine === "codex" ? "gpt-5.4" : "claude-opus-4-6"})
+${engineRunNotes}  Advanced: --engine <name> (hidden), DANGERESQUE_ENGINE env var
   --help            Show this help
 
 Examples:
@@ -44,12 +54,25 @@ Examples:
   dangeresque stage 63 --comment "root cause confirmed" --mode IMPLEMENT
   dangeresque init
 `;
+}
+
+function currentHelpEngine(): Engine {
+  const envEngine = process.env.DANGERESQUE_ENGINE?.toLowerCase();
+  if (envEngine === "claude" || envEngine === "codex") return envEngine;
+
+  try {
+    const config = loadConfig(resolveProjectRoot());
+    return config.engine;
+  } catch {
+    return "claude";
+  }
+}
 
 async function main() {
   const args = process.argv.slice(2);
 
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
-    console.log(USAGE);
+    console.log(usageForEngine(currentHelpEngine()));
     process.exit(0);
   }
 
@@ -85,7 +108,7 @@ async function main() {
       break;
     default:
       console.error(`Unknown command: ${command}`);
-      console.log(USAGE);
+      console.log(usageForEngine(currentHelpEngine()));
       process.exit(1);
   }
 }
@@ -103,12 +126,17 @@ async function cmdRun(args: string[]) {
   }
 
   const config = loadConfig(projectRoot);
+  const envEngine = process.env.DANGERESQUE_ENGINE?.toLowerCase();
+  if (envEngine === "claude" || envEngine === "codex") {
+    config.engine = envEngine;
+  }
 
   // Parse CLI overrides
   let name: string | undefined;
   let review = true;
   let issueNumber: number | undefined;
   let mode: string | undefined;
+  let effortFlagUsed = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--name" && args[i + 1]) {
@@ -119,7 +147,16 @@ async function cmdRun(args: string[]) {
       config.headless = false;
     } else if (args[i] === "--model" && args[i + 1]) {
       config.model = args[++i];
+    // Hidden advanced override flag (kept for power users)
+    } else if (args[i] === "--engine" && args[i + 1]) {
+      const engine = args[++i].toLowerCase();
+      if (engine !== "claude" && engine !== "codex") {
+        console.error("--engine must be one of: claude, codex");
+        process.exit(1);
+      }
+      config.engine = engine;
     } else if (args[i] === "--effort" && args[i + 1]) {
+      effortFlagUsed = true;
       config.effort = args[++i];
     } else if (args[i] === "--issue" && args[i + 1]) {
       issueNumber = parseInt(args[++i], 10);
@@ -149,6 +186,10 @@ async function cmdRun(args: string[]) {
 
   const effectiveMode = mode ?? "INVESTIGATE";
 
+  if (config.engine === "codex" && effortFlagUsed) {
+    console.warn("⚠️  --effort is ignored in codex mode");
+  }
+
   // Auto-generate name from mode + issue when not explicitly provided
   if (!name && issueNumber) {
     name = `${effectiveMode.toLowerCase()}-${issueNumber}`;
@@ -160,6 +201,7 @@ async function cmdRun(args: string[]) {
     console.log(`  Issue: #${issueData.number} — ${issueData.title}`);
     console.log(`  Mode: ${effectiveMode}`);
   }
+  console.log(`  Engine: ${config.engine}`);
   console.log(`  Model: ${config.model} (effort: ${config.effort})`);
   console.log(`  Mode: ${config.headless ? "headless (-p)" : "interactive"}`);
   console.log(`  Review pass: ${review ? "yes" : "no"}`);

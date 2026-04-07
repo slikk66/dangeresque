@@ -9,19 +9,23 @@ export const RESULT_FILE = "RUN_RESULT.md";
 export const PID_FILE = ".dangeresque.pid";
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
+export type Engine = "claude" | "codex";
+
 /** Convert absolute path to claude project hash (e.g. /Users/foo/.bar → -Users-foo--bar) */
 export function projectHash(cwd: string): string {
   return cwd.replace(/[/.]/g, "-");
 }
 
 export interface DangeresqueConfig {
-  /** Model to use (default: claude-opus-4-6) */
+  /** Execution engine (default: claude) */
+  engine: Engine;
+  /** Model to use */
   model: string;
-  /** Permission mode (default: acceptEdits) */
+  /** Permission mode (engine-specific) */
   permissionMode: string;
-  /** Effort level (default: max) */
+  /** Effort level (engine-specific) */
   effort: string;
-  /** Run headless with -p flag (default: true). Set false for interactive mode. */
+  /** Run headless (default: true). Set false for interactive mode where supported. */
   headless: boolean;
   /** Allowed tools patterns */
   allowedTools: string[];
@@ -36,6 +40,7 @@ export interface DangeresqueConfig {
 }
 
 const DEFAULT_CONFIG: DangeresqueConfig = {
+  engine: "claude",
   model: "claude-opus-4-6",
   permissionMode: "acceptEdits",
   effort: "max",
@@ -91,6 +96,10 @@ export function validateSetup(projectRoot: string): ValidationResult {
   }
 
   const config = loadConfig(projectRoot);
+
+  if (!["claude", "codex"].includes(config.engine)) {
+    errors.push(`Invalid engine '${config.engine}' (expected 'claude' or 'codex')`);
+  }
 
   const workerPromptPath = join(configDir, config.workerPrompt);
   if (!existsSync(workerPromptPath)) {

@@ -1,6 +1,6 @@
 # Dangeresque
 
-Run Claude Code AFK in isolated git worktrees with automatic review and human merge control.
+Run Claude Code or OpenAI Codex AFK in isolated git worktrees with automatic review and human merge control.
 
 ## The Problem
 
@@ -37,7 +37,9 @@ No code touches your main branch until you explicitly merge.
 ## Requirements
 
 - Node.js >= 22
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- At least one engine CLI installed and authenticated:
+  - **Claude Code**: install/auth per Anthropic docs
+  - **OpenAI Codex CLI**: `npm install -g @openai/codex` and configure `OPENAI_API_KEY`
 - [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated
 - git
 - jq (for notification hooks)
@@ -245,9 +247,45 @@ Options:
   --effort <level>    Override effort (default: max) [low, medium, high, max]
 ```
 
+### Switching Engines
+
+Dangeresque now supports two interchangeable execution engines:
+
+- `claude` (default): Uses `claude` CLI with `--worktree` and native Claude session tracking.
+- `codex`: Uses `codex exec --json --full-auto` and runs inside the same isolated worktree model.
+
+Set the engine in `.dangeresque/config.json` (recommended):
+
+```bash
+{
+  "engine": "codex",
+  "model": "gpt-5.4"
+}
+```
+
+Or use an environment override for a single run:
+
+```bash
+DANGERESQUE_ENGINE=codex dangeresque run --issue 63
+```
+
+Help output adapts to the active engine (`config.engine` or `DANGERESQUE_ENGINE`): Claude help shows `--effort`, while Codex help omits it because `--effort` is Claude-only and ignored in Codex mode.
+
+### Codex option mapping
+
+- `model` maps directly to `codex exec --model <model>`.
+- `effort` has no direct Codex CLI flag; dangeresque passes it as an explicit prompt hint for planning depth.
+- Codex runs use `--full-auto` (safe automation mode) and **do not** use dangerous bypass flags.
+
+### Dynamic help output
+
+- Help text adapts to the active engine (`config.engine` or `DANGERESQUE_ENGINE`).
+- Claude help emphasizes `--effort`.
+- Codex help de-emphasizes effort and shows Codex-native execution notes.
+
 ### `dangeresque logs`
 
-Pretty-print Claude Code session transcripts.
+Pretty-print engine transcripts (Claude or Codex JSONL).
 
 ```
 Options:
@@ -336,8 +374,9 @@ This keeps the prompt focused. Use `dangeresque stage` to add guidance the worke
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `model` | string | `"claude-opus-4-6"` | Claude model ID |
-| `permissionMode` | string | `"acceptEdits"` | Claude Code permission mode |
+| `engine` | string | `"claude"` | Execution engine (`claude` or `codex`) |
+| `model` | string | `"claude-opus-4-6"` | Model ID passed to the selected engine |
+| `permissionMode` | string | `"acceptEdits"` | Sandbox/permission mode for the selected engine |
 | `effort` | string | `"max"` | Effort level: low, medium, high, max |
 | `headless` | boolean | `true` | Run with `-p` flag (set false for interactive) |
 | `allowedTools` | string[] | _(see below)_ | Tools auto-approved without prompting |
@@ -370,6 +409,12 @@ Beyond policy, host-native gives you:
 - **Granular permissions** — `acceptEdits` mode with explicit `allowedTools`/`disallowedTools` instead of `--dangerously-skip-permissions`
 
 The safety model is different:
+
+## MCP setup (Claude vs Codex)
+
+- **Claude Code** MCP uses your existing Claude setup.
+- **Codex** MCP is configured in `~/.codex/config.toml` under `[mcp_servers]`.
+- Keep entries aligned across both tools if you want equivalent MCP behavior for both engines.
 
 | Layer | Docker-based | Dangeresque |
 |-------|-------------|-------------|

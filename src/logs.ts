@@ -4,8 +4,6 @@ import { createInterface } from "node:readline";
 import { CLAUDE_PROJECTS_DIR, projectHash } from "./config.js";
 import type { PidInfo } from "./worktree.js";
 
-// --- ANSI colors (respects NO_COLOR) ---
-
 const useColor = !process.env.NO_COLOR;
 const c = {
   cyan: (s: string) => useColor ? `\x1b[36m${s}\x1b[0m` : s,
@@ -22,13 +20,13 @@ function truncate(s: string, max = 200): string {
   return oneLine.length > max ? oneLine.slice(0, max) + "..." : oneLine;
 }
 
-// --- Session path resolution ---
-
 export function resolveSessionPath(pidInfo: PidInfo, phase: "worker" | "review", worktreePath?: string): string | null {
+  const trackedLogPath = phase === "review" ? pidInfo.reviewLogPath : pidInfo.workerLogPath;
+  if (trackedLogPath && existsSync(trackedLogPath)) return trackedLogPath;
+
   const sessionId = phase === "review" ? pidInfo.reviewSessionId : pidInfo.workerSessionId;
   if (!sessionId) return null;
 
-  // Try stored hash first, then fall back to worktree path hash
   if (pidInfo.projectHash) {
     const p = join(CLAUDE_PROJECTS_DIR, pidInfo.projectHash, `${sessionId}.jsonl`);
     if (existsSync(p)) return p;
@@ -40,15 +38,9 @@ export function resolveSessionPath(pidInfo: PidInfo, phase: "worker" | "review",
   return null;
 }
 
-// --- JSONL line formatter ---
-
-export function formatLine(line: string): string | null {
-  let data: any;
-  try { data = JSON.parse(line); } catch { return null; }
-
+function formatClaudeLine(data: any): string | null {
   const type = data.type;
 
-  // Skip noise
   if (["permission-mode", "file-history-snapshot", "attachment", "queue-operation"].includes(type)) {
     return null;
   }
@@ -76,7 +68,6 @@ export function formatLine(line: string): string | null {
 
   if (type === "user" && data.message?.content) {
     const content = data.message.content;
-    // Tool results
     if (Array.isArray(content)) {
       const results: string[] = [];
       for (const block of content) {
@@ -94,7 +85,6 @@ export function formatLine(line: string): string | null {
       }
       return results.length > 0 ? results.join("\n") : null;
     }
-    // User prompt
     if (typeof content === "string") {
       return `${c.magenta("[prompt]")} ${truncate(content)}`;
     }
@@ -110,7 +100,41 @@ export function formatLine(line: string): string | null {
   return null;
 }
 
-// --- Log tailing ---
+function formatCodexLine(data: any): string | null {
+  const event = data.type ?? data.event ?? "event";
+
+  if (event.includes("plan") && (data.step || data.content)) {
+    return `${c.magenta("[plan]")} ${truncate(String(data.step ?? data.content), 180)}`;
+  }
+  if (event.includes("tool") || event.includes("exec") || event.includes("command")) {
+    const detail = data.command ?? data.name ?? data.output ?? data.content ?? "";
+    return `${c.yellow("[tool]")} ${c.bold(event)} ${c.dim(truncate(String(detail), 180))}`;
+  }
+  if (data.error) {
+    return `${c.red("[error]")} ${truncate(String(data.error), 180)}`;
+  }
+
+  const msg = data.msg ?? data.output ?? data.content ?? data.text;
+  if (msg) {
+    return `${c.cyan(`[${event}]`)} ${truncate(String(msg), 180)}`;
+  }
+
+  return `${c.dim("[event]")} ${truncate(JSON.stringify(data), 180)}`;
+}
+
+export function formatLine(line: string): string | null {
+  let data: any;
+  try { data = JSON.parse(line); } catch { return null; }
+
+  const maybeClaude = formatClaudeLine(data);
+  if (maybeClaude) return maybeClaude;
+
+  if (data.type || data.event || data.msg || data.output || data.error) {
+    return formatCodexLine(data);
+  }
+
+  return null;
+}
 
 export interface TailOptions {
   sessionPath: string;
@@ -127,12 +151,10 @@ export async function tailLog(opts: TailOptions): Promise<void> {
     process.exit(1);
   }
 
-  // Print existing content
   await printFile(sessionPath, raw);
 
   if (!follow) return;
 
-  // Follow mode: watch for changes
   let offset = statSync(sessionPath).size;
 
   const watcher = watch(sessionPath, () => {
@@ -156,13 +178,11 @@ export async function tailLog(opts: TailOptions): Promise<void> {
     });
   });
 
-  // Poll PID to detect when session ends
   if (pid) {
     const pollInterval = setInterval(() => {
       try {
         process.kill(pid, 0);
       } catch {
-        // Process gone
         clearInterval(pollInterval);
         watcher.close();
         console.log(c.dim("\n--- session ended ---"));
@@ -170,7 +190,6 @@ export async function tailLog(opts: TailOptions): Promise<void> {
     }, 3000);
   }
 
-  // Keep process alive until watcher closes or ctrl-c
   process.on("SIGINT", () => {
     watcher.close();
     process.exit(0);

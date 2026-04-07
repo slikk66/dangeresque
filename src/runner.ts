@@ -1,7 +1,7 @@
 import { spawn, execSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { readFileSync, existsSync, mkdirSync, createWriteStream } from "node:fs";
 import {
   type DangeresqueConfig,
   CONFIG_DIR,
@@ -9,7 +9,7 @@ import {
   RESULT_FILE,
   projectHash,
 } from "./config.js";
-import { getLatestArchivedRun, writePidFile, updatePidFile, removePidFile } from "./worktree.js";
+import { getLatestArchivedRun, writePidFile, updatePidFile, removePidFile, readPidFile } from "./worktree.js";
 
 export interface RunOptions {
   projectRoot: string;
@@ -60,49 +60,7 @@ export function fetchIssue(
   };
 }
 
-function buildWorkerArgs(opts: RunOptions): { args: string[]; workerSessionId: string } {
-  const { config, projectRoot, name } = opts;
-  const worktreeName = name ?? `dangeresque-${Date.now()}`;
-  const configDir = join(projectRoot, CONFIG_DIR);
-  const headless = config.headless;
-
-  const args: string[] = [];
-
-  // Headless mode: -p (non-interactive, exits when done)
-  if (headless) {
-    args.push("-p");
-  }
-
-  // Worktree
-  args.push("--worktree", worktreeName);
-
-  // Model + effort
-  args.push("--model", config.model);
-  if (config.effort) {
-    args.push("--effort", config.effort);
-  }
-
-  // Permissions
-  args.push("--permission-mode", config.permissionMode);
-
-  // Worker-specific prompt (CLAUDE.md auto-discovered, this appends on top)
-  const workerPromptPath = join(configDir, config.workerPrompt);
-  args.push("--append-system-prompt-file", workerPromptPath);
-
-  // Tool permissions
-  if (config.allowedTools.length > 0) {
-    args.push("--allowed-tools", ...config.allowedTools);
-  }
-  if (config.disallowedTools.length > 0) {
-    args.push("--disallowed-tools", ...config.disallowedTools);
-  }
-
-  // Session name + ID for identification and log retrieval
-  args.push("--name", `dangeresque-worker-${worktreeName}`);
-  const workerSessionId = randomUUID();
-  args.push("--session-id", workerSessionId);
-
-  // Initial prompt: issue-driven or file-driven
+function buildTaskPrompt(opts: RunOptions): string {
   const mode = opts.mode ?? "INVESTIGATE";
 
   if (opts.issueData) {
@@ -114,11 +72,8 @@ function buildWorkerArgs(opts: RunOptions): { args: string[]; workerSessionId: s
       `# #${issueData.number}: ${issueData.title}\n\n` +
       `${issueData.body}`;
 
-    // Filter comments: skip minimized, then staged + last N human (skip [dangeresque] run results)
     const visibleComments = issueData.comments.filter(c => !c.isMinimized);
-    const stagedComments = visibleComments.filter(
-      (c) => c.body.startsWith("**[staged")
-    );
+    const stagedComments = visibleComments.filter((c) => c.body.startsWith("**[staged"));
     const humanComments = visibleComments.filter(
       (c) => !c.body.startsWith("**[staged") && !c.body.startsWith("**[dangeresque")
     );
@@ -132,7 +87,6 @@ function buildWorkerArgs(opts: RunOptions): { args: string[]; workerSessionId: s
       }
     }
 
-    // Include latest archived run result (if any prior run exists)
     const archivedResult = getLatestArchivedRun(opts.projectRoot, issueData.number);
     if (archivedResult) {
       prompt += `\n\n## Previous Run Result (from archive)\n\n${archivedResult}`;
@@ -142,33 +96,67 @@ function buildWorkerArgs(opts: RunOptions): { args: string[]; workerSessionId: s
       `\n\nFollow .dangeresque/AFK_WORKER_RULES.md (appended to your system prompt). ` +
       `Update RUN_RESULT.md before finishing.`;
 
-    args.push(prompt);
-  } else {
-    // Legacy: read from NEXT_TASK.md
-    const taskContent = readFileSync(join(projectRoot, TASK_FILE), "utf-8");
-    const modeMatch = taskContent.match(/^-\s*Mode:\s*(\w+)/m);
-    const fileMode = modeMatch?.[1] ?? mode;
-
-    args.push(
-      `You are an AFK worker executing a bounded task. ` +
-        `Mode: ${fileMode}. ` +
-        `Read NEXT_TASK.md for your full instructions. ` +
-        `Follow .dangeresque/AFK_WORKER_RULES.md (appended to your system prompt). ` +
-        `Update RUN_RESULT.md before finishing.`
-    );
+    return prompt;
   }
 
-  return { args, workerSessionId };
+  const taskContent = readFileSync(join(opts.projectRoot, TASK_FILE), "utf-8");
+  const modeMatch = taskContent.match(/^-\s*Mode:\s*(\w+)/m);
+  const fileMode = modeMatch?.[1] ?? mode;
+
+  return (
+    `You are an AFK worker executing a bounded task. ` +
+    `Mode: ${fileMode}. ` +
+    `Read NEXT_TASK.md for your full instructions. ` +
+    `Follow .dangeresque/AFK_WORKER_RULES.md (appended to your system prompt). ` +
+    `Update RUN_RESULT.md before finishing.`
+  );
 }
 
-function buildReviewArgs(opts: RunOptions, worktreeName: string): { args: string[]; reviewSessionId: string } {
+function buildClaudeWorkerArgs(opts: RunOptions, worktreeName: string): { args: string[]; workerSessionId: string } {
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
   const headless = config.headless;
 
   const args: string[] = [];
 
-  // Headless mode: -p (non-interactive, exits when done)
+  if (headless) {
+    args.push("-p");
+  }
+
+  args.push("--worktree", worktreeName);
+  args.push("--model", config.model);
+  if (config.effort) {
+    args.push("--effort", config.effort);
+  }
+
+  args.push("--permission-mode", config.permissionMode);
+
+  const workerPromptPath = join(configDir, config.workerPrompt);
+  args.push("--append-system-prompt-file", workerPromptPath);
+
+  if (config.allowedTools.length > 0) {
+    args.push("--allowed-tools", ...config.allowedTools);
+  }
+  if (config.disallowedTools.length > 0) {
+    args.push("--disallowed-tools", ...config.disallowedTools);
+  }
+
+  args.push("--name", `dangeresque-worker-${worktreeName}`);
+  const workerSessionId = randomUUID();
+  args.push("--session-id", workerSessionId);
+
+  args.push(buildTaskPrompt(opts));
+
+  return { args, workerSessionId };
+}
+
+function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string): { args: string[]; reviewSessionId: string } {
+  const { config, projectRoot } = opts;
+  const configDir = join(projectRoot, CONFIG_DIR);
+  const headless = config.headless;
+
+  const args: string[] = [];
+
   if (headless) {
     args.push("-p");
   }
@@ -179,9 +167,8 @@ function buildReviewArgs(opts: RunOptions, worktreeName: string): { args: string
   if (config.effort) {
     args.push("--effort", config.effort);
   }
-  args.push("--permission-mode", "acceptEdits"); // Reviewer needs to append to RUN_RESULT.md
+  args.push("--permission-mode", "acceptEdits");
 
-  // Reviewer needs read/write + git commit for RUN_RESULT.md in headless mode
   if (headless) {
     args.push(
       "--allowed-tools",
@@ -189,10 +176,7 @@ function buildReviewArgs(opts: RunOptions, worktreeName: string): { args: string
       "Bash(git status *)", "Bash(git diff *)", "Bash(git log *)",
       "Bash(git add *)", "Bash(git commit *)"
     );
-    args.push(
-      "--disallowed-tools",
-      ...config.disallowedTools
-    );
+    args.push("--disallowed-tools", ...config.disallowedTools);
   }
 
   const reviewPromptPath = join(configDir, config.reviewPrompt);
@@ -202,7 +186,6 @@ function buildReviewArgs(opts: RunOptions, worktreeName: string): { args: string
   const reviewSessionId = randomUUID();
   args.push("--session-id", reviewSessionId);
 
-  // Capture actual diff stat as ground truth for the reviewer
   let diffStat = "";
   try {
     diffStat = execSync("git diff main --stat", {
@@ -219,26 +202,82 @@ function buildReviewArgs(opts: RunOptions, worktreeName: string): { args: string
     const mode = opts.mode ?? "INVESTIGATE";
     args.push(
       `You are an adversarial reviewer of an AFK worker run.\n` +
-        `The task was GitHub Issue #${issueData.number}: ${issueData.title}\n` +
-        `Mode: ${mode}\n\n` +
-        `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
-        `Compare this against the worker's claimed file count in RUN_RESULT.md. ` +
-        `Any discrepancy is an automatic FAIL.\n\n` +
-        `Start by running git diff main to see full code changes. ` +
-        `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
-        `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
+      `The task was GitHub Issue #${issueData.number}: ${issueData.title}\n` +
+      `Mode: ${mode}\n\n` +
+      `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
+      `Compare this against the worker's claimed file count in RUN_RESULT.md. ` +
+      `Any discrepancy is an automatic FAIL.\n\n` +
+      `Start by running git diff main to see full code changes. ` +
+      `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
+      `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
     );
   } else {
     args.push(
       `You are an adversarial reviewer of an AFK worker run.\n\n` +
-        `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
-        `Start by running git diff main to see full code changes. ` +
-        `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
-        `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
+      `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
+      `Start by running git diff main to see full code changes. ` +
+      `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
+      `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
     );
   }
 
   return { args, reviewSessionId };
+}
+
+function buildCodexWorkerArgs(opts: RunOptions, worktreeName: string): string[] {
+  const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
+  const prompt = buildTaskPrompt(opts) + `\n\nEffort preference: ${opts.config.effort} (map this to response depth and planning thoroughness).`;
+
+  return [
+    "exec",
+    "--json",
+    "--full-auto",
+    "--model", opts.config.model,
+    "--cd", worktreePath,
+    prompt,
+  ];
+}
+
+function buildCodexReviewArgs(opts: RunOptions, worktreeName: string): string[] {
+  let diffStat = "";
+  try {
+    diffStat = execSync("git diff main --stat", {
+      cwd: join(opts.projectRoot, ".claude", "worktrees", worktreeName),
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    diffStat = "(could not capture diff stat)";
+  }
+
+  const prompt = opts.issueData
+    ? (
+      `You are an adversarial reviewer of an AFK worker run.\n` +
+      `The task was GitHub Issue #${opts.issueData.number}: ${opts.issueData.title}\n` +
+      `Mode: ${opts.mode ?? "INVESTIGATE"}\n\n` +
+      `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
+      `Compare this against the worker's claimed file count in RUN_RESULT.md. ` +
+      `Any discrepancy is an automatic FAIL.\n\n` +
+      `Start by running git diff main to see full code changes. ` +
+      `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
+      `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
+    )
+    : (
+      `You are an adversarial reviewer of an AFK worker run.\n\n` +
+      `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
+      `Start by running git diff main to see full code changes. ` +
+      `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
+      `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
+    );
+
+  return [
+    "exec",
+    "--json",
+    "--full-auto",
+    "--model", opts.config.model,
+    "--cd", join(opts.projectRoot, ".claude", "worktrees", worktreeName),
+    prompt,
+  ];
 }
 
 function ensureDangeresquePrefix(name: string): string {
@@ -261,14 +300,99 @@ function checkRemoteBehind(projectRoot: string): void {
   }
 }
 
+function ensureWorktreeExists(projectRoot: string, worktreeName: string, branch: string): string {
+  const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
+  if (existsSync(worktreePath)) return worktreePath;
+
+  mkdirSync(dirname(worktreePath), { recursive: true });
+
+  let baseRef = "HEAD";
+  try {
+    baseRef = execSync("git symbolic-ref --quiet --short refs/remotes/origin/HEAD", {
+      cwd: projectRoot,
+      encoding: "utf-8",
+      stdio: "pipe",
+    }).trim();
+  } catch {
+    baseRef = "HEAD";
+  }
+
+  execSync(`git worktree add -b ${branch} "${worktreePath}" ${baseRef}`, {
+    cwd: projectRoot,
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  return worktreePath;
+}
+
+function createCodexLogPath(worktreePath: string, phase: "worker" | "review"): string {
+  const logDir = join(worktreePath, ".dangeresque");
+  mkdirSync(logDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return join(logDir, `${phase}-codex-${timestamp}.jsonl`);
+}
+
 export function runWorker(opts: RunOptions): Promise<RunResult> {
   checkRemoteBehind(opts.projectRoot);
 
   const worktreeName = ensureDangeresquePrefix(opts.name ?? `${Date.now()}`);
-  const { args, workerSessionId } = buildWorkerArgs({ ...opts, name: worktreeName });
   const branch = `worktree-${worktreeName}`;
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
   const hash = projectHash(worktreePath);
+
+  if (opts.config.engine === "codex") {
+    ensureWorktreeExists(opts.projectRoot, worktreeName, branch);
+    const args = buildCodexWorkerArgs(opts, worktreeName);
+    const logPath = createCodexLogPath(worktreePath, "worker");
+
+    return new Promise((resolve, reject) => {
+      console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
+      console.log(`📋 Branch: ${branch}`);
+      console.log(`⚙️  Engine: codex`);
+      console.log(`🔧 Model: ${opts.config.model}`);
+      console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
+      console.log(`\n--- Worker session starting ---\n`);
+
+      const child = spawn("codex", args, {
+        cwd: worktreePath,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env },
+      });
+
+      const logStream = createWriteStream(logPath, { flags: "a" });
+      child.stdout?.on("data", (chunk: Buffer) => {
+        process.stdout.write(chunk);
+        logStream.write(chunk);
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        process.stderr.write(chunk);
+        logStream.write(chunk);
+      });
+
+      if (child.pid) {
+        writePidFile(worktreePath, child.pid, {
+          engine: "codex",
+          projectHash: hash,
+          workerLogPath: logPath,
+        });
+      }
+
+      child.on("error", (err: Error) => {
+        logStream.end();
+        removePidFile(worktreePath);
+        reject(new Error(`Failed to start codex: ${err.message}`));
+      });
+
+      child.on("close", (code: number | null) => {
+        logStream.end();
+        removePidFile(worktreePath);
+        resolve({ worktreeName, branch, exitCode: code ?? 0 });
+      });
+    });
+  }
+
+  const { args, workerSessionId } = buildClaudeWorkerArgs(opts, worktreeName);
 
   return new Promise((resolve, reject) => {
     console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
@@ -283,11 +407,9 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
       env: { ...process.env },
     });
 
-    // Write PID file once spawned (worktree may not exist yet — write after short delay)
     if (child.pid) {
-      // Worktree is created by claude CLI; wait briefly for it to exist
       setTimeout(() => {
-        try { writePidFile(worktreePath, child.pid!, { workerSessionId, projectHash: hash }); } catch { /* worktree not ready yet — ok */ }
+        try { writePidFile(worktreePath, child.pid!, { workerSessionId, projectHash: hash, engine: "claude" }); } catch { /* worktree not ready yet — ok */ }
       }, 3000);
     }
 
@@ -313,9 +435,58 @@ export function runReview(
   worktreeName: string,
   workerSessionId?: string
 ): Promise<RunResult> {
-  const { args, reviewSessionId } = buildReviewArgs(opts, worktreeName);
   const branch = `worktree-${worktreeName}`;
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
+  const hash = projectHash(worktreePath);
+
+  if (opts.config.engine === "codex") {
+    const args = buildCodexReviewArgs(opts, worktreeName);
+    const logPath = createCodexLogPath(worktreePath, "review");
+
+    return new Promise((resolve, reject) => {
+      console.log(`\n--- Review session starting ---\n`);
+
+      const child = spawn("codex", args, {
+        cwd: worktreePath,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env },
+      });
+
+      const logStream = createWriteStream(logPath, { flags: "a" });
+      child.stdout?.on("data", (chunk: Buffer) => {
+        process.stdout.write(chunk);
+        logStream.write(chunk);
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        process.stderr.write(chunk);
+        logStream.write(chunk);
+      });
+
+      if (child.pid) {
+        const existing = readPidFile(worktreePath);
+        writePidFile(worktreePath, child.pid, {
+          engine: "codex",
+          projectHash: hash,
+          workerLogPath: existing?.workerLogPath,
+          reviewLogPath: logPath,
+        });
+      }
+
+      child.on("error", (err: Error) => {
+        logStream.end();
+        removePidFile(worktreePath);
+        reject(new Error(`Failed to start codex review: ${err.message}`));
+      });
+
+      child.on("close", (code: number | null) => {
+        logStream.end();
+        removePidFile(worktreePath);
+        resolve({ worktreeName, branch, exitCode: code ?? 0 });
+      });
+    });
+  }
+
+  const { args, reviewSessionId } = buildClaudeReviewArgs(opts, worktreeName);
 
   return new Promise((resolve, reject) => {
     console.log(`\n--- Review session starting ---\n`);
@@ -326,10 +497,9 @@ export function runReview(
       env: { ...process.env },
     });
 
-    // Write PID file for review process (worker's PID file was removed on close)
     if (child.pid) {
-      const hash = projectHash(worktreePath);
-      writePidFile(worktreePath, child.pid, { reviewSessionId, workerSessionId, projectHash: hash });
+      writePidFile(worktreePath, child.pid, { reviewSessionId, workerSessionId, projectHash: hash, engine: "claude" });
+      updatePidFile(worktreePath, { reviewSessionId, workerSessionId, projectHash: hash, engine: "claude" });
     }
 
     child.on("error", (err: Error) => {
@@ -339,11 +509,7 @@ export function runReview(
 
     child.on("close", (code: number | null) => {
       removePidFile(worktreePath);
-      resolve({
-        worktreeName,
-        branch,
-        exitCode: code ?? 0,
-      });
+      resolve({ worktreeName, branch, exitCode: code ?? 0 });
     });
   });
 }
