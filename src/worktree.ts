@@ -9,6 +9,9 @@ export interface PidInfo {
   workerSessionId?: string;
   reviewSessionId?: string;
   projectHash?: string;
+  engine?: "claude" | "codex";
+  workerLogPath?: string;
+  reviewLogPath?: string;
 }
 
 export interface WorktreeInfo {
@@ -41,7 +44,7 @@ export function listWorktrees(projectRoot: string): WorktreeInfo[] {
     const branch = branchLine.replace("branch refs/heads/", "");
     const head = headLine?.replace("HEAD ", "") ?? "";
 
-    // Include all Claude Code worktrees (they live under .claude/worktrees/)
+    // Include all dangeresque worktrees (they live under .claude/worktrees/)
     if (path.includes(".claude/worktrees/")) {
       let commitEpoch = 0;
       try {
