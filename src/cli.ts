@@ -241,6 +241,26 @@ async function cmdRun(args: string[]) {
     }
   }
 
+  // Rebase worktree onto latest origin/main before review
+  // Prevents false REJECT from reviewer seeing stale-branch diffs
+  if (review && workerResult.exitCode === 0) {
+    try {
+      const { execSync } = await import("node:child_process");
+      const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
+      execSync("git fetch origin main", { cwd: worktreePath, stdio: "pipe" });
+      execSync("git rebase origin/main", { cwd: worktreePath, stdio: "pipe" });
+      console.log(`\nRebased worktree onto latest origin/main`);
+    } catch (e: any) {
+      // Rebase conflict — abort and let reviewer see original diff
+      try {
+        const { execSync } = await import("node:child_process");
+        const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
+        execSync("git rebase --abort", { cwd: worktreePath, stdio: "pipe" });
+      } catch { /* ignore */ }
+      console.warn(`\n⚠️  Rebase failed (conflict) — reviewer will see original diff`);
+    }
+  }
+
   // Review pass — skip for modes that don't produce code changes
   const SKIP_REVIEW_MODES = new Set(["INVESTIGATE", "VERIFY"]);
   if (review && workerResult.exitCode === 0 && SKIP_REVIEW_MODES.has(effectiveMode)) {
