@@ -60,6 +60,24 @@ export function fetchIssue(
   };
 }
 
+function formatIssueComments(issueData: IssueData): string {
+  const visibleComments = issueData.comments.filter(c => !c.isMinimized);
+  const stagedComments = visibleComments.filter((c) => c.body.startsWith("**[staged"));
+  const humanComments = visibleComments.filter(
+    (c) => !c.body.startsWith("**[staged") && !c.body.startsWith("**[dangeresque")
+  );
+  const recentHuman = humanComments.slice(-3);
+
+  const filteredComments = [...stagedComments, ...recentHuman];
+  if (filteredComments.length === 0) return "";
+
+  let result = `\n\n## Context Comments\n`;
+  for (const c of filteredComments) {
+    result += `\n**${c.author.login}:**\n${c.body}\n`;
+  }
+  return result;
+}
+
 function buildTaskPrompt(opts: RunOptions): string {
   const mode = opts.mode ?? "INVESTIGATE";
 
@@ -72,20 +90,7 @@ function buildTaskPrompt(opts: RunOptions): string {
       `# #${issueData.number}: ${issueData.title}\n\n` +
       `${issueData.body}`;
 
-    const visibleComments = issueData.comments.filter(c => !c.isMinimized);
-    const stagedComments = visibleComments.filter((c) => c.body.startsWith("**[staged"));
-    const humanComments = visibleComments.filter(
-      (c) => !c.body.startsWith("**[staged") && !c.body.startsWith("**[dangeresque")
-    );
-    const recentHuman = humanComments.slice(-3);
-
-    const filteredComments = [...stagedComments, ...recentHuman];
-    if (filteredComments.length > 0) {
-      prompt += `\n\n## Context Comments\n`;
-      for (const c of filteredComments) {
-        prompt += `\n**${c.author.login}:**\n${c.body}\n`;
-      }
-    }
+    prompt += formatIssueComments(issueData);
 
     const archivedResult = getLatestArchivedRun(opts.projectRoot, issueData.number);
     if (archivedResult) {
@@ -204,6 +209,8 @@ function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string): { args: 
       `You are an adversarial reviewer of an AFK worker run.\n` +
       `The task was GitHub Issue #${issueData.number}: ${issueData.title}\n` +
       `Mode: ${mode}\n\n` +
+      `## Issue Body\n\n${issueData.body}\n` +
+      formatIssueComments(issueData) + `\n` +
       `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
       `Compare this against the worker's claimed file count in RUN_RESULT.md. ` +
       `Any discrepancy is an automatic FAIL.\n\n` +
@@ -255,6 +262,8 @@ function buildCodexReviewArgs(opts: RunOptions, worktreeName: string): string[] 
       `You are an adversarial reviewer of an AFK worker run.\n` +
       `The task was GitHub Issue #${opts.issueData.number}: ${opts.issueData.title}\n` +
       `Mode: ${opts.mode ?? "INVESTIGATE"}\n\n` +
+      `## Issue Body\n\n${opts.issueData.body}\n` +
+      formatIssueComments(opts.issueData) + `\n` +
       `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
       `Compare this against the worker's claimed file count in RUN_RESULT.md. ` +
       `Any discrepancy is an automatic FAIL.\n\n` +
