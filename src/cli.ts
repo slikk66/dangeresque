@@ -8,6 +8,12 @@ import {
 } from "./config.js";
 import { runWorker, runReview, fetchIssue, postRunComment } from "./runner.js";
 import {
+  ArtifactBuilder,
+  writeArtifact,
+  commitArtifactJson,
+  jsonPathForArchive,
+} from "./artifact.js";
+import {
   listWorktrees,
   mergeWorktree,
   discardWorktree,
@@ -220,6 +226,7 @@ async function cmdRun(args: string[]) {
   console.log(`  Review pass: ${review ? "yes" : "no"}`);
 
   // Worker pass
+  const workerStartedAtMs = Date.now();
   const workerResult = await runWorker({
     projectRoot,
     config,
@@ -227,6 +234,21 @@ async function cmdRun(args: string[]) {
     issueData,
     mode: effectiveMode,
   });
+  const workerEndedAtMs = Date.now();
+
+  const builder = new ArtifactBuilder({
+    projectRoot,
+    issueNumber,
+    mode: effectiveMode,
+    engine: config.engine,
+    model: config.model,
+    effort: config.effort,
+    worktreeName: workerResult.worktreeName,
+    branch: workerResult.branch,
+    archivePath: workerResult.archivePath,
+  });
+  builder.setWorkerTiming(workerStartedAtMs, workerEndedAtMs, workerResult.exitCode);
+  builder.recordEvent("worker_completed", { exit_code: workerResult.exitCode });
 
   console.log(`\nWorker exited with code ${workerResult.exitCode}`);
 
@@ -262,6 +284,8 @@ async function cmdRun(args: string[]) {
       }
     }
 
+    finalizeArtifact(builder, projectRoot, workerResult.worktreeName);
+
     process.exit(workerResult.exitCode);
   }
 
@@ -290,7 +314,12 @@ async function cmdRun(args: string[]) {
           console.warn(`   ${f}`);
         }
         console.warn(`   Review carefully for scope violations.\n`);
+        builder.setScopeViolations(unexpected);
       }
+      builder.recordEvent("scope_check_completed", {
+        changed_files: changedFiles.length,
+        scope_violations: unexpected.length,
+      });
     } catch {
       // Silently ignore — worktree state query failures aren't fatal here
     }
@@ -305,6 +334,7 @@ async function cmdRun(args: string[]) {
       execSync("git fetch origin main", { cwd: worktreePath, stdio: "pipe" });
       execSync("git rebase origin/main", { cwd: worktreePath, stdio: "pipe" });
       console.log(`\nRebased worktree onto latest origin/main`);
+      builder.recordEvent("rebase_completed");
     } catch (e: any) {
       try {
         const { execSync } = await import("node:child_process");
@@ -316,6 +346,7 @@ async function cmdRun(args: string[]) {
       console.warn(
         `\n⚠️  Rebase failed (conflict) — reviewer will see original diff`,
       );
+      builder.recordEvent("rebase_failed");
     }
   }
 
@@ -324,15 +355,22 @@ async function cmdRun(args: string[]) {
   let reviewExitCode: number | undefined;
   if (review && SKIP_REVIEW_MODES.has(effectiveMode)) {
     console.log(`\nSkipping review (no code changes in ${effectiveMode} mode)`);
+    builder.markReviewSkipped(`mode=${effectiveMode}`);
   } else if (review) {
+    const reviewStartedAtMs = Date.now();
     const reviewResult = await runReview(
       { projectRoot, config, issueData, mode: effectiveMode },
       workerResult.worktreeName,
       workerResult.archivePath,
       workerResult.workerSessionId,
     );
+    const reviewEndedAtMs = Date.now();
     reviewExitCode = reviewResult.exitCode;
+    builder.setReviewTiming(reviewStartedAtMs, reviewEndedAtMs, reviewResult.exitCode);
+    builder.recordEvent("review_completed", { exit_code: reviewResult.exitCode });
     console.log(`Review exited with code ${reviewResult.exitCode}`);
+  } else {
+    builder.markReviewSkipped("--no-review");
   }
 
   // Post summary comment on issue (success path)
@@ -354,17 +392,42 @@ async function cmdRun(args: string[]) {
     }
   }
 
+  const artifact = finalizeArtifact(builder, projectRoot, workerResult.worktreeName);
+
   // Summary
   console.log(`\n${"=".repeat(60)}`);
   console.log(`dangeresque run complete`);
   console.log(`  Worktree: .claude/worktrees/${workerResult.worktreeName}/`);
   console.log(`  Branch:   ${workerResult.branch}`);
   console.log(`  Artifact: ${workerResult.archivePath}`);
+  if (artifact) {
+    console.log(`  Eval:     ${artifact.artifact_paths.json}`);
+    console.log(`  Result:   ${artifact.result} (verdict=${artifact.reviewer_verdict})`);
+  }
   console.log(`\nNext steps:`);
   console.log(`  Review:  dangeresque results --latest`);
   console.log(`  Merge:   dangeresque merge ${workerResult.branch}`);
   console.log(`  Discard: dangeresque discard ${workerResult.branch}`);
   console.log("=".repeat(60));
+}
+
+function finalizeArtifact(
+  builder: ArtifactBuilder,
+  projectRoot: string,
+  worktreeName: string,
+) {
+  try {
+    const artifact = builder.build();
+    const absJsonPath = writeArtifact(artifact, projectRoot);
+    const worktreePath = `${projectRoot}/.claude/worktrees/${worktreeName}`;
+    commitArtifactJson(worktreePath, absJsonPath);
+    return artifact;
+  } catch (err) {
+    console.error(
+      `Warning: failed to write run evaluation artifact: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
 }
 
 async function cmdLogs(args: string[]) {

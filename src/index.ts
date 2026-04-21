@@ -29,3 +29,20 @@ export {
 export { initProject } from "./init.js";
 
 export { stageComment } from "./stage.js";
+
+export {
+  ArtifactBuilder,
+  writeArtifact,
+  commitArtifactJson,
+  jsonPathForArchive,
+  parseVerdictFromMarkdown,
+  parseGitRemoteSlug,
+  ARTIFACT_SCHEMA_VERSION,
+  type RunArtifact,
+  type ResultClassification,
+  type ReviewerVerdict,
+  type FailureCategory,
+  type LifecycleEvent,
+  type PhaseTiming,
+  type ReviewPhase,
+} from "./artifact.js";
