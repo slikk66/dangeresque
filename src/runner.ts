@@ -234,6 +234,8 @@ function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string, archivePa
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
   const headless = config.headless;
+  const reviewModel = config.reviewModel ?? config.model;
+  const reviewEffort = config.reviewEffort ?? config.effort;
 
   const args: string[] = [];
 
@@ -243,9 +245,9 @@ function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string, archivePa
 
   args.push("--worktree", worktreeName);
 
-  args.push("--model", config.model);
-  if (config.effort) {
-    args.push("--effort", config.effort);
+  args.push("--model", reviewModel);
+  if (reviewEffort) {
+    args.push("--effort", reviewEffort);
   }
   args.push("--permission-mode", "acceptEdits");
 
@@ -338,15 +340,21 @@ function buildCodexReviewArgs(opts: RunOptions, worktreeName: string, archivePat
     diffStat = "(could not capture diff stat)";
   }
 
+  const reviewModel = opts.config.reviewModel ?? opts.config.model;
+  const reviewEffort = opts.config.reviewEffort ?? opts.config.effort;
   const reviewPromptPath = join(opts.projectRoot, CONFIG_DIR, opts.config.reviewPrompt);
   const reviewPromptContent = readFileSync(reviewPromptPath, "utf-8");
-  const prompt = reviewPromptContent + `\n\n` + buildReviewPrompt(opts, archivePath, diffStat);
+  const prompt =
+    reviewPromptContent +
+    `\n\n` +
+    buildReviewPrompt(opts, archivePath, diffStat) +
+    `\n\nEffort preference: ${reviewEffort} (map this to response depth and planning thoroughness).`;
 
   return [
     "exec",
     "--json",
     "--full-auto",
-    "--model", opts.config.model,
+    "--model", reviewModel,
     "--cd", join(opts.projectRoot, ".claude", "worktrees", worktreeName),
     prompt,
   ];
@@ -628,6 +636,8 @@ export interface CommentOptions {
   engine?: string;
   model?: string;
   effort?: string;
+  reviewModel?: string;
+  reviewEffort?: string;
 }
 
 function buildRunTag(mode: string, opts: CommentOptions): string {
@@ -635,6 +645,12 @@ function buildRunTag(mode: string, opts: CommentOptions): string {
   if (opts.engine) parts.push(`engine=${opts.engine}`);
   if (opts.model) parts.push(`model=${opts.model}`);
   if (opts.effort) parts.push(`effort=${opts.effort}`);
+  if (opts.reviewModel && opts.reviewModel !== opts.model) {
+    parts.push(`review-model=${opts.reviewModel}`);
+  }
+  if (opts.reviewEffort && opts.reviewEffort !== opts.effort) {
+    parts.push(`review-effort=${opts.reviewEffort}`);
+  }
   return `**[${parts.join(" · ")}]**`;
 }
 
