@@ -281,6 +281,25 @@ test("cli stats: unknown flag → non-zero exit, message on stderr", () => {
   }
 });
 
+test("cli stats: --glossary prints evaluation vocabulary", () => {
+  const cliPath = resolve("dist", "cli.js");
+  const out = execFileSync(process.execPath, [cliPath, "stats", "--glossary"], {
+    encoding: "utf-8",
+  });
+  assert.match(out, /Run Evaluation Glossary/);
+  assert.match(out, /success/);
+  assert.match(out, /partial_success/);
+  assert.match(out, /failure/);
+  assert.match(out, /scope_violation/);
+  assert.match(out, /accept/);
+  assert.match(out, /reject/);
+  assert.match(out, /needs_human_review/);
+  assert.match(out, /skipped/);
+  assert.match(out, /unknown/);
+  assert.match(out, /INVESTIGATE and VERIFY/);
+  assert.match(out, /--no-review/);
+});
+
 test("cli stats: empty runs dir → 'No run artifacts found', exit 0", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-stats-"));
   try {

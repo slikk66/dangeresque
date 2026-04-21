@@ -162,6 +162,10 @@ run artifact included — that's the whole point of discard.
 
 ## 4. Observability & Evaluation
 
+For the concise user-facing definitions of evaluation terms, see
+`README.md` section "Evaluation Vocabulary." This section keeps the longer
+design rationale and implementation tradeoffs.
+
 Each run writes two companion artifacts inside the worktree, both committed
 on the worker's branch so they flow through normal merge:
 

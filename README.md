@@ -339,9 +339,36 @@ Force-remove worktree and branch without merging. The run result file is discard
 
 Delete tracked run result files for an issue (e.g. after closing). This modifies the working tree; commit the deletion separately.
 
+### `dangeresque stats [options]`
+
+Aggregate structured run evaluation artifacts from `.dangeresque/runs/`.
+
+```bash
+dangeresque stats
+dangeresque stats --issue 63
+dangeresque stats --engine codex --mode IMPLEMENT
+dangeresque stats --glossary
+```
+
 ### `dangeresque init`
 
 Scaffold `.dangeresque/` config, copy skills, merge notification hooks. Re-run to refresh skills. Existing config files are not overwritten. If a legacy `.dangeresque/runs/` pattern is found in `.gitignore`, it is removed (run results are tracked in git, not ignored).
+
+## Evaluation Vocabulary
+
+These terms are derived from worker exit code, review phase, run artifact presence, recorded scope violations, and parsed reviewer verdicts in `src/artifact.ts`. For design rationale, see [docs/DESIGN.md](docs/DESIGN.md#4-observability--evaluation).
+
+- `success`: The worker exited successfully and produced its run artifact. Either the reviewer accepted the run, or review did not run and no scope violations were recorded.
+- `partial_success`: The worker exited successfully and produced its run artifact, but the run still needs attention. This is used when review errored, review returned `needs_human_review` or `unknown`, or review was skipped while scope violations were recorded.
+- `failure`: The worker failed, the run artifact was missing, or the reviewer explicitly rejected the run.
+- `scope_violation`: Changed files were outside the issue body or selected issue comments, excluding `.dangeresque/runs/`. This failure category is emitted only when those scope violations caused a downgrade because review did not run; when review ran, the reviewer verdict controls the result.
+- `reviewer_verdict=accept`: The reviewer accepted the worker's changes.
+- `reviewer_verdict=reject`: The reviewer rejected the worker's changes; this makes the run a `failure`.
+- `reviewer_verdict=needs_human_review`: The reviewer could not accept or reject outright and asked for human judgment; this makes the run a `partial_success`.
+- `reviewer_verdict=skipped`: No reviewer decision exists because review was intentionally skipped.
+- `reviewer_verdict=unknown`: Dangeresque could not derive a reviewer verdict, usually because the worker failed, the artifact was missing or unreadable, or the markdown verdict was absent or unparseable.
+
+Review normally runs after a successful worker run for code-changing modes. It is automatically skipped for `INVESTIGATE` and `VERIFY`, and manually skipped by `--no-review`.
 
 ## Task Modes
 

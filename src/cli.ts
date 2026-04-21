@@ -60,7 +60,7 @@ Commands:
   merge <branch>                       Merge a reviewed worktree
   discard <branch>                     Remove a worktree without merging
   clean --issue <N>                    Delete archived runs for an issue
-  stats [options]                      Aggregate run evaluation artifacts
+  stats [options]                      Aggregate run evaluation artifacts; --glossary explains terms
   init                                 Scaffold .dangeresque/ config + skills
 
 Run options:
@@ -96,6 +96,41 @@ function currentHelpEngine(): Engine {
   } catch {
     return "claude";
   }
+}
+
+function statsGlossary(): string {
+  return `
+Run Evaluation Glossary
+=======================
+
+Results:
+  success
+    The worker exited successfully and produced its run artifact. Either the reviewer accepted the run, or review did not run and no scope violations were recorded.
+  partial_success
+    The worker exited successfully and produced its run artifact, but the run still needs attention. This is used when review errored, review returned needs_human_review or unknown, or review was skipped while scope violations were recorded.
+  failure
+    The worker failed, the run artifact was missing, or the reviewer explicitly rejected the run.
+
+Failure categories:
+  scope_violation
+    Changed files were outside the issue body or selected issue comments, excluding .dangeresque/runs/. This category is emitted only when those scope violations caused a downgrade because review did not run; when review ran, the reviewer verdict controls the result.
+
+Reviewer verdicts:
+  accept
+    The reviewer accepted the worker's changes.
+  reject
+    The reviewer rejected the worker's changes; this makes the run a failure.
+  needs_human_review
+    The reviewer could not accept or reject outright and asked for human judgment; this makes the run a partial_success.
+  skipped
+    No reviewer decision exists because review was intentionally skipped.
+  unknown
+    Dangeresque could not derive a reviewer verdict, usually because the worker failed, the artifact was missing or unreadable, or the markdown verdict was absent or unparseable.
+
+Review execution:
+  Review normally runs after a successful worker run for code-changing modes.
+  Review is automatically skipped for INVESTIGATE and VERIFY, and manually skipped by --no-review.
+`;
 }
 
 async function main() {
@@ -753,6 +788,15 @@ function cmdStats(args: string[]) {
   let issueNumber: number | undefined;
   let engine: Engine | undefined;
   let mode: string | undefined;
+
+  if (args.includes("--glossary")) {
+    if (args.length > 1) {
+      console.error("--glossary cannot be combined with other stats options");
+      process.exit(1);
+    }
+    process.stdout.write(statsGlossary());
+    process.exit(0);
+  }
 
   for (let i = 0; i < args.length; i++) {
     const tok = args[i];
