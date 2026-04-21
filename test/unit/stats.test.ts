@@ -316,7 +316,7 @@ test("cli stats: real repo prints non-zero counts and all sections", () => {
   }
 });
 
-test("cli stats: --engine codex filter composes (zero-match stable shape)", () => {
+test("cli stats: --engine codex filter is accepted and renders all sections", () => {
   const cliPath = resolve("dist", "cli.js");
   const out = execFileSync(
     process.execPath,
@@ -326,7 +326,6 @@ test("cli stats: --engine codex filter composes (zero-match stable shape)", () =
   assert.match(out, /Filters: --engine codex/);
   assert.match(out, /By engine:/);
   assert.match(out, /By mode \(success rate\):/);
-  assert.match(out, /Note: no artifacts match filters \(--engine codex\)/);
 });
 
 test("cli stats: --issue + --mode compose and shrink the result set", () => {

@@ -3,3 +3,4 @@ dist/
 *.tsbuildinfo
 .yarn/install-state.gz
 HANDOFF.md
+.dangeresque/sessions/

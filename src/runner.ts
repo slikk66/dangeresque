@@ -418,8 +418,8 @@ function createWorktree(projectRoot: string, worktreeName: string, branch: strin
   return worktreePath;
 }
 
-function createCodexLogPath(worktreePath: string, phase: "worker" | "review"): string {
-  const logDir = join(worktreePath, ".dangeresque");
+function createCodexLogPath(projectRoot: string, worktreeName: string, phase: "worker" | "review"): string {
+  const logDir = join(projectRoot, ".dangeresque", "sessions", worktreeName);
   mkdirSync(logDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   return join(logDir, `${phase}-codex-${timestamp}.jsonl`);
@@ -445,7 +445,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
 
   if (opts.config.engine === "codex") {
     const args = buildCodexWorkerArgs(opts, worktreeName, archivePath);
-    const logPath = createCodexLogPath(worktreePath, "worker");
+    const logPath = createCodexLogPath(opts.projectRoot, worktreeName, "worker");
 
     return new Promise((resolve, reject) => {
       console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
@@ -549,7 +549,7 @@ export function runReview(
 
   if (opts.config.engine === "codex") {
     const args = buildCodexReviewArgs(opts, worktreeName, archivePath);
-    const logPath = createCodexLogPath(worktreePath, "review");
+    const logPath = createCodexLogPath(opts.projectRoot, worktreeName, "review");
 
     return new Promise((resolve, reject) => {
       console.log(`\n--- Review session starting ---\n`);
