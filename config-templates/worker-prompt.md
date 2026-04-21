@@ -101,6 +101,15 @@ Your worktree branched from `origin/HEAD` at creation time. Other workers may be
 - DO NOT revert, refactor, or "fix" code outside your issue scope
 - Note observations in an "Observations" section of your run result file if relevant
 
+## Tool Failure Handling
+
+When a tool call fails, the failure is usually structural, not a parsing accident. Retrying variations wastes turns and tokens.
+
+- **Edit: "String to replace not found in file"** — do not retry with near-identical context. The cause is one of: an invisible character in the file (ESC sequence, tab, trailing whitespace), the file was modified by another tool since your last Read, or the string is truly absent. Re-read the exact lines fresh, then write the exact bytes you see. If the mismatch is an invisible character, replace-all on a longer uniquely-anchored substring that avoids the invisible region.
+- **Bash: "requires approval"** — do not retry with different flags, pipes, or semicolons. The denial is structural: the command or its shell operators are not in the allowlist. Either switch to a builtin tool (Read / Grep / Glob) or note the check as unverified and move on.
+- **Multi-operation shell syntax** — pipes (`|`), redirects (`>`, `2>&1`), semicolons (`;`), chains (`&&`, `||`) are blocked regardless of `allowedTools`. Use plain commands. Prefer Grep over `cat | grep`, Read over `cat`, Glob over `find`.
+- **Two-strike rule** — if the same tool call fails twice with related errors, switch strategy entirely. Don't try a third variation.
+
 ## Critical Rules
 
 - **Read first**: Read files before editing. The world is never as you assume.
