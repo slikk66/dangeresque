@@ -133,6 +133,7 @@ async function main() {
 }
 
 async function cmdRun(args: string[]) {
+  const runStartedAtMs = Date.now();
   const projectRoot = resolveProjectRoot();
   const validation = validateSetup(projectRoot);
 
@@ -282,6 +283,7 @@ async function cmdRun(args: string[]) {
     worktreeName: workerResult.worktreeName,
     branch: workerResult.branch,
     archivePath: workerResult.archivePath,
+    startedAtMs: runStartedAtMs,
   });
   builder.setWorkerTiming(workerStartedAtMs, workerEndedAtMs, workerResult.exitCode);
   builder.recordEvent("worker_completed", { exit_code: workerResult.exitCode });

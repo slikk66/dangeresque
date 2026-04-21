@@ -82,11 +82,13 @@ export interface BuilderInit {
   worktreeName: string;
   branch: string;
   archivePath: string;
+  /** Epoch-ms timestamp for when the overall run started. Falls back to construction time. */
+  startedAtMs?: number;
 }
 
 export class ArtifactBuilder {
   private readonly runId = randomUUID();
-  private readonly startedAtMs = Date.now();
+  private readonly startedAtMs: number;
   private readonly init: BuilderInit;
   private readonly events: LifecycleEvent[] = [];
   private worker?: PhaseTiming;
@@ -97,6 +99,7 @@ export class ArtifactBuilder {
 
   constructor(init: BuilderInit) {
     this.init = init;
+    this.startedAtMs = init.startedAtMs ?? Date.now();
     this.recordEvent("run_started", {
       run_id: this.runId,
       issue_number: init.issueNumber ?? null,
