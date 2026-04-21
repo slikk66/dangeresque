@@ -240,16 +240,18 @@ the task, but it does not try to paper over every CLI-level difference.
 These are current gaps, not future plans. They appear here as honest
 footnotes on an otherwise-working system.
 
-- **Scope-check false positives (issue #21).** The post-worker scope check
-  (see `src/cli.ts:349-381`) flags files changed outside the issue *body*,
-  but the worker prompt also receives staged comments as first-class
-  context (see `src/runner.ts:153-169`). When a staged comment legitimately
-  directs work into a file not mentioned in the issue body, the scope
-  check flags it as a violation and the run is classified
-  `partial_success` — even when the adversarial reviewer reads the same
-  staged comment and returns `ACCEPT`. The system is self-contradicting in
-  that case. The fix is to widen the scope-check haystack to include the
-  same staged-comment filter the prompt builder uses.
+- **Scope-check is telemetry, not authority (issue #27).** The post-worker
+  scope check (see `src/cli.ts:363-394`) does a substring match of changed
+  files against the issue body plus filtered comments. It cannot infer
+  test paths from "add tests" language, cannot expand globs, and cannot
+  cross-reference an INVESTIGATE artifact. When it fires, it still records
+  `scope_violations[]` on the artifact and prints a stdout warning, but it
+  does NOT downgrade the run's `result` classification when the
+  adversarial reviewer accepted — the reviewer is the authority on scope
+  (ONE-PATH). Only when the reviewer was skipped (e.g. `--no-review`) do
+  scope violations still mark the run `partial_success`.
+  `scope_violations[]` stays on the artifact as diagnostic signal for
+  humans triaging borderline runs.
 - **AFK allowlist friction for build commands.** The default `allowedTools`
   (see `src/config.ts:50-65`) doesn't include any build commands. For a
   TypeScript project where workers want to run `yarn build` to verify

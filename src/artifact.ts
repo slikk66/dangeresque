@@ -295,7 +295,15 @@ function deriveFailureCategories(opts: {
     categories.push("review_nonzero_exit");
   }
   if (!opts.archiveExists) categories.push("no_run_artifact");
-  if (opts.scopeViolations.length > 0) categories.push("scope_violation");
+  // scope_violation only contributes when scope_violations actually caused a downgrade:
+  // worker succeeded, archive exists, reviewer did NOT run, and scope was flagged.
+  // When the reviewer ran, its verdict is the authority on scope (issue #27).
+  const scopeContributedToDowngrade =
+    opts.workerExitCode === 0 &&
+    opts.archiveExists &&
+    opts.reviewExitCode === undefined &&
+    opts.scopeViolations.length > 0;
+  if (scopeContributedToDowngrade) categories.push("scope_violation");
   if (opts.reviewerVerdict === "reject") categories.push("reviewer_rejected");
   if (opts.events.some((e) => e.event === "rebase_failed")) {
     categories.push("rebase_conflict");
@@ -312,12 +320,20 @@ function deriveResult(opts: {
 }): ResultClassification {
   if (opts.workerExitCode !== 0) return "failure";
   if (!opts.archiveExists) return "failure";
-  if (opts.reviewerVerdict === "reject") return "failure";
-  if (opts.review && !opts.review.skipped && opts.review.exit_code !== 0) {
+
+  const reviewRan = opts.review !== null && !opts.review.skipped;
+
+  if (reviewRan && opts.review!.exit_code !== 0) {
     return "partial_success";
   }
-  if (opts.scopeViolations.length > 0) return "partial_success";
-  return "success";
+
+  if (reviewRan) {
+    if (opts.reviewerVerdict === "reject") return "failure";
+    if (opts.reviewerVerdict === "accept") return "success";
+    return "partial_success";
+  }
+
+  return opts.scopeViolations.length > 0 ? "partial_success" : "success";
 }
 
 function buildSummaryLine(opts: {

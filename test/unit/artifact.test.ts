@@ -98,7 +98,7 @@ test("ArtifactBuilder: review skipped → verdict=skipped", () => {
   }
 });
 
-test("ArtifactBuilder: scope violations → partial_success + scope_violation category", () => {
+test("ArtifactBuilder: scope violations + reviewer accept → success (scope is telemetry)", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
   try {
     const archivePath = join(tmp, "run.md");
@@ -118,9 +118,204 @@ test("ArtifactBuilder: scope violations → partial_success + scope_violation ca
     builder.setReviewTiming(200, 300, 0);
     builder.setScopeViolations(["unrelated.ts"]);
     const artifact = builder.build();
-    assert.equal(artifact.result, "partial_success");
-    assert.ok(artifact.failure_categories.includes("scope_violation"));
+    assert.equal(artifact.result, "success");
+    assert.ok(!artifact.failure_categories.includes("scope_violation"));
+    assert.deepEqual(artifact.failure_categories, []);
     assert.deepEqual(artifact.scope_violations, ["unrelated.ts"]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: scope violations + review skipped → partial_success + scope_violation", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "# INVESTIGATE\n");
+    const builder = new ArtifactBuilder({
+      projectRoot: tmp,
+      issueNumber: 1,
+      issueUrl: null,
+      mode: "INVESTIGATE",
+      engine: "claude",
+      model: "m",
+      worktreeName: "wt",
+      branch: "br",
+      archivePath,
+    });
+    builder.setWorkerTiming(100, 200, 0);
+    builder.markReviewSkipped("no-review flag");
+    builder.setScopeViolations(["unrelated.ts"]);
+    const artifact = builder.build();
+    assert.equal(artifact.result, "partial_success");
+    assert.deepEqual(artifact.failure_categories, ["scope_violation"]);
+    assert.deepEqual(artifact.scope_violations, ["unrelated.ts"]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: review skipped + no scope violations → success", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "# INVESTIGATE\n");
+    const builder = new ArtifactBuilder({
+      projectRoot: tmp,
+      issueNumber: 1,
+      issueUrl: null,
+      mode: "INVESTIGATE",
+      engine: "claude",
+      model: "m",
+      worktreeName: "wt",
+      branch: "br",
+      archivePath,
+    });
+    builder.setWorkerTiming(100, 200, 0);
+    builder.markReviewSkipped("no-review flag");
+    const artifact = builder.build();
+    assert.equal(artifact.result, "success");
+    assert.deepEqual(artifact.failure_categories, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: reviewer reject → failure + reviewer_rejected (scope irrelevant)", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "**Verdict:** REJECT\n");
+    const builder = new ArtifactBuilder({
+      projectRoot: tmp,
+      issueNumber: 1,
+      issueUrl: null,
+      mode: "IMPLEMENT",
+      engine: "claude",
+      model: "m",
+      worktreeName: "wt",
+      branch: "br",
+      archivePath,
+    });
+    builder.setWorkerTiming(100, 200, 0);
+    builder.setReviewTiming(200, 300, 0);
+    builder.setScopeViolations(["unrelated.ts"]);
+    const artifact = builder.build();
+    assert.equal(artifact.result, "failure");
+    assert.ok(artifact.failure_categories.includes("reviewer_rejected"));
+    assert.ok(!artifact.failure_categories.includes("scope_violation"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: reviewer needs_human_review → partial_success (no scope_violation)", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "**Verdict:** NEEDS HUMAN REVIEW\n");
+    const builder = new ArtifactBuilder({
+      projectRoot: tmp,
+      issueNumber: 1,
+      issueUrl: null,
+      mode: "IMPLEMENT",
+      engine: "claude",
+      model: "m",
+      worktreeName: "wt",
+      branch: "br",
+      archivePath,
+    });
+    builder.setWorkerTiming(100, 200, 0);
+    builder.setReviewTiming(200, 300, 0);
+    builder.setScopeViolations(["unrelated.ts"]);
+    const artifact = builder.build();
+    assert.equal(artifact.result, "partial_success");
+    assert.equal(artifact.reviewer_verdict, "needs_human_review");
+    assert.ok(!artifact.failure_categories.includes("scope_violation"));
+    assert.deepEqual(artifact.failure_categories, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: reviewer verdict unknown (no verdict line) → partial_success (no scope_violation)", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "# Review\nNo verdict line here.\n");
+    const builder = new ArtifactBuilder({
+      projectRoot: tmp,
+      issueNumber: 1,
+      issueUrl: null,
+      mode: "IMPLEMENT",
+      engine: "claude",
+      model: "m",
+      worktreeName: "wt",
+      branch: "br",
+      archivePath,
+    });
+    builder.setWorkerTiming(100, 200, 0);
+    builder.setReviewTiming(200, 300, 0);
+    builder.setScopeViolations(["unrelated.ts"]);
+    const artifact = builder.build();
+    assert.equal(artifact.result, "partial_success");
+    assert.equal(artifact.reviewer_verdict, "unknown");
+    assert.ok(!artifact.failure_categories.includes("scope_violation"));
+    assert.deepEqual(artifact.failure_categories, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: review nonzero exit → partial_success + review_nonzero_exit (scope irrelevant)", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "**Verdict:** ACCEPT\n");
+    const builder = new ArtifactBuilder({
+      projectRoot: tmp,
+      issueNumber: 1,
+      issueUrl: null,
+      mode: "IMPLEMENT",
+      engine: "claude",
+      model: "m",
+      worktreeName: "wt",
+      branch: "br",
+      archivePath,
+    });
+    builder.setWorkerTiming(100, 200, 0);
+    builder.setReviewTiming(200, 300, 1);
+    builder.setScopeViolations(["unrelated.ts"]);
+    const artifact = builder.build();
+    assert.equal(artifact.result, "partial_success");
+    assert.ok(artifact.failure_categories.includes("review_nonzero_exit"));
+    assert.ok(!artifact.failure_categories.includes("scope_violation"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: reviewer accept + no scope → success", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "**Verdict:** ACCEPT\n");
+    const builder = new ArtifactBuilder({
+      projectRoot: tmp,
+      issueNumber: 1,
+      issueUrl: null,
+      mode: "IMPLEMENT",
+      engine: "claude",
+      model: "m",
+      worktreeName: "wt",
+      branch: "br",
+      archivePath,
+    });
+    builder.setWorkerTiming(100, 200, 0);
+    builder.setReviewTiming(200, 300, 0);
+    const artifact = builder.build();
+    assert.equal(artifact.result, "success");
+    assert.deepEqual(artifact.failure_categories, []);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
