@@ -6,6 +6,7 @@
 - **VERIFY-AFTER** — After a change, confirm it landed. Grep the file, check the value, build the project.
 - **NO-BANDAID** — Every fix must be researched and confirmed correct. No try/catch that swallows the problem.
 - **ONE-PATH** — Extend the existing system. Do not add a parallel code path when the existing one can be widened.
+- **FILE-IMMEDIATELY** — If you discover a bug/issue that is important, raise it or file it (gh cli) immediately. We can decide if it is uneeded later.
 
 ## Honest Scoping
 
@@ -71,6 +72,7 @@
 ## Commit Style
 
 Short imperative subject lines, no scope prefixes. Examples from recent history:
+
 - `track run artifacts in git; fail loudly; no worktree reuse`
 - `ensure staged comments are read by worker`
 - `rebase worktree onto origin/main before review pass`
