@@ -1,0 +1,26 @@
+{
+    "hooks": {
+        "Notification": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "cwd=$(cat | jq -r '.cwd'); name=$(basename \"$cwd\"); if echo \"$name\" | grep -q '^dangeresque-'; then osascript -e \"display notification \\\"$name needs attention\\\" with title \\\"dangeresque\\\"\"; fi"
+                    }
+                ]
+            }
+        ],
+        "SessionEnd": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "cwd=$(cat | jq -r '.cwd'); name=$(basename \"$cwd\"); if echo \"$name\" | grep -q '^dangeresque-'; then osascript -e \"display notification \\\"$name complete\\\" with title \\\"dangeresque\\\"\"; fi"
+                    }
+                ]
+            }
+        ]
+    }
+}

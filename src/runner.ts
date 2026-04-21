@@ -569,15 +569,27 @@ export interface CommentOptions {
   archivePath: string;
   workerExitCode: number;
   reviewExitCode?: number;
+  engine?: string;
+  model?: string;
+  effort?: string;
+}
+
+function buildRunTag(mode: string, opts: CommentOptions): string {
+  const parts = [`dangeresque ${mode}`];
+  if (opts.engine) parts.push(`engine=${opts.engine}`);
+  if (opts.model) parts.push(`model=${opts.model}`);
+  if (opts.effort) parts.push(`effort=${opts.effort}`);
+  return `**[${parts.join(" · ")}]**`;
 }
 
 export function postRunComment(opts: CommentOptions): void {
   const { projectRoot, issueNumber, mode, worktreeName, archivePath, workerExitCode, reviewExitCode } = opts;
+  const tag = buildRunTag(mode, opts);
 
   let comment: string;
   if (workerExitCode !== 0) {
     comment =
-      `**[dangeresque ${mode}] ❌ FAILED**\n\n` +
+      `${tag} ❌ FAILED\n\n` +
       `Worker exited with code ${workerExitCode}. No review was run.\n\n` +
       `- Worktree: \`.claude/worktrees/${worktreeName}/\`\n` +
       `- Expected run artifact: \`${relative(projectRoot, archivePath)}\` ` +
@@ -585,7 +597,7 @@ export function postRunComment(opts: CommentOptions): void {
       `Inspect the worker session log with \`dangeresque logs\`, then \`dangeresque discard worktree-${worktreeName}\` to clean up.`;
   } else if (!existsSync(archivePath)) {
     comment =
-      `**[dangeresque ${mode}] ⚠️  Worker exited cleanly but wrote no run artifact.**\n\n` +
+      `${tag} ⚠️  Worker exited cleanly but wrote no run artifact.\n\n` +
       `Expected file: \`${relative(projectRoot, archivePath)}\`\n` +
       `Worktree: \`.claude/worktrees/${worktreeName}/\``;
   } else {
@@ -593,7 +605,7 @@ export function postRunComment(opts: CommentOptions): void {
     const reviewNote = reviewExitCode !== undefined && reviewExitCode !== 0
       ? `\n\n⚠️  Review process exited with code ${reviewExitCode} — findings above may be incomplete.`
       : "";
-    comment = `**[dangeresque ${mode}]**\n\n${content}${reviewNote}`;
+    comment = `${tag}\n\n${content}${reviewNote}`;
   }
 
   const result = spawnSync(

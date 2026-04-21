@@ -276,6 +276,9 @@ async function cmdRun(args: string[]) {
           worktreeName: workerResult.worktreeName,
           archivePath: workerResult.archivePath,
           workerExitCode: workerResult.exitCode,
+          engine: config.engine,
+          model: config.model,
+          effort: config.engine === "claude" ? config.effort : undefined,
         });
       } catch (err) {
         console.error(
