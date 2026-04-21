@@ -325,7 +325,13 @@ function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: stri
 
 function buildCodexWorkerArgs(opts: RunOptions, worktreeName: string, archivePath: string): string[] {
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
-  const prompt = buildTaskPrompt(opts, archivePath) + `\n\nEffort preference: ${opts.config.effort} (map this to response depth and planning thoroughness).`;
+  const workerPromptPath = join(opts.projectRoot, CONFIG_DIR, opts.config.workerPrompt);
+  const workerPromptContent = readFileSync(workerPromptPath, "utf-8");
+  const prompt =
+    workerPromptContent +
+    `\n\n` +
+    buildTaskPrompt(opts, archivePath) +
+    `\n\nEffort preference: ${opts.config.effort} (map this to response depth and planning thoroughness).`;
 
   return [
     "exec",
@@ -349,13 +355,17 @@ function buildCodexReviewArgs(opts: RunOptions, worktreeName: string, archivePat
     diffStat = "(could not capture diff stat)";
   }
 
+  const reviewPromptPath = join(opts.projectRoot, CONFIG_DIR, opts.config.reviewPrompt);
+  const reviewPromptContent = readFileSync(reviewPromptPath, "utf-8");
+  const prompt = reviewPromptContent + `\n\n` + buildReviewPrompt(opts, archivePath, diffStat);
+
   return [
     "exec",
     "--json",
     "--full-auto",
     "--model", opts.config.model,
     "--cd", join(opts.projectRoot, ".claude", "worktrees", worktreeName),
-    buildReviewPrompt(opts, archivePath, diffStat),
+    prompt,
   ];
 }
 
