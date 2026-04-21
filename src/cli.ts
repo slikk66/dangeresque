@@ -6,7 +6,7 @@ import {
   resolveProjectRoot,
   type Engine,
 } from "./config.js";
-import { runWorker, runReview, fetchIssue, postRunComment } from "./runner.js";
+import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture } from "./runner.js";
 import {
   ArtifactBuilder,
   writeArtifact,
@@ -55,6 +55,7 @@ Commands:
 
 Run options:
   --issue <number>  Read task from GitHub Issue (recommended)
+  --issue-fixture <path>  Read issue content from a local JSON file (no gh needed)
   --mode <mode>     Task mode (default: INVESTIGATE)
                     [INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, or custom]
   --name <name>     Custom worktree name (default: dangeresque-<timestamp>)
@@ -152,6 +153,7 @@ async function cmdRun(args: string[]) {
   let name: string | undefined;
   let review = true;
   let issueNumber: number | undefined;
+  let issueFixturePath: string | undefined;
   let mode: string | undefined;
   let effortFlagUsed = false;
 
@@ -181,14 +183,37 @@ async function cmdRun(args: string[]) {
         console.error("--issue requires a numeric issue number");
         process.exit(1);
       }
+    } else if (args[i] === "--issue-fixture" && args[i + 1]) {
+      issueFixturePath = args[++i];
     } else if (args[i] === "--mode" && args[i + 1]) {
       mode = args[++i].toUpperCase();
     }
   }
 
-  // Fetch issue if provided
+  if (issueNumber !== undefined && issueFixturePath !== undefined) {
+    console.error(
+      "--issue and --issue-fixture are mutually exclusive. Pass one, not both.",
+    );
+    process.exit(1);
+  }
+
+  // Load issue content from fixture or gh
   let issueData;
-  if (issueNumber) {
+  const fixtureUsed = issueFixturePath !== undefined;
+  if (issueFixturePath !== undefined) {
+    try {
+      issueData = loadIssueFixture(issueFixturePath);
+      issueNumber = issueData.number;
+      console.log(
+        `Loaded fixture #${issueData.number}: ${issueData.title} (from ${issueFixturePath})`,
+      );
+    } catch (err) {
+      console.error(
+        `Failed to load issue fixture: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exit(1);
+    }
+  } else if (issueNumber) {
     try {
       issueData = fetchIssue(projectRoot, issueNumber);
       console.log(`Fetched issue #${issueNumber}: ${issueData.title}`);
@@ -239,6 +264,7 @@ async function cmdRun(args: string[]) {
   const builder = new ArtifactBuilder({
     projectRoot,
     issueNumber,
+    ...(fixtureUsed ? { issueUrl: null } : {}),
     mode: effectiveMode,
     engine: config.engine,
     model: config.model,
@@ -267,7 +293,7 @@ async function cmdRun(args: string[]) {
     console.error(`!!  Cleanup: dangeresque discard ${workerResult.branch}`);
     console.error(`${banner}\n`);
 
-    if (issueNumber) {
+    if (issueNumber && !fixtureUsed) {
       try {
         postRunComment({
           projectRoot,
@@ -377,7 +403,7 @@ async function cmdRun(args: string[]) {
   }
 
   // Post summary comment on issue (success path)
-  if (issueNumber) {
+  if (issueNumber && !fixtureUsed) {
     try {
       postRunComment({
         projectRoot,

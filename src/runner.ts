@@ -90,6 +90,69 @@ export function fetchIssue(
   };
 }
 
+export function loadIssueFixture(path: string): IssueData {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    throw new Error(
+      `Failed to read fixture file: ${path} (${err instanceof Error ? err.message : String(err)})`
+    );
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `Fixture file is not valid JSON: ${path} (${err instanceof Error ? err.message : String(err)})`
+    );
+  }
+
+  if (!data || typeof data !== "object") {
+    throw new Error(`Fixture file must be a JSON object: ${path}`);
+  }
+  const obj = data as Record<string, unknown>;
+  if (typeof obj.number !== "number") {
+    throw new Error(`Fixture missing required field "number" (number): ${path}`);
+  }
+  if (typeof obj.title !== "string") {
+    throw new Error(`Fixture missing required field "title" (string): ${path}`);
+  }
+  if (typeof obj.body !== "string") {
+    throw new Error(`Fixture missing required field "body" (string): ${path}`);
+  }
+  if (!Array.isArray(obj.comments)) {
+    throw new Error(`Fixture missing required field "comments" (array): ${path}`);
+  }
+
+  const comments = obj.comments.map((c: unknown, i: number) => {
+    if (!c || typeof c !== "object") {
+      throw new Error(`Fixture comment[${i}] must be an object: ${path}`);
+    }
+    const cObj = c as Record<string, unknown>;
+    const author = cObj.author as Record<string, unknown> | undefined;
+    if (typeof cObj.body !== "string") {
+      throw new Error(`Fixture comment[${i}].body must be a string: ${path}`);
+    }
+    if (!author || typeof author.login !== "string") {
+      throw new Error(`Fixture comment[${i}].author.login must be a string: ${path}`);
+    }
+    return {
+      body: cObj.body,
+      author: { login: author.login },
+      isMinimized: Boolean(cObj.isMinimized),
+    };
+  });
+
+  return {
+    number: obj.number,
+    title: obj.title,
+    body: obj.body,
+    comments,
+  };
+}
+
 function formatIssueComments(issueData: IssueData): string {
   const visibleComments = issueData.comments.filter(c => !c.isMinimized);
   const stagedComments = visibleComments.filter((c) => c.body.startsWith("**[staged"));

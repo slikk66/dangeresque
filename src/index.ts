@@ -12,6 +12,7 @@ export {
   runWorker,
   runReview,
   fetchIssue,
+  loadIssueFixture,
   postRunComment,
   type RunOptions,
   type RunResult,

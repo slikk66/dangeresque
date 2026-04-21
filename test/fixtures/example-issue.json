@@ -1,0 +1,6 @@
+{
+  "number": 999,
+  "title": "Example fixture issue",
+  "body": "The body the worker will read as its task.",
+  "comments": []
+}

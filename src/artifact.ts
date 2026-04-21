@@ -73,6 +73,8 @@ export interface RunArtifact {
 export interface BuilderInit {
   projectRoot: string;
   issueNumber?: number;
+  /** Override for issue_url. When set (including null), used verbatim instead of deriving from remote + issueNumber. */
+  issueUrl?: string | null;
   mode: string;
   engine: Engine;
   model: string;
@@ -193,7 +195,10 @@ export class ArtifactBuilder {
       schema_version: ARTIFACT_SCHEMA_VERSION,
       run_id: this.runId,
       issue_number: this.init.issueNumber ?? null,
-      issue_url: buildIssueUrl(this.init.projectRoot, this.init.issueNumber),
+      issue_url:
+        this.init.issueUrl !== undefined
+          ? this.init.issueUrl
+          : buildIssueUrl(this.init.projectRoot, this.init.issueNumber),
       mode: this.init.mode,
       engine: this.init.engine,
       model: this.init.model,
