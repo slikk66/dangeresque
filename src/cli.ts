@@ -22,6 +22,7 @@ import {
   resolveBranch,
   cleanArchivedRuns,
   readPidFile,
+  assertInMainCheckout,
   type WorktreeInfo,
 } from "./worktree.js";
 import { initProject } from "./init.js";
@@ -630,6 +631,7 @@ function cmdMerge(branch: string | undefined) {
 
   const projectRoot = resolveProjectRoot();
   try {
+    assertInMainCheckout(projectRoot, "merge");
     const resolved = resolveBranch(projectRoot, branch);
     const result = mergeWorktree(projectRoot, resolved);
 
@@ -654,6 +656,7 @@ function cmdDiscard(branch: string | undefined) {
 
   const projectRoot = resolveProjectRoot();
   try {
+    assertInMainCheckout(projectRoot, "discard");
     const resolved = resolveBranch(projectRoot, branch);
     const result = discardWorktree(projectRoot, resolved);
 

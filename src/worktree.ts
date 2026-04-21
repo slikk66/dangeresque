@@ -65,6 +65,29 @@ export function listWorktrees(projectRoot: string): WorktreeInfo[] {
   return worktrees;
 }
 
+/**
+ * Refuse to proceed if cwd is inside a linked worktree rather than the main checkout.
+ * Detects via `git rev-parse --git-dir` vs `--git-common-dir` — they differ inside a
+ * linked worktree, match in the main checkout. Throws with a clear remediation message.
+ */
+export function assertInMainCheckout(projectRoot: string, command: string): void {
+  const gitDir = execSync("git rev-parse --path-format=absolute --git-dir", {
+    cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+  }).trim();
+  const commonDir = execSync("git rev-parse --path-format=absolute --git-common-dir", {
+    cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+  }).trim();
+
+  if (gitDir !== commonDir) {
+    const mainCheckout = commonDir.replace(/\/\.git\/?$/, "");
+    throw new Error(
+      `dangeresque ${command} must run from the main project checkout, not from inside a worktree.\n` +
+      `Currently in: ${projectRoot}\n` +
+      `cd ${mainCheckout} and retry.`
+    );
+  }
+}
+
 // --- PID file management ---
 
 function readPidState(worktreePath: string): { pidInfo?: PidInfo; running: boolean } {
