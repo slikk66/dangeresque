@@ -224,8 +224,11 @@ dangeresque merge implement-63
 ## Monitoring a Running Session
 
 ```bash
-# Pretty-print live transcript (auto-follows while running)
+# Snapshot current transcript and exit
 dangeresque logs investigate-63
+
+# Tail live output (explicit opt-in, like tail -f / journalctl -f)
+dangeresque logs investigate-63 -f
 
 # Review pass transcript
 dangeresque logs investigate-63 --review
@@ -297,7 +300,7 @@ Arguments:
   <branch>       Target worktree (required)
 
 Options:
-  -f, --follow   Follow mode — tail new output (default when worker is RUNNING)
+  -f, --follow   Follow mode — tail new output (explicit opt-in; default is snapshot + exit)
   --review       Show review session instead of worker
   --raw          Output raw JSONL without formatting
 ```

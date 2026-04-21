@@ -517,13 +517,19 @@ async function cmdLogs(args: string[]) {
     `Branch: ${target.branch}  Phase: ${phase}  ${target.running ? "RUNNING" : "IDLE"}`,
   );
 
-  const follow = followFlag || target.running;
+  const follow = followFlag;
   await tailLog({
     sessionPath,
     follow,
     raw,
     pid: target.running ? pidInfo.pid : undefined,
   });
+
+  if (target.running && !followFlag) {
+    console.error(
+      "\nworker is RUNNING — pass -f/--follow to tail live output",
+    );
+  }
 }
 
 function formatElapsed(ms: number): string {
