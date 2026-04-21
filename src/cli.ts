@@ -28,6 +28,13 @@ import {
 import { initProject } from "./init.js";
 import { stageComment } from "./stage.js";
 import { resolveSessionPath, tailLog } from "./logs.js";
+import {
+  gatherArtifacts,
+  computeStats,
+  formatStats,
+  type GatherOptions,
+} from "./stats.js";
+import { relative } from "node:path";
 
 function usageForEngine(engine: Engine): string {
   const engineLine =
@@ -53,6 +60,7 @@ Commands:
   merge <branch>                       Merge a reviewed worktree
   discard <branch>                     Remove a worktree without merging
   clean --issue <N>                    Delete archived runs for an issue
+  stats [options]                      Aggregate run evaluation artifacts
   init                                 Scaffold .dangeresque/ config + skills
 
 Run options:
@@ -124,6 +132,9 @@ async function main() {
       break;
     case "clean":
       cmdClean(args.slice(1));
+      break;
+    case "stats":
+      cmdStats(args.slice(1));
       break;
     case "init":
       cmdInit();
@@ -736,6 +747,80 @@ function cmdClean(args: string[]) {
     console.error(result.message);
     process.exit(1);
   }
+}
+
+function cmdStats(args: string[]) {
+  let issueNumber: number | undefined;
+  let engine: Engine | undefined;
+  let mode: string | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    const tok = args[i];
+    if (tok === "--issue") {
+      const next = args[++i];
+      if (next === undefined) {
+        console.error("--issue requires a numeric issue number");
+        process.exit(1);
+      }
+      const n = parseInt(next, 10);
+      if (isNaN(n)) {
+        console.error("--issue requires a numeric issue number");
+        process.exit(1);
+      }
+      issueNumber = n;
+    } else if (tok === "--engine") {
+      const next = args[++i];
+      if (next !== "claude" && next !== "codex") {
+        console.error("--engine must be one of: claude, codex");
+        process.exit(1);
+      }
+      engine = next;
+    } else if (tok === "--mode") {
+      const next = args[++i];
+      if (next === undefined) {
+        console.error("--mode requires a mode name");
+        process.exit(1);
+      }
+      mode = next.toUpperCase();
+    } else {
+      console.error(`Unknown flag: ${tok}`);
+      process.exit(1);
+    }
+  }
+
+  const projectRoot = resolveProjectRoot();
+  const filters: GatherOptions = {};
+  if (issueNumber !== undefined) filters.issueNumber = issueNumber;
+  if (engine) filters.engine = engine;
+  if (mode) filters.mode = mode;
+
+  const result = gatherArtifacts(projectRoot, filters);
+  const displayPath = relative(projectRoot, result.runsDir) || result.runsDir;
+
+  if (!result.dirExists || result.filesScanned === 0) {
+    console.log(`No run artifacts found at ${displayPath}`);
+    process.exit(0);
+  }
+
+  if (result.parseErrorPaths.length > 0) {
+    console.error(
+      `Warning: ${result.parseErrorPaths.length} file(s) failed to parse as JSON:`,
+    );
+    for (const p of result.parseErrorPaths) {
+      console.error(`  ${p}`);
+    }
+  }
+
+  const summary = computeStats(result.artifacts);
+  const text = formatStats(summary, {
+    runsDir: displayPath,
+    filters,
+    schemaVersions: result.schemaVersions,
+    parseErrorCount: result.parseErrorPaths.length,
+    unsupportedVersions: result.unsupportedVersions,
+    filesScanned: result.filesScanned,
+  });
+  process.stdout.write(text);
 }
 
 function cmdStage(args: string[]) {

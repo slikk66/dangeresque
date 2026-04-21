@@ -46,3 +46,13 @@ export {
   type PhaseTiming,
   type ReviewPhase,
 } from "./artifact.js";
+
+export {
+  gatherArtifacts,
+  computeStats,
+  formatStats,
+  type GatherOptions,
+  type GatherResult,
+  type StatsSummary,
+  type FormatExtras,
+} from "./stats.js";
