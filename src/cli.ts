@@ -63,7 +63,9 @@ Run options:
   --no-review       Skip the review pass
   --interactive     Run interactively (default: headless with -p)
   --model <model>   Override model (default: ${engine === "codex" ? "gpt-5.4" : "claude-opus-4-7"})
-${engineRunNotes}  Advanced: --engine <name> (hidden), DANGERESQUE_ENGINE env var
+${engineRunNotes}  --review-model <model>  Override model for review pass (default: matches --model)
+  --review-effort <level> Override effort for review pass (default: matches --effort)
+  Advanced: --engine <name> (hidden), DANGERESQUE_ENGINE env var
   --help            Show this help
 
 Examples:
@@ -179,6 +181,10 @@ async function cmdRun(args: string[]) {
     } else if (args[i] === "--effort" && args[i + 1]) {
       effortFlagUsed = true;
       config.effort = args[++i];
+    } else if (args[i] === "--review-model" && args[i + 1]) {
+      config.reviewModel = args[++i];
+    } else if (args[i] === "--review-effort" && args[i + 1]) {
+      config.reviewEffort = args[++i];
     } else if (args[i] === "--issue" && args[i + 1]) {
       issueNumber = parseInt(args[++i], 10);
       if (isNaN(issueNumber)) {
@@ -252,12 +258,20 @@ async function cmdRun(args: string[]) {
     name = `${effectiveMode.toLowerCase()}-${issueNumber}`;
   }
 
+  const effectiveReviewModel = config.reviewModel ?? config.model;
+  const effectiveReviewEffort = config.reviewEffort ?? config.effort;
+  const reviewDiffers =
+    effectiveReviewModel !== config.model || effectiveReviewEffort !== config.effort;
+
   console.log("\ndangeresque — starting AFK run");
   console.log(`  Project: ${projectRoot}`);
   console.log(`  Issue: #${issueData.number} — ${issueData.title}`);
   console.log(`  Mode: ${effectiveMode}`);
   console.log(`  Engine: ${config.engine}`);
   console.log(`  Model: ${config.model} (effort: ${config.effort})`);
+  if (reviewDiffers) {
+    console.log(`  Review: ${effectiveReviewModel} (effort: ${effectiveReviewEffort})`);
+  }
   console.log(`  Mode: ${config.headless ? "headless (-p)" : "interactive"}`);
   console.log(`  Review pass: ${review ? "yes" : "no"}`);
 
@@ -317,6 +331,8 @@ async function cmdRun(args: string[]) {
           engine: config.engine,
           model: config.model,
           effort: config.engine === "claude" ? config.effort : undefined,
+          reviewModel: config.reviewModel,
+          reviewEffort: config.reviewEffort,
         });
       } catch (err) {
         console.error(
@@ -423,6 +439,11 @@ async function cmdRun(args: string[]) {
         archivePath: workerResult.archivePath,
         workerExitCode: workerResult.exitCode,
         reviewExitCode,
+        engine: config.engine,
+        model: config.model,
+        effort: config.engine === "claude" ? config.effort : undefined,
+        reviewModel: config.reviewModel,
+        reviewEffort: config.reviewEffort,
       });
     } catch (err) {
       console.error(

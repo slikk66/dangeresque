@@ -35,6 +35,10 @@ export interface DangeresqueConfig {
   reviewPrompt: string;
   /** Enable macOS notifications via hooks (default: true) */
   notifications: boolean;
+  /** Model for review pass (falls back to `model` when unset) */
+  reviewModel?: string;
+  /** Effort level for review pass (falls back to `effort` when unset) */
+  reviewEffort?: string;
 }
 
 const DEFAULT_CONFIG: DangeresqueConfig = {
