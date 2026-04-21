@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, rmSync } from "node:fs";
-import { join, basename } from "node:path";
-import { CONFIG_DIR, RUNS_DIR, RESULT_FILE, PID_FILE } from "./config.js";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { CONFIG_DIR, RUNS_DIR, PID_FILE } from "./config.js";
 
 export interface PidInfo {
   pid: number;
@@ -12,6 +12,8 @@ export interface PidInfo {
   engine?: "claude" | "codex";
   workerLogPath?: string;
   reviewLogPath?: string;
+  /** Absolute path to the run's archive file inside the worktree */
+  archivePath?: string;
 }
 
 export interface WorktreeInfo {
@@ -140,7 +142,9 @@ export function resolveBranch(projectRoot: string, input: string): string {
   );
 }
 
-// --- Archive functions ---
+// --- Run archive readers ---
+// Workers write their run result directly to .dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md
+// (in the project root, not the worktree). These helpers read that directory.
 
 function getRunsDir(projectRoot: string): string {
   return join(projectRoot, CONFIG_DIR, RUNS_DIR);
@@ -151,32 +155,7 @@ function getIssueRunsDir(projectRoot: string, issueNumber: number): string {
 }
 
 /**
- * Archive RUN_RESULT.md from a worktree to .dangeresque/runs/issue-<N>/
- * Returns the archive path, or null if no RUN_RESULT.md found.
- */
-export function archiveRunResult(
-  projectRoot: string,
-  worktreePath: string,
-  issueNumber: number | undefined,
-  mode: string
-): string | null {
-  const resultPath = join(worktreePath, RESULT_FILE);
-  if (!existsSync(resultPath)) return null;
-  if (!issueNumber) return null;
-
-  const issueDir = getIssueRunsDir(projectRoot, issueNumber);
-  mkdirSync(issueDir, { recursive: true });
-
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const archiveName = `${timestamp}-${mode}.md`;
-  const archivePath = join(issueDir, archiveName);
-
-  copyFileSync(resultPath, archivePath);
-  return archivePath;
-}
-
-/**
- * List archived run results for an issue, sorted chronologically.
+ * List run result files for an issue, sorted chronologically (oldest first).
  */
 export function listArchivedRuns(projectRoot: string, issueNumber: number): string[] {
   const issueDir = getIssueRunsDir(projectRoot, issueNumber);
@@ -185,23 +164,14 @@ export function listArchivedRuns(projectRoot: string, issueNumber: number): stri
 }
 
 /**
- * Read an archived run result file.
+ * Read a specific run result file for an issue.
  */
 export function readArchivedRun(projectRoot: string, issueNumber: number, filename: string): string {
   return readFileSync(join(getIssueRunsDir(projectRoot, issueNumber), filename), "utf-8");
 }
 
 /**
- * Get the latest archived run result for an issue.
- */
-export function getLatestArchivedRun(projectRoot: string, issueNumber: number): string | null {
-  const files = listArchivedRuns(projectRoot, issueNumber);
-  if (files.length === 0) return null;
-  return readArchivedRun(projectRoot, issueNumber, files[files.length - 1]);
-}
-
-/**
- * Parse the <!-- SUMMARY --> block from a RUN_RESULT.md content string.
+ * Parse the <!-- SUMMARY --> block from a run result file's content.
  * Returns the summary lines, or null if no block found.
  */
 export function parseSummaryBlock(content: string): string | null {
@@ -270,31 +240,9 @@ function extractMode(branch: string): string {
 
 export function mergeWorktree(
   projectRoot: string,
-  branch: string,
-  issueNumber?: number,
-  mode?: string
+  branch: string
 ): { success: boolean; message: string } {
   try {
-    const worktreePathForClean = join(projectRoot, ".claude", "worktrees", branch.replace("worktree-", ""));
-    const resultFile = join(worktreePathForClean, RESULT_FILE);
-
-    // Archive RUN_RESULT.md before removing it
-    const effectiveIssue = issueNumber ?? extractIssueNumber(branch);
-    const effectiveMode = mode ?? extractMode(branch);
-    if (existsSync(resultFile) && effectiveIssue) {
-      archiveRunResult(projectRoot, worktreePathForClean, effectiveIssue, effectiveMode);
-    }
-
-    // Strip RUN_RESULT.md from worktree branch before merging (it's gitignored on main)
-    if (existsSync(resultFile)) {
-      try {
-        execSync(`git rm -f "${RESULT_FILE}"`, { cwd: worktreePathForClean, encoding: "utf-8", stdio: "pipe" });
-        execSync(`git commit -m "remove ${RESULT_FILE} before merge"`, { cwd: worktreePathForClean, encoding: "utf-8", stdio: "pipe" });
-      } catch {
-        // May not be tracked — fine
-      }
-    }
-
     const headBefore = execSync("git rev-parse HEAD", {
       cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
     }).trim();
@@ -347,20 +295,11 @@ export function mergeWorktree(
 
 export function discardWorktree(
   projectRoot: string,
-  branch: string,
-  issueNumber?: number,
-  mode?: string
+  branch: string
 ): { success: boolean; message: string } {
   try {
     const worktreeName = branch.replace("worktree-", "");
     const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
-
-    // Archive RUN_RESULT.md before discarding
-    const effectiveIssue = issueNumber ?? extractIssueNumber(branch);
-    const effectiveMode = mode ?? extractMode(branch);
-    if (existsSync(worktreePath) && effectiveIssue) {
-      archiveRunResult(projectRoot, worktreePath, effectiveIssue, effectiveMode);
-    }
 
     let removedWorktree = false;
     let removedBranch = false;
@@ -411,7 +350,6 @@ export function getWorktreeResults(
   let targetWorktree: WorktreeInfo;
 
   if (branchOrLatest === "latest") {
-    // Latest = most recent commit timestamp
     targetWorktree = worktrees.reduce((a, b) => a.commitEpoch >= b.commitEpoch ? a : b);
   } else {
     const found = worktrees.find(
@@ -423,37 +361,35 @@ export function getWorktreeResults(
     targetWorktree = found;
   }
 
-  const resultPath = join(targetWorktree.path, RESULT_FILE);
   const lines: string[] = [];
-
   lines.push(`Worktree: ${targetWorktree.path}`);
   lines.push(`Branch:   ${targetWorktree.branch}`);
   lines.push(`HEAD:     ${targetWorktree.head.slice(0, 8)}`);
   lines.push("");
 
-  // Show archived prior runs as one-liners
   const issueNum = extractIssueNumber(targetWorktree.branch);
   if (issueNum) {
     const archived = listArchivedRuns(projectRoot, issueNum);
     if (archived.length > 0) {
-      lines.push("--- Previous runs (use --all for full details) ---");
-      for (let i = 0; i < archived.length; i++) {
-        const content = readArchivedRun(projectRoot, issueNum, archived[i]);
-        lines.push(formatRunOneLiner(archived[i], content, i));
+      if (archived.length > 1) {
+        lines.push("--- Previous runs ---");
+        for (let i = 0; i < archived.length - 1; i++) {
+          const content = readArchivedRun(projectRoot, issueNum, archived[i]);
+          lines.push(formatRunOneLiner(archived[i], content, i));
+        }
+        lines.push("");
       }
-      lines.push("");
+      const latestName = archived[archived.length - 1];
+      const latest = readArchivedRun(projectRoot, issueNum, latestName);
+      lines.push(`--- Latest run: ${latestName} ---`);
+      lines.push(latest);
+    } else {
+      lines.push(`No run artifacts in .dangeresque/runs/issue-${issueNum}/`);
     }
-  }
-
-  // Current RUN_RESULT.md
-  if (existsSync(resultPath)) {
-    lines.push("--- RUN_RESULT.md ---");
-    lines.push(readFileSync(resultPath, "utf-8"));
   } else {
-    lines.push("No RUN_RESULT.md found in worktree.");
+    lines.push("Worktree has no associated issue — no run artifacts tracked.");
   }
 
-  // Diff summary
   lines.push("");
   lines.push("--- Diff Summary (vs main) ---");
   try {
@@ -479,73 +415,30 @@ export function getArchivedResults(
   showAll: boolean
 ): string {
   const archived = listArchivedRuns(projectRoot, issueNumber);
-
-  // Check for active worktree with results for this issue
-  const worktrees = listWorktrees(projectRoot);
-  const activeWorktree = worktrees.find(
-    (wt) => extractIssueNumber(wt.branch) === issueNumber
-  );
-  const activeResultPath = activeWorktree
-    ? join(activeWorktree.path, RESULT_FILE)
-    : undefined;
-  const hasActiveResult = activeResultPath && existsSync(activeResultPath);
-
-  if (archived.length === 0 && !hasActiveResult) {
-    return `No archived runs found for issue #${issueNumber}`;
+  if (archived.length === 0) {
+    return `No runs found for issue #${issueNumber}`;
   }
 
   const lines: string[] = [];
+  lines.push(`Runs for issue #${issueNumber} (${archived.length} total)\n`);
 
-  // Show archived runs
-  if (archived.length > 0) {
-    lines.push(`Archived runs for issue #${issueNumber} (${archived.length} total)\n`);
-
-    if (showAll && !hasActiveResult) {
-      for (let i = 0; i < archived.length; i++) {
-        const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
-        lines.push(`=== Run ${i + 1}: ${archived[i]} ===`);
-        lines.push(content);
-        lines.push("");
-      }
-    } else {
-      // One-liners for archived runs (all of them if active worktree has results)
-      const showUntil = hasActiveResult ? archived.length : archived.length - 1;
-      for (let i = 0; i < showUntil; i++) {
-        const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
-        lines.push(formatRunOneLiner(archived[i], content, i));
-      }
-
-      if (!hasActiveResult) {
-        if (archived.length > 1) lines.push("");
-        const latestContent = readArchivedRun(projectRoot, issueNumber, archived[archived.length - 1]);
-        lines.push(`--- Latest: Run ${archived.length} ---`);
-        lines.push(latestContent);
-      }
+  if (showAll) {
+    for (let i = 0; i < archived.length; i++) {
+      const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
+      lines.push(`=== Run ${i + 1}: ${archived[i]} ===`);
+      lines.push(content);
+      lines.push("");
     }
-  }
-
-  // Show active worktree results (takes priority as latest)
-  if (hasActiveResult && activeWorktree) {
-    if (archived.length > 0) lines.push("");
-    lines.push(`--- Active worktree: ${activeWorktree.branch} ---`);
-    lines.push(`Worktree: ${activeWorktree.path}`);
-    lines.push(`Status:   ${activeWorktree.running ? "RUNNING" : "IDLE"}`);
-    lines.push("");
-    lines.push(readFileSync(activeResultPath!, "utf-8"));
-
-    // Diff summary
-    lines.push("");
-    lines.push("--- Diff Summary (vs main) ---");
-    try {
-      const diff = execSync("git diff main --stat", {
-        cwd: activeWorktree.path,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      lines.push(diff.trim() || "No changes.");
-    } catch {
-      lines.push("Could not generate diff summary.");
+  } else {
+    for (let i = 0; i < archived.length - 1; i++) {
+      const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
+      lines.push(formatRunOneLiner(archived[i], content, i));
     }
+    if (archived.length > 1) lines.push("");
+    const latestName = archived[archived.length - 1];
+    const latest = readArchivedRun(projectRoot, issueNumber, latestName);
+    lines.push(`--- Latest: Run ${archived.length} (${latestName}) ---`);
+    lines.push(latest);
   }
 
   return lines.join("\n");

@@ -77,18 +77,21 @@ export function initProject(projectRoot: string): void {
     }
   }
 
-  // 2. Ensure .dangeresque/runs/ is gitignored
+  // 2. Run artifacts live in .dangeresque/runs/ and are TRACKED in git
+  //    (one file per run). If an older init wrote that dir into .gitignore,
+  //    remove the entry so the artifacts flow through the normal git lifecycle.
   const gitignorePath = join(projectRoot, ".gitignore");
-  const runsPattern = ".dangeresque/runs/";
+  const legacyRunsPatterns = new Set([".dangeresque/runs/", ".dangeresque/runs"]);
   if (existsSync(gitignorePath)) {
     const gitignore = readFileSync(gitignorePath, "utf-8");
-    if (!gitignore.includes(runsPattern)) {
-      writeFileSync(gitignorePath, gitignore.trimEnd() + `\n${runsPattern}\n`);
-      console.log(`\nAdded ${runsPattern} to .gitignore`);
+    const lines = gitignore.split("\n");
+    const kept = lines.filter((l) => !legacyRunsPatterns.has(l.trim()));
+    if (kept.length !== lines.length) {
+      writeFileSync(gitignorePath, kept.join("\n"));
+      console.log(
+        `\nRemoved legacy .dangeresque/runs/ entry from .gitignore — run results are now tracked.`,
+      );
     }
-  } else {
-    writeFileSync(gitignorePath, `${runsPattern}\n`);
-    console.log(`\nCreated .gitignore with ${runsPattern}`);
   }
 
   // 3. Merge notification hooks into .claude/settings.json

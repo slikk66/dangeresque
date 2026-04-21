@@ -1,15 +1,16 @@
 import { spawn, execSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { join, dirname } from "node:path";
+import { join, dirname, relative } from "node:path";
 import { readFileSync, existsSync, mkdirSync, createWriteStream } from "node:fs";
 import {
   type DangeresqueConfig,
   CONFIG_DIR,
+  RUNS_DIR,
+  ADHOC_DIR,
   TASK_FILE,
-  RESULT_FILE,
   projectHash,
 } from "./config.js";
-import { getLatestArchivedRun, writePidFile, updatePidFile, removePidFile, readPidFile } from "./worktree.js";
+import { writePidFile, updatePidFile, removePidFile, readPidFile } from "./worktree.js";
 
 export interface RunOptions {
   projectRoot: string;
@@ -28,6 +29,35 @@ export interface RunResult {
   branch: string;
   exitCode: number;
   workerSessionId?: string;
+  /** Absolute path to the run's archive file inside the worktree */
+  archivePath: string;
+}
+
+/**
+ * Compute the archive path for a run. Lives inside the worktree at
+ * <worktree>/.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md so it flows
+ * through normal git merge into main. Discard drops the artifact along with
+ * the worktree — which is what "discard" means.
+ */
+export function computeRunArchivePath(
+  worktreePath: string,
+  issueNumber: number | undefined,
+  mode: string
+): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const subdir = issueNumber ? `issue-${issueNumber}` : ADHOC_DIR;
+  return join(worktreePath, CONFIG_DIR, RUNS_DIR, subdir, `${timestamp}-${mode}.md`);
+}
+
+function commitArchiveFile(worktreePath: string, archivePath: string): void {
+  if (!existsSync(archivePath)) return;
+  try {
+    const rel = relative(worktreePath, archivePath);
+    execSync(`git add "${rel}"`, { cwd: worktreePath, encoding: "utf-8", stdio: "pipe" });
+    execSync(`git commit -m "dangeresque run artifact"`, { cwd: worktreePath, encoding: "utf-8", stdio: "pipe" });
+  } catch {
+    // nothing to commit, or index already clean — fine
+  }
 }
 
 export interface IssueData {
@@ -78,8 +108,9 @@ function formatIssueComments(issueData: IssueData): string {
   return result;
 }
 
-function buildTaskPrompt(opts: RunOptions): string {
+function buildTaskPrompt(opts: RunOptions, archivePath: string): string {
   const mode = opts.mode ?? "INVESTIGATE";
+  const runsDir = dirname(archivePath);
 
   if (opts.issueData) {
     const { issueData } = opts;
@@ -92,14 +123,12 @@ function buildTaskPrompt(opts: RunOptions): string {
 
     prompt += formatIssueComments(issueData);
 
-    const archivedResult = getLatestArchivedRun(opts.projectRoot, issueData.number);
-    if (archivedResult) {
-      prompt += `\n\n## Previous Run Result (from archive)\n\n${archivedResult}`;
-    }
-
     prompt +=
-      `\n\nFollow .dangeresque/AFK_WORKER_RULES.md (appended to your system prompt). ` +
-      `Update RUN_RESULT.md before finishing.`;
+      `\n\n## Run Artifacts\n\n` +
+      `- Write your run result to exactly this absolute path: ${archivePath}\n` +
+      `- Prior runs for this issue live at ${runsDir}/ (one timestamped file per run, newest last). ` +
+      `Read the latest there ONLY if you need prior context — do not read them all.\n\n` +
+      `Follow .dangeresque/AFK_WORKER_RULES.md (appended to your system prompt).`;
 
     return prompt;
   }
@@ -113,11 +142,11 @@ function buildTaskPrompt(opts: RunOptions): string {
     `Mode: ${fileMode}. ` +
     `Read NEXT_TASK.md for your full instructions. ` +
     `Follow .dangeresque/AFK_WORKER_RULES.md (appended to your system prompt). ` +
-    `Update RUN_RESULT.md before finishing.`
+    `Write your run result to exactly this absolute path: ${archivePath}`
   );
 }
 
-function buildClaudeWorkerArgs(opts: RunOptions, worktreeName: string): { args: string[]; workerSessionId: string } {
+function buildClaudeWorkerArgs(opts: RunOptions, worktreeName: string, archivePath: string): { args: string[]; workerSessionId: string } {
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
   const headless = config.headless;
@@ -150,12 +179,12 @@ function buildClaudeWorkerArgs(opts: RunOptions, worktreeName: string): { args: 
   const workerSessionId = randomUUID();
   args.push("--session-id", workerSessionId);
 
-  args.push(buildTaskPrompt(opts));
+  args.push(buildTaskPrompt(opts, archivePath));
 
   return { args, workerSessionId };
 }
 
-function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string): { args: string[]; reviewSessionId: string } {
+function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string, archivePath: string): { args: string[]; reviewSessionId: string } {
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
   const headless = config.headless;
@@ -202,38 +231,38 @@ function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string): { args: 
     diffStat = "(could not capture diff stat)";
   }
 
-  if (opts.issueData) {
-    const { issueData } = opts;
-    const mode = opts.mode ?? "INVESTIGATE";
-    args.push(
-      `You are an adversarial reviewer of an AFK worker run.\n` +
-      `The task was GitHub Issue #${issueData.number}: ${issueData.title}\n` +
-      `Mode: ${mode}\n\n` +
-      `## Issue Body\n\n${issueData.body}\n` +
-      formatIssueComments(issueData) + `\n` +
-      `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
-      `Compare this against the worker's claimed file count in RUN_RESULT.md. ` +
-      `Any discrepancy is an automatic FAIL.\n\n` +
-      `Start by running git diff main to see full code changes. ` +
-      `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
-      `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
-    );
-  } else {
-    args.push(
-      `You are an adversarial reviewer of an AFK worker run.\n\n` +
-      `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
-      `Start by running git diff main to see full code changes. ` +
-      `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
-      `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
-    );
-  }
+  args.push(buildReviewPrompt(opts, archivePath, diffStat));
 
   return { args, reviewSessionId };
 }
 
-function buildCodexWorkerArgs(opts: RunOptions, worktreeName: string): string[] {
+function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: string): string {
+  const header = opts.issueData
+    ? `You are an adversarial reviewer of an AFK worker run.\n` +
+      `The task was GitHub Issue #${opts.issueData.number}: ${opts.issueData.title}\n` +
+      `Mode: ${opts.mode ?? "INVESTIGATE"}\n\n` +
+      `## Issue Body\n\n${opts.issueData.body}\n` +
+      formatIssueComments(opts.issueData)
+    : `You are an adversarial reviewer of an AFK worker run.`;
+
+  return (
+    `${header}\n\n` +
+    `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
+    `## Run Artifact\n\n` +
+    `The worker's run result is committed in the worktree at: ${archivePath}\n` +
+    `Treat this as a claims document — verify against the diff. ` +
+    `Append your review findings to the SAME file.\n\n` +
+    `Start by running git diff main to see full code changes. ` +
+    `Then read the run artifact and compare the worker's claims against the diff. ` +
+    `When counting files, EXCLUDE any path under .dangeresque/runs/ — those are auto-committed artifacts, not worker claims. ` +
+    `Any remaining file-count discrepancy is an automatic FAIL.\n\n` +
+    `Follow review-prompt.md.`
+  );
+}
+
+function buildCodexWorkerArgs(opts: RunOptions, worktreeName: string, archivePath: string): string[] {
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
-  const prompt = buildTaskPrompt(opts) + `\n\nEffort preference: ${opts.config.effort} (map this to response depth and planning thoroughness).`;
+  const prompt = buildTaskPrompt(opts, archivePath) + `\n\nEffort preference: ${opts.config.effort} (map this to response depth and planning thoroughness).`;
 
   return [
     "exec",
@@ -245,7 +274,7 @@ function buildCodexWorkerArgs(opts: RunOptions, worktreeName: string): string[] 
   ];
 }
 
-function buildCodexReviewArgs(opts: RunOptions, worktreeName: string): string[] {
+function buildCodexReviewArgs(opts: RunOptions, worktreeName: string, archivePath: string): string[] {
   let diffStat = "";
   try {
     diffStat = execSync("git diff main --stat", {
@@ -257,35 +286,13 @@ function buildCodexReviewArgs(opts: RunOptions, worktreeName: string): string[] 
     diffStat = "(could not capture diff stat)";
   }
 
-  const prompt = opts.issueData
-    ? (
-      `You are an adversarial reviewer of an AFK worker run.\n` +
-      `The task was GitHub Issue #${opts.issueData.number}: ${opts.issueData.title}\n` +
-      `Mode: ${opts.mode ?? "INVESTIGATE"}\n\n` +
-      `## Issue Body\n\n${opts.issueData.body}\n` +
-      formatIssueComments(opts.issueData) + `\n` +
-      `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
-      `Compare this against the worker's claimed file count in RUN_RESULT.md. ` +
-      `Any discrepancy is an automatic FAIL.\n\n` +
-      `Start by running git diff main to see full code changes. ` +
-      `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
-      `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
-    )
-    : (
-      `You are an adversarial reviewer of an AFK worker run.\n\n` +
-      `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
-      `Start by running git diff main to see full code changes. ` +
-      `Then read RUN_RESULT.md as a claims document to verify against the diff. ` +
-      `Follow review-prompt.md. Append findings to RUN_RESULT.md.`
-    );
-
   return [
     "exec",
     "--json",
     "--full-auto",
     "--model", opts.config.model,
     "--cd", join(opts.projectRoot, ".claude", "worktrees", worktreeName),
-    prompt,
+    buildReviewPrompt(opts, archivePath, diffStat),
   ];
 }
 
@@ -309,9 +316,21 @@ function checkRemoteBehind(projectRoot: string): void {
   }
 }
 
-function ensureWorktreeExists(projectRoot: string, worktreeName: string, branch: string): string {
+/**
+ * Create a fresh worktree. Hard-fails if the target path already exists —
+ * no silent reuse. Caller must merge or discard the prior worktree first.
+ */
+function createWorktree(projectRoot: string, worktreeName: string, branch: string): string {
   const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
-  if (existsSync(worktreePath)) return worktreePath;
+  if (existsSync(worktreePath)) {
+    throw new Error(
+      `Worktree already exists: .claude/worktrees/${worktreeName}\n` +
+      `A prior run on this mode+issue was not cleaned up. Choose one:\n` +
+      `  dangeresque merge   ${branch}   (keep the work)\n` +
+      `  dangeresque discard ${branch}   (throw it away)\n` +
+      `Then re-run.`
+    );
+  }
 
   mkdirSync(dirname(worktreePath), { recursive: true });
 
@@ -350,9 +369,18 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
   const hash = projectHash(worktreePath);
 
+  // Always create a fresh worktree — throws if one already exists.
+  createWorktree(opts.projectRoot, worktreeName, branch);
+
+  const archivePath = computeRunArchivePath(
+    worktreePath,
+    opts.issueData?.number,
+    opts.mode ?? "INVESTIGATE"
+  );
+  mkdirSync(dirname(archivePath), { recursive: true });
+
   if (opts.config.engine === "codex") {
-    ensureWorktreeExists(opts.projectRoot, worktreeName, branch);
-    const args = buildCodexWorkerArgs(opts, worktreeName);
+    const args = buildCodexWorkerArgs(opts, worktreeName, archivePath);
     const logPath = createCodexLogPath(worktreePath, "worker");
 
     return new Promise((resolve, reject) => {
@@ -361,6 +389,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
       console.log(`⚙️  Engine: codex`);
       console.log(`🔧 Model: ${opts.config.model}`);
       console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
+      console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
       console.log(`\n--- Worker session starting ---\n`);
 
       const child = spawn("codex", args, {
@@ -384,6 +413,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
           engine: "codex",
           projectHash: hash,
           workerLogPath: logPath,
+          archivePath,
         });
       }
 
@@ -396,18 +426,20 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
       child.on("close", (code: number | null) => {
         logStream.end();
         removePidFile(worktreePath);
-        resolve({ worktreeName, branch, exitCode: code ?? 0 });
+        if ((code ?? 0) === 0) commitArchiveFile(worktreePath, archivePath);
+        resolve({ worktreeName, branch, exitCode: code ?? 0, archivePath });
       });
     });
   }
 
-  const { args, workerSessionId } = buildClaudeWorkerArgs(opts, worktreeName);
+  const { args, workerSessionId } = buildClaudeWorkerArgs(opts, worktreeName, archivePath);
 
   return new Promise((resolve, reject) => {
     console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
     console.log(`📋 Branch: ${branch}`);
     console.log(`🔧 Model: ${opts.config.model}`);
     console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
+    console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
     console.log(`\n--- Worker session starting ---\n`);
 
     const child = spawn("claude", args, {
@@ -418,7 +450,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
 
     if (child.pid) {
       setTimeout(() => {
-        try { writePidFile(worktreePath, child.pid!, { workerSessionId, projectHash: hash, engine: "claude" }); } catch { /* worktree not ready yet — ok */ }
+        try { writePidFile(worktreePath, child.pid!, { workerSessionId, projectHash: hash, engine: "claude", archivePath }); } catch { /* worktree not ready yet — ok */ }
       }, 3000);
     }
 
@@ -429,11 +461,13 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
 
     child.on("close", (code: number | null) => {
       removePidFile(worktreePath);
+      if ((code ?? 0) === 0) commitArchiveFile(worktreePath, archivePath);
       resolve({
         worktreeName,
         branch,
         exitCode: code ?? 0,
         workerSessionId,
+        archivePath,
       });
     });
   });
@@ -442,6 +476,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
 export function runReview(
   opts: RunOptions,
   worktreeName: string,
+  archivePath: string,
   workerSessionId?: string
 ): Promise<RunResult> {
   const branch = `worktree-${worktreeName}`;
@@ -449,7 +484,7 @@ export function runReview(
   const hash = projectHash(worktreePath);
 
   if (opts.config.engine === "codex") {
-    const args = buildCodexReviewArgs(opts, worktreeName);
+    const args = buildCodexReviewArgs(opts, worktreeName, archivePath);
     const logPath = createCodexLogPath(worktreePath, "review");
 
     return new Promise((resolve, reject) => {
@@ -478,6 +513,7 @@ export function runReview(
           projectHash: hash,
           workerLogPath: existing?.workerLogPath,
           reviewLogPath: logPath,
+          archivePath,
         });
       }
 
@@ -490,12 +526,13 @@ export function runReview(
       child.on("close", (code: number | null) => {
         logStream.end();
         removePidFile(worktreePath);
-        resolve({ worktreeName, branch, exitCode: code ?? 0 });
+        if ((code ?? 0) === 0) commitArchiveFile(worktreePath, archivePath);
+        resolve({ worktreeName, branch, exitCode: code ?? 0, archivePath });
       });
     });
   }
 
-  const { args, reviewSessionId } = buildClaudeReviewArgs(opts, worktreeName);
+  const { args, reviewSessionId } = buildClaudeReviewArgs(opts, worktreeName, archivePath);
 
   return new Promise((resolve, reject) => {
     console.log(`\n--- Review session starting ---\n`);
@@ -507,8 +544,8 @@ export function runReview(
     });
 
     if (child.pid) {
-      writePidFile(worktreePath, child.pid, { reviewSessionId, workerSessionId, projectHash: hash, engine: "claude" });
-      updatePidFile(worktreePath, { reviewSessionId, workerSessionId, projectHash: hash, engine: "claude" });
+      writePidFile(worktreePath, child.pid, { reviewSessionId, workerSessionId, projectHash: hash, engine: "claude", archivePath });
+      updatePidFile(worktreePath, { reviewSessionId, workerSessionId, projectHash: hash, engine: "claude", archivePath });
     }
 
     child.on("error", (err: Error) => {
@@ -518,40 +555,45 @@ export function runReview(
 
     child.on("close", (code: number | null) => {
       removePidFile(worktreePath);
-      resolve({ worktreeName, branch, exitCode: code ?? 0 });
+      if ((code ?? 0) === 0) commitArchiveFile(worktreePath, archivePath);
+      resolve({ worktreeName, branch, exitCode: code ?? 0, archivePath });
     });
   });
 }
 
-function formatRunComment(resultContent: string, mode: string): string {
-  let comment = `**[dangeresque ${mode}]**\n\n`;
-  comment += resultContent;
-
-  return comment;
+export interface CommentOptions {
+  projectRoot: string;
+  issueNumber: number;
+  mode: string;
+  worktreeName: string;
+  archivePath: string;
+  workerExitCode: number;
+  reviewExitCode?: number;
 }
 
-export function postRunComment(
-  projectRoot: string,
-  issueNumber: number,
-  mode: string,
-  worktreeName: string
-): void {
-  const worktreePath = join(
-    projectRoot,
-    ".claude",
-    "worktrees",
-    worktreeName
-  );
-  const resultPath = join(worktreePath, RESULT_FILE);
+export function postRunComment(opts: CommentOptions): void {
+  const { projectRoot, issueNumber, mode, worktreeName, archivePath, workerExitCode, reviewExitCode } = opts;
 
   let comment: string;
-  if (existsSync(resultPath)) {
-    const content = readFileSync(resultPath, "utf-8");
-    comment = formatRunComment(content, mode);
-  } else {
+  if (workerExitCode !== 0) {
     comment =
-      `**[dangeresque ${mode}]** Run completed but no ${RESULT_FILE} found. ` +
-      `Check worktree: \`.claude/worktrees/${worktreeName}/\``;
+      `**[dangeresque ${mode}] ❌ FAILED**\n\n` +
+      `Worker exited with code ${workerExitCode}. No review was run.\n\n` +
+      `- Worktree: \`.claude/worktrees/${worktreeName}/\`\n` +
+      `- Expected run artifact: \`${relative(projectRoot, archivePath)}\` ` +
+      `(${existsSync(archivePath) ? "partial output present" : "not written"})\n\n` +
+      `Inspect the worker session log with \`dangeresque logs\`, then \`dangeresque discard worktree-${worktreeName}\` to clean up.`;
+  } else if (!existsSync(archivePath)) {
+    comment =
+      `**[dangeresque ${mode}] ⚠️  Worker exited cleanly but wrote no run artifact.**\n\n` +
+      `Expected file: \`${relative(projectRoot, archivePath)}\`\n` +
+      `Worktree: \`.claude/worktrees/${worktreeName}/\``;
+  } else {
+    const content = readFileSync(archivePath, "utf-8");
+    const reviewNote = reviewExitCode !== undefined && reviewExitCode !== 0
+      ? `\n\n⚠️  Review process exited with code ${reviewExitCode} — findings above may be incomplete.`
+      : "";
+    comment = `**[dangeresque ${mode}]**\n\n${content}${reviewNote}`;
   }
 
   const result = spawnSync(
@@ -566,7 +608,7 @@ export function postRunComment(
   );
 
   if (result.status === 0) {
-    console.log(`Posted summary comment on issue #${issueNumber}`);
+    console.log(`Posted ${workerExitCode !== 0 ? "FAILURE" : "summary"} comment on issue #${issueNumber}`);
   } else {
     console.error(
       `Failed to post comment on #${issueNumber}: ${result.stderr}`

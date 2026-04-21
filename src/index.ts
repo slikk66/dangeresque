@@ -6,7 +6,6 @@ export {
   type ValidationResult,
   CONFIG_DIR,
   TASK_FILE,
-  RESULT_FILE,
 } from "./config.js";
 
 export {

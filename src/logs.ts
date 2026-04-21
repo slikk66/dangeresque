@@ -6,13 +6,13 @@ import type { PidInfo } from "./worktree.js";
 
 const useColor = !process.env.NO_COLOR;
 const c = {
-  cyan: (s: string) => useColor ? `\x1b[36m${s}\x1b[0m` : s,
-  yellow: (s: string) => useColor ? `\x1b[33m${s}\x1b[0m` : s,
-  green: (s: string) => useColor ? `\x1b[32m${s}\x1b[0m` : s,
-  red: (s: string) => useColor ? `\x1b[31m${s}\x1b[0m` : s,
-  magenta: (s: string) => useColor ? `\x1b[35m${s}\x1b[0m` : s,
-  dim: (s: string) => useColor ? `\x1b[2m${s}\x1b[0m` : s,
-  bold: (s: string) => useColor ? `\x1b[1m${s}\x1b[0m` : s,
+  cyan: (s: string) => (useColor ? `\x1b[36m${s}\x1b[0m` : s),
+  yellow: (s: string) => (useColor ? `\x1b[33m${s}\x1b[0m` : s),
+  green: (s: string) => (useColor ? `\x1b[32m${s}\x1b[0m` : s),
+  red: (s: string) => (useColor ? `\x1b[31m${s}\x1b[0m` : s),
+  magenta: (s: string) => (useColor ? `\x1b[35m${s}\x1b[0m` : s),
+  dim: (s: string) => (useColor ? `\x1b[2m${s}\x1b[0m` : s),
+  bold: (s: string) => (useColor ? `\x1b[1m${s}\x1b[0m` : s),
 };
 
 function truncate(s: string, max = 200): string {
@@ -20,19 +20,33 @@ function truncate(s: string, max = 200): string {
   return oneLine.length > max ? oneLine.slice(0, max) + "..." : oneLine;
 }
 
-export function resolveSessionPath(pidInfo: PidInfo, phase: "worker" | "review", worktreePath?: string): string | null {
-  const trackedLogPath = phase === "review" ? pidInfo.reviewLogPath : pidInfo.workerLogPath;
+export function resolveSessionPath(
+  pidInfo: PidInfo,
+  phase: "worker" | "review",
+  worktreePath?: string,
+): string | null {
+  const trackedLogPath =
+    phase === "review" ? pidInfo.reviewLogPath : pidInfo.workerLogPath;
   if (trackedLogPath && existsSync(trackedLogPath)) return trackedLogPath;
 
-  const sessionId = phase === "review" ? pidInfo.reviewSessionId : pidInfo.workerSessionId;
+  const sessionId =
+    phase === "review" ? pidInfo.reviewSessionId : pidInfo.workerSessionId;
   if (!sessionId) return null;
 
   if (pidInfo.projectHash) {
-    const p = join(CLAUDE_PROJECTS_DIR, pidInfo.projectHash, `${sessionId}.jsonl`);
+    const p = join(
+      CLAUDE_PROJECTS_DIR,
+      pidInfo.projectHash,
+      `${sessionId}.jsonl`,
+    );
     if (existsSync(p)) return p;
   }
   if (worktreePath) {
-    const p = join(CLAUDE_PROJECTS_DIR, projectHash(worktreePath), `${sessionId}.jsonl`);
+    const p = join(
+      CLAUDE_PROJECTS_DIR,
+      projectHash(worktreePath),
+      `${sessionId}.jsonl`,
+    );
     if (existsSync(p)) return p;
   }
   return null;
@@ -41,7 +55,14 @@ export function resolveSessionPath(pidInfo: PidInfo, phase: "worker" | "review",
 function formatClaudeLine(data: any): string | null {
   const type = data.type;
 
-  if (["permission-mode", "file-history-snapshot", "attachment", "queue-operation"].includes(type)) {
+  if (
+    [
+      "permission-mode",
+      "file-history-snapshot",
+      "attachment",
+      "queue-operation",
+    ].includes(type)
+  ) {
     return null;
   }
 
@@ -57,10 +78,13 @@ function formatClaudeLine(data: any): string | null {
           if (block.input.command) summary = block.input.command;
           else if (block.input.file_path) summary = block.input.file_path;
           else if (block.input.pattern) summary = block.input.pattern;
-          else if (block.input.prompt) summary = truncate(block.input.prompt, 80);
+          else if (block.input.prompt)
+            summary = truncate(block.input.prompt, 80);
           else if (block.input.description) summary = block.input.description;
         }
-        lines.push(`${c.yellow("[tool]")} ${c.bold(name)}${summary ? " " + c.dim(summary) : ""}`);
+        lines.push(
+          `${c.yellow("[tool]")} ${c.bold(name)}${summary ? " " + c.dim(summary) : ""}`,
+        );
       }
     }
     return lines.length > 0 ? lines.join("\n") : null;
@@ -73,13 +97,16 @@ function formatClaudeLine(data: any): string | null {
       for (const block of content) {
         if (block.type === "tool_result") {
           const isError = block.is_error;
-          const output = typeof block.content === "string"
-            ? block.content
-            : JSON.stringify(block.content ?? "").slice(0, 120);
+          const output =
+            typeof block.content === "string"
+              ? block.content
+              : JSON.stringify(block.content ?? "").slice(0, 120);
           if (isError) {
             results.push(`${c.red("[error]")} ${truncate(output, 150)}`);
           } else {
-            results.push(`${c.green("[result]")} ${c.dim(truncate(output, 150))}`);
+            results.push(
+              `${c.green("[result]")} ${c.dim(truncate(output, 150))}`,
+            );
           }
         }
       }
@@ -92,7 +119,9 @@ function formatClaudeLine(data: any): string | null {
 
   if (type === "result") {
     const cost = data.cost_usd ? `$${data.cost_usd.toFixed(4)}` : "";
-    const dur = data.duration_ms ? `${(data.duration_ms / 1000).toFixed(1)}s` : "";
+    const dur = data.duration_ms
+      ? `${(data.duration_ms / 1000).toFixed(1)}s`
+      : "";
     const sub = data.subtype ?? "done";
     return `${c.bold("[session end]")} ${sub}${cost ? " " + cost : ""}${dur ? " " + dur : ""}`;
   }
@@ -106,8 +135,13 @@ function formatCodexLine(data: any): string | null {
   if (event.includes("plan") && (data.step || data.content)) {
     return `${c.magenta("[plan]")} ${truncate(String(data.step ?? data.content), 180)}`;
   }
-  if (event.includes("tool") || event.includes("exec") || event.includes("command")) {
-    const detail = data.command ?? data.name ?? data.output ?? data.content ?? "";
+  if (
+    event.includes("tool") ||
+    event.includes("exec") ||
+    event.includes("command")
+  ) {
+    const detail =
+      data.command ?? data.name ?? data.output ?? data.content ?? "";
     return `${c.yellow("[tool]")} ${c.bold(event)} ${c.dim(truncate(String(detail), 180))}`;
   }
   if (data.error) {
@@ -124,7 +158,11 @@ function formatCodexLine(data: any): string | null {
 
 export function formatLine(line: string): string | null {
   let data: any;
-  try { data = JSON.parse(line); } catch { return null; }
+  try {
+    data = JSON.parse(line);
+  } catch {
+    return null;
+  }
 
   const maybeClaude = formatClaudeLine(data);
   if (maybeClaude) return maybeClaude;
@@ -161,9 +199,14 @@ export async function tailLog(opts: TailOptions): Promise<void> {
     const newSize = statSync(sessionPath).size;
     if (newSize <= offset) return;
 
-    const stream = createReadStream(sessionPath, { start: offset, encoding: "utf-8" });
+    const stream = createReadStream(sessionPath, {
+      start: offset,
+      encoding: "utf-8",
+    });
     let buffer = "";
-    stream.on("data", (chunk: string) => { buffer += chunk; });
+    stream.on("data", (chunk: string) => {
+      buffer += chunk;
+    });
     stream.on("end", () => {
       offset = newSize;
       const lines = buffer.split("\n").filter(Boolean);
@@ -201,7 +244,9 @@ export async function tailLog(opts: TailOptions): Promise<void> {
 
 async function printFile(path: string, raw: boolean): Promise<void> {
   return new Promise((resolve) => {
-    const rl = createInterface({ input: createReadStream(path, { encoding: "utf-8" }) });
+    const rl = createInterface({
+      input: createReadStream(path, { encoding: "utf-8" }),
+    });
     rl.on("line", (line) => {
       if (raw) {
         console.log(line);

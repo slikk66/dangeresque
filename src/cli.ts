@@ -7,18 +7,29 @@ import {
   type Engine,
 } from "./config.js";
 import { runWorker, runReview, fetchIssue, postRunComment } from "./runner.js";
-import { listWorktrees, mergeWorktree, discardWorktree, getWorktreeResults, getArchivedResults, resolveBranch, cleanArchivedRuns, readPidFile } from "./worktree.js";
+import {
+  listWorktrees,
+  mergeWorktree,
+  discardWorktree,
+  getWorktreeResults,
+  getArchivedResults,
+  resolveBranch,
+  cleanArchivedRuns,
+  readPidFile,
+} from "./worktree.js";
 import { initProject } from "./init.js";
 import { stageComment } from "./stage.js";
 import { resolveSessionPath, tailLog } from "./logs.js";
 
 function usageForEngine(engine: Engine): string {
-  const engineLine = engine === "codex"
-    ? "Engine: codex • codex exec --full-auto --json\nModel: gpt-5.4 (override with --model)"
-    : "Engine: claude (default) • headless -p mode";
-  const engineRunNotes = engine === "codex"
-    ? ""
-    : "  --effort <level>  Override effort level (default: max) [low, medium, high, max]\n";
+  const engineLine =
+    engine === "codex"
+      ? "Engine: codex • codex exec --full-auto --json\nModel: gpt-5.4 (override with --model)"
+      : "Engine: claude (default) • headless -p mode";
+  const engineRunNotes =
+    engine === "codex"
+      ? ""
+      : "  --effort <level>  Override effort level (default: max) [low, medium, high|xhigh, max]\n";
 
   return `
 dangeresque — bounded AFK Claude Code or Codex runs with human review
@@ -43,7 +54,7 @@ Run options:
   --name <name>     Custom worktree name (default: dangeresque-<timestamp>)
   --no-review       Skip the review pass
   --interactive     Run interactively (default: headless with -p)
-  --model <model>   Override model (default: ${engine === "codex" ? "gpt-5.4" : "claude-opus-4-6"})
+  --model <model>   Override model (default: ${engine === "codex" ? "gpt-5.4" : "claude-opus-4-7"})
 ${engineRunNotes}  Advanced: --engine <name> (hidden), DANGERESQUE_ENGINE env var
   --help            Show this help
 
@@ -147,7 +158,7 @@ async function cmdRun(args: string[]) {
       config.headless = false;
     } else if (args[i] === "--model" && args[i + 1]) {
       config.model = args[++i];
-    // Hidden advanced override flag (kept for power users)
+      // Hidden advanced override flag (kept for power users)
     } else if (args[i] === "--engine" && args[i + 1]) {
       const engine = args[++i].toLowerCase();
       if (engine !== "claude" && engine !== "codex") {
@@ -177,9 +188,11 @@ async function cmdRun(args: string[]) {
       console.log(`Fetched issue #${issueNumber}: ${issueData.title}`);
     } catch (err) {
       console.error(
-        `Failed to fetch issue #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to fetch issue #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
       );
-      console.error("Is `gh` installed and authenticated? Does the issue exist?");
+      console.error(
+        "Is `gh` installed and authenticated? Does the issue exist?",
+      );
       process.exit(1);
     }
   }
@@ -215,35 +228,77 @@ async function cmdRun(args: string[]) {
     mode: effectiveMode,
   });
 
-  console.log(
-    `\nWorker exited with code ${workerResult.exitCode}`
-  );
+  console.log(`\nWorker exited with code ${workerResult.exitCode}`);
+
+  // Hard-stop on worker failure: loud banner, FAIL comment, non-zero exit.
+  // No scope check, no rebase, no review, no success summary.
+  if (workerResult.exitCode !== 0) {
+    const banner = "!".repeat(60);
+    console.error(`\n${banner}`);
+    console.error(`!!  DANGERESQUE RUN FAILED`);
+    console.error(`!!  Worker exit code: ${workerResult.exitCode}`);
+    console.error(`!!  Worktree: .claude/worktrees/${workerResult.worktreeName}/`);
+    console.error(`!!  Branch:   ${workerResult.branch}`);
+    console.error(`!!  Artifact: ${workerResult.archivePath}`);
+    console.error(`!!`);
+    console.error(`!!  Inspect: dangeresque logs`);
+    console.error(`!!  Cleanup: dangeresque discard ${workerResult.branch}`);
+    console.error(`${banner}\n`);
+
+    if (issueNumber) {
+      try {
+        postRunComment({
+          projectRoot,
+          issueNumber,
+          mode: effectiveMode,
+          worktreeName: workerResult.worktreeName,
+          archivePath: workerResult.archivePath,
+          workerExitCode: workerResult.exitCode,
+        });
+      } catch (err) {
+        console.error(
+          `Warning: failed to post failure comment on #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    process.exit(workerResult.exitCode);
+  }
 
   // Post-worker scope check: flag files changed that aren't mentioned in the issue body
-  if (issueData && workerResult.exitCode === 0) {
+  if (issueData) {
     try {
       const { execSync } = await import("node:child_process");
       const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
       const changedFiles = execSync("git diff main --name-only", {
-        cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
-      }).trim().split("\n").filter(f => f && f !== "RUN_RESULT.md");
+        cwd: worktreePath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      })
+        .trim()
+        .split("\n")
+        .filter((f) => f && !f.startsWith(".dangeresque/runs/"));
 
-      const unexpected = changedFiles.filter(f => !issueData.body.includes(f));
+      const unexpected = changedFiles.filter(
+        (f) => !issueData.body.includes(f),
+      );
       if (unexpected.length > 0) {
-        console.warn(`\n⚠️  Worker modified files not mentioned in issue body:`);
+        console.warn(
+          `\n⚠️  Worker modified files not mentioned in issue body:`,
+        );
         for (const f of unexpected) {
           console.warn(`   ${f}`);
         }
         console.warn(`   Review carefully for scope violations.\n`);
       }
     } catch {
-      // Silently ignore — worktree may not exist if worker failed
+      // Silently ignore — worktree state query failures aren't fatal here
     }
   }
 
   // Rebase worktree onto latest origin/main before review
   // Prevents false REJECT from reviewer seeing stale-branch diffs
-  if (review && workerResult.exitCode === 0) {
+  if (review) {
     try {
       const { execSync } = await import("node:child_process");
       const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
@@ -251,43 +306,50 @@ async function cmdRun(args: string[]) {
       execSync("git rebase origin/main", { cwd: worktreePath, stdio: "pipe" });
       console.log(`\nRebased worktree onto latest origin/main`);
     } catch (e: any) {
-      // Rebase conflict — abort and let reviewer see original diff
       try {
         const { execSync } = await import("node:child_process");
         const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
         execSync("git rebase --abort", { cwd: worktreePath, stdio: "pipe" });
-      } catch { /* ignore */ }
-      console.warn(`\n⚠️  Rebase failed (conflict) — reviewer will see original diff`);
+      } catch {
+        /* ignore */
+      }
+      console.warn(
+        `\n⚠️  Rebase failed (conflict) — reviewer will see original diff`,
+      );
     }
   }
 
   // Review pass — skip for modes that don't produce code changes
   const SKIP_REVIEW_MODES = new Set(["INVESTIGATE", "VERIFY"]);
-  if (review && workerResult.exitCode === 0 && SKIP_REVIEW_MODES.has(effectiveMode)) {
+  let reviewExitCode: number | undefined;
+  if (review && SKIP_REVIEW_MODES.has(effectiveMode)) {
     console.log(`\nSkipping review (no code changes in ${effectiveMode} mode)`);
-  } else if (review && workerResult.exitCode === 0) {
+  } else if (review) {
     const reviewResult = await runReview(
       { projectRoot, config, issueData, mode: effectiveMode },
       workerResult.worktreeName,
-      workerResult.workerSessionId
+      workerResult.archivePath,
+      workerResult.workerSessionId,
     );
-    console.log(
-      `Review exited with code ${reviewResult.exitCode}`
-    );
+    reviewExitCode = reviewResult.exitCode;
+    console.log(`Review exited with code ${reviewResult.exitCode}`);
   }
 
-  // Post summary comment on issue
+  // Post summary comment on issue (success path)
   if (issueNumber) {
     try {
-      postRunComment(
+      postRunComment({
         projectRoot,
         issueNumber,
-        effectiveMode,
-        workerResult.worktreeName
-      );
+        mode: effectiveMode,
+        worktreeName: workerResult.worktreeName,
+        archivePath: workerResult.archivePath,
+        workerExitCode: workerResult.exitCode,
+        reviewExitCode,
+      });
     } catch (err) {
       console.error(
-        `Warning: failed to post comment on #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`
+        `Warning: failed to post comment on #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -296,17 +358,12 @@ async function cmdRun(args: string[]) {
   console.log(`\n${"=".repeat(60)}`);
   console.log(`dangeresque run complete`);
   console.log(`  Worktree: .claude/worktrees/${workerResult.worktreeName}/`);
-  console.log(`  Branch: ${workerResult.branch}`);
+  console.log(`  Branch:   ${workerResult.branch}`);
+  console.log(`  Artifact: ${workerResult.archivePath}`);
   console.log(`\nNext steps:`);
-  console.log(
-    `  Review:  dangeresque results --latest`
-  );
-  console.log(
-    `  Merge:   dangeresque merge ${workerResult.branch}`
-  );
-  console.log(
-    `  Discard: dangeresque discard ${workerResult.branch}`
-  );
+  console.log(`  Review:  dangeresque results --latest`);
+  console.log(`  Merge:   dangeresque merge ${workerResult.branch}`);
+  console.log(`  Discard: dangeresque discard ${workerResult.branch}`);
   console.log("=".repeat(60));
 }
 
@@ -335,26 +392,32 @@ async function cmdLogs(args: string[]) {
     }
   } else {
     // Latest by commit timestamp
-    target = worktrees.reduce((a, b) => a.commitEpoch >= b.commitEpoch ? a : b);
+    target = worktrees.reduce((a, b) =>
+      a.commitEpoch >= b.commitEpoch ? a : b,
+    );
   }
 
   // Read PID file for session IDs
   const pidInfo = readPidFile(target.path);
   if (!pidInfo) {
-    console.error(`No PID file found in ${target.path} — run predates session tracking`);
+    console.error(
+      `No PID file found in ${target.path} — run predates session tracking`,
+    );
     process.exit(1);
   }
 
   // Auto-select review phase if review is running (PID file has review PID)
   const autoReview = !review && pidInfo.reviewSessionId && target.running;
-  const phase = (review || autoReview) ? "review" : "worker";
+  const phase = review || autoReview ? "review" : "worker";
   const sessionPath = resolveSessionPath(pidInfo, phase, target.path);
   if (!sessionPath) {
     console.error(`No ${phase} session ID tracked for this run`);
     process.exit(1);
   }
 
-  console.error(`Branch: ${target.branch}  Phase: ${phase}  ${target.running ? "RUNNING" : "IDLE"}`);
+  console.error(
+    `Branch: ${target.branch}  Phase: ${phase}  ${target.running ? "RUNNING" : "IDLE"}`,
+  );
 
   const follow = followFlag || target.running;
   await tailLog({
@@ -509,7 +572,9 @@ function cmdClean(args: string[]) {
 
 function cmdStage(args: string[]) {
   if (args.length === 0) {
-    console.error("Usage: dangeresque stage <issue-number> --comment \"text\" [--mode MODE]");
+    console.error(
+      'Usage: dangeresque stage <issue-number> --comment "text" [--mode MODE]',
+    );
     process.exit(1);
   }
 
@@ -532,7 +597,9 @@ function cmdStage(args: string[]) {
 
   if (!comment) {
     console.error("--comment is required");
-    console.error("Usage: dangeresque stage <issue-number> --comment \"text\" [--mode MODE]");
+    console.error(
+      'Usage: dangeresque stage <issue-number> --comment "text" [--mode MODE]',
+    );
     process.exit(1);
   }
 

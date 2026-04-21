@@ -11,8 +11,8 @@ These common CLAUDE.md directives are modified for AFK mode:
 | Interactive Directive | AFK Override | Reason |
 |----------------------|-------------|--------|
 | "Discuss with user first" | **STAY-IN-SCOPE** — Follow the GitHub Issue exactly. Do not widen scope. If blocked, stop and write findings instead of guessing. | No human to discuss with during AFK execution. |
-| "Document immediately" | **WRITE-HANDOFF** — Update RUN_RESULT.md before ending. This is your primary output. | Handoff artifacts replace live documentation. |
-| "Push back / challenge" | **CHALLENGE-IN-WRITING** — If you disagree with the hypothesis or approach, document your objection in RUN_RESULT.md with evidence. Do not silently comply with a bad plan. | No human to push back against, but objections must be recorded. |
+| "Document immediately" | **WRITE-HANDOFF** — Write your run result file (path given in the initial prompt) before ending. This is your primary output. | Handoff artifacts replace live documentation. |
+| "Push back / challenge" | **CHALLENGE-IN-WRITING** — If you disagree with the hypothesis or approach, document your objection in the run result file with evidence. Do not silently comply with a bad plan. | No human to push back against, but objections must be recorded. |
 
 All other CLAUDE.md directives apply as written.
 
@@ -35,20 +35,21 @@ Projects may define additional custom modes in their copy of this file.
 - Stay within the GitHub Issue. Period.
 - **One run = one slice.** Complete the scoped slice, not the entire issue, unless the issue IS a single slice.
 - Do not try to solve the entire GitHub Issue unless it explicitly scopes you to do so.
-- If you discover a related problem, note it in RUN_RESULT.md under "Risks / Uncertainty" — do not fix it.
+- If you discover a related problem, note it in your run result file under "Risks / Uncertainty" — do not fix it.
 - If the task is blocked (missing tool, unclear spec, needs human decision), stop and report. Do not guess.
 
 ## File Scope Enforcement
 
 - **DO NOT modify, delete, or create files outside the scope defined in the GitHub Issue.**
-- If you see code that looks wrong but isn't part of your issue — leave it alone. Note the concern in RUN_RESULT.md under "Observations", do not fix it.
+- If you see code that looks wrong but isn't part of your issue — leave it alone. Note the concern in your run result file under "Observations", do not fix it.
 - If the issue says "only touch test files", that means ZERO changes to production code.
 - **Deleting files you did not create in this run is NEVER acceptable** unless the issue explicitly requires deletion.
 - Your worktree branched from `origin/HEAD` at creation time. Other workers may have merged changes to main since then. Code that looks unfamiliar may reflect work from another branch — DO NOT revert or "fix" it.
+- The run result file lives inside your worktree at `.dangeresque/runs/issue-<N>/…` and will be committed automatically by dangeresque after your session ends. You do NOT need to `git add` or commit it yourself — and do NOT include it in any of your own commits.
 
 ## Status Language
 
-Use ONLY these statuses in RUN_RESULT.md:
+Use ONLY these statuses in your run result file:
 
 | Status | Meaning |
 |--------|---------|
@@ -65,8 +66,8 @@ Use ONLY these statuses in RUN_RESULT.md:
 
 Before ending your session, you MUST:
 
-1. Update `RUN_RESULT.md` with all required sections, starting with the `<!-- SUMMARY -->` block (see worker-prompt.md)
-2. `git add` your code changes + `git add -f RUN_RESULT.md` (force-add — gitignored on main), then `git commit`
+1. Write your run result file (absolute path from the initial prompt) with all required sections, starting with the `<!-- SUMMARY -->` block (see worker-prompt.md)
+2. `git add` your code changes + `git commit` them in the worktree. Do NOT add the run result file — dangeresque commits it separately after your session ends.
 3. Your commit message should summarize what was done
 
 ## Stop Conditions

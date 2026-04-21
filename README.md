@@ -13,26 +13,27 @@ Dangeresque runs Claude Code directly on the host in a git worktree. You get ful
 ## How It Works
 
 ```
-  Your repo          Worker pass          Review pass
-  (main)     --->    (worktree)    --->   (same worktree)
-                         |                      |
-                  Reads GitHub Issue,      Reads git diff,
-                  executes task,           audits worker claims,
-                  writes RUN_RESULT.md     appends verdict
-                                                |
-                                                v
-                                    You review diff,
-                                    merge or discard
+  Your repo          Worker pass             Review pass
+  (main)     --->    (worktree)       --->   (same worktree)
+                         |                         |
+                  Reads GitHub Issue,         Reads git diff,
+                  executes task,              audits worker claims,
+                  writes run result to        appends verdict to the
+                  .dangeresque/runs/          same run file
+                                                   |
+                                                   v
+                                          You review diff,
+                                          merge or discard
 ```
 
-1. **Worker** runs Claude Code headlessly (`-p`) in an isolated worktree with your custom system prompt + GitHub Issue context
-2. **Reviewer** runs Claude Code in the same worktree with an adversarial review prompt — checks the actual `git diff` against the worker's claims
-3. **RUN_RESULT.md** posted as a comment on the GitHub Issue
-4. **macOS notification** fires when complete
-5. **You** inspect the diff, discuss with Claude, then `merge` or `discard`
-6. **RUN_RESULT.md archived** locally to `.dangeresque/runs/` for future run context
+1. **Worker** runs Claude Code headlessly (`-p`) in an isolated worktree with your custom system prompt + GitHub Issue context. It writes a run result file at `.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md` inside the worktree.
+2. **Reviewer** runs Claude Code in the same worktree with an adversarial review prompt — checks the actual `git diff` against the worker's claims and appends its verdict to the same run file.
+3. Dangeresque **commits the run file** to the worktree branch so it flows through normal merge into main — runs are tracked history, not a parallel archive.
+4. The **full run file** is posted as a comment on the GitHub Issue.
+5. **macOS notification** fires when complete.
+6. **You** inspect the diff, discuss with Claude, then `merge` or `discard`.
 
-No code touches your main branch until you explicitly merge.
+No code touches your main branch until you explicitly merge. If the worker **fails** (non-zero exit), dangeresque prints a loud FAILURE banner, posts a FAIL comment on the issue, and exits non-zero — no stale success artifacts.
 
 ## Requirements
 
@@ -76,12 +77,14 @@ Workers read your project's `CLAUDE.md` (at project root or `.claude/CLAUDE.md`)
 # PRIME DIRECTIVES
 
 ## Quality Gates
+
 - **VERIFY-BEFORE** — Check current state before touching anything.
 - **VERIFY-AFTER** — Confirm every change landed. Grep the file, check the value.
 - **NO-BANDAID** — Every fix must be researched and confirmed correct.
 - **ONE-PATH** — Never add a parallel code path when the existing system can be extended.
 
 ## Project-Specific
+
 - Run `yarn test` to verify changes
 - The API layer is in `src/api/` — route handlers call services, never repositories directly
 - Always run `yarn lint` before committing
@@ -93,30 +96,35 @@ The project-specific section is where you put build commands, architecture rules
 
 The default prompts work out of the box, but you can tailor them. The files in `.dangeresque/` are yours to edit:
 
-| File | What to customize |
-|------|-------------------|
-| `worker-prompt.md` | Add project-specific conventions, build commands, test runners |
-| `review-prompt.md` | Add domain-specific review criteria |
-| `AFK_WORKER_RULES.md` | Add custom modes, adjust scope rules |
+| File                  | What to customize                                              |
+| --------------------- | -------------------------------------------------------------- |
+| `worker-prompt.md`    | Add project-specific conventions, build commands, test runners |
+| `review-prompt.md`    | Add domain-specific review criteria                            |
+| `AFK_WORKER_RULES.md` | Add custom modes, adjust scope rules                           |
 
 **Examples:**
 
 In `worker-prompt.md`, add project context:
+
 ```markdown
 ## Project-Specific Rules
+
 - Run `yarn test` to verify changes (not `npm test`)
 - The API layer is in `src/api/` — route handlers call services, never repositories directly
 - Always run `yarn lint` before committing
 ```
 
 In `AFK_WORKER_RULES.md`, add a custom mode:
+
 ```markdown
 | **MIGRATE** | Database migration | Create migration files, update schema | Change application code |
 ```
 
 In `review-prompt.md`, add domain checks:
+
 ```markdown
 ## Additional Review Criteria
+
 - Verify no direct database queries outside the repository layer
 - Check that new API endpoints have corresponding test coverage
 ```
@@ -155,7 +163,7 @@ You:    /dangeresque-create-issue
 dangeresque run --issue 63
 ```
 
-This dispatches an **INVESTIGATE** run (the default mode). The worker reads the GitHub Issue, traces through relevant code, and documents findings in `RUN_RESULT.md` — but makes no code changes. A review pass runs automatically after. A macOS notification fires when complete.
+This dispatches an **INVESTIGATE** run (the default mode). The worker reads the GitHub Issue, traces through relevant code, and documents findings in a run result file under `.dangeresque/runs/issue-63/` — but makes no code changes. A review pass runs automatically after. A macOS notification fires when complete.
 
 ### 3. Read the results
 
@@ -185,7 +193,7 @@ The `[staged]` comment becomes part of the next worker's prompt context. This is
 dangeresque merge investigate-63
 ```
 
-Archives `RUN_RESULT.md` locally (so future runs have context), merges worktree into main, cleans up. Since INVESTIGATE runs don't change code, this just brings in the archived results.
+Merges the worktree into main, cleaning up the branch. The run result file at `.dangeresque/runs/issue-63/` is part of the merge — future runs see it automatically because it's tracked history. Since INVESTIGATE runs don't change code, the merge just brings in the run file.
 
 ### 6. Dispatch the implementation
 
@@ -193,12 +201,12 @@ Archives `RUN_RESULT.md` locally (so future runs have context), merges worktree 
 dangeresque run --issue 63 --mode IMPLEMENT
 ```
 
-The worker reads the issue + your staged comment + archived investigation results, makes code changes, writes tests, and commits. Review pass audits the diff.
+The worker reads the issue + your staged comment + prior run files for the same issue, makes code changes, writes tests, and commits. Review pass audits the diff.
 
 ### 7. Review and merge
 
 ```bash
-# Read results (includes RUN_RESULT.md + diff summary vs main)
+# Read results (shows the latest run file + diff summary vs main)
 ! dangeresque results --latest
 
 # Discuss with Claude — ask about edge cases, risks, test coverage
@@ -243,8 +251,8 @@ Options:
   --name <name>       Custom worktree name (auto-prefixed with dangeresque-)
   --no-review         Skip the review pass
   --interactive       Run interactively instead of headless (for debugging)
-  --model <model>     Override model (default: claude-opus-4-6)
-  --effort <level>    Override effort (default: max) [low, medium, high, max]
+  --model <model>     Override model (default: claude-opus-4-7)
+  --effort <level>    Override effort (default: max) [low, medium, high|xhigh, max]
 ```
 
 ### Switching Engines
@@ -320,31 +328,31 @@ List active dangeresque worktrees with branch names and HEAD commits.
 
 ### `dangeresque merge <branch>`
 
-Archive `RUN_RESULT.md`, merge worktree into current branch, clean up. Supports branch shorthand (`investigate-63` instead of `worktree-dangeresque-investigate-63`).
+Merge the worktree branch into the current branch (carrying the run result file with it), then remove the worktree and branch. Supports branch shorthand (`investigate-63` instead of `worktree-dangeresque-investigate-63`).
 
 ### `dangeresque discard <branch>`
 
-Archive `RUN_RESULT.md`, force-remove worktree and branch without merging. Supports branch shorthand.
+Force-remove worktree and branch without merging. The run result file is discarded along with the worktree — that's the point of discard. Supports branch shorthand.
 
 ### `dangeresque clean --issue <N>`
 
-Delete archived runs for an issue after closing it.
+Delete tracked run result files for an issue (e.g. after closing). This modifies the working tree; commit the deletion separately.
 
 ### `dangeresque init`
 
-Scaffold `.dangeresque/` config, copy skills, merge notification hooks, update `.gitignore`. Re-run to refresh skills from the latest dangeresque version. Existing config files are not overwritten.
+Scaffold `.dangeresque/` config, copy skills, merge notification hooks. Re-run to refresh skills. Existing config files are not overwritten. If a legacy `.dangeresque/runs/` pattern is found in `.gitignore`, it is removed (run results are tracked in git, not ignored).
 
 ## Task Modes
 
 Each run operates in exactly one mode. The mode constrains what the worker can do.
 
-| Mode | Purpose | May | May NOT |
-|------|---------|-----|---------|
-| **INVESTIGATE** | Find root cause, trace flow | Read, grep, analyze, write findings | Change code |
-| **IMPLEMENT** | Bounded code change | Edit code, write tests, commit | Widen scope beyond the issue |
-| **VERIFY** | Prove a change works | Run tests, grep values, check state | Write new features |
-| **REFACTOR** | Restructure without behavior change | Move/rename/reorganize | Change behavior |
-| **TEST** | Write tests for existing behavior | Create test files, run them | Change production code |
+| Mode            | Purpose                             | May                                 | May NOT                      |
+| --------------- | ----------------------------------- | ----------------------------------- | ---------------------------- |
+| **INVESTIGATE** | Find root cause, trace flow         | Read, grep, analyze, write findings | Change code                  |
+| **IMPLEMENT**   | Bounded code change                 | Edit code, write tests, commit      | Widen scope beyond the issue |
+| **VERIFY**      | Prove a change works                | Run tests, grep values, check state | Write new features           |
+| **REFACTOR**    | Restructure without behavior change | Move/rename/reorganize              | Change behavior              |
+| **TEST**        | Write tests for existing behavior   | Create test files, run them         | Change production code       |
 
 Add custom modes in `.dangeresque/AFK_WORKER_RULES.md`.
 
@@ -353,7 +361,7 @@ Add custom modes in `.dangeresque/AFK_WORKER_RULES.md`.
 When building the worker prompt, dangeresque filters issue comments:
 
 - **Included:** issue body + all `[staged]` comments + last 3 untagged human comments
-- **Skipped:** old `[dangeresque]` run result comments (replaced by local archive)
+- **Skipped:** old `[dangeresque]` run result comments (duplicated by the tracked run files in `.dangeresque/runs/`)
 
 This keeps the prompt focused. Use `dangeresque stage` to add guidance the worker will always see.
 
@@ -361,39 +369,41 @@ This keeps the prompt focused. Use `dangeresque stage` to add guidance the worke
 
 ### .dangeresque/ directory
 
-| File | Purpose |
-|------|---------|
-| `worker-prompt.md` | System prompt appended for the worker pass |
-| `review-prompt.md` | System prompt for the review pass |
-| `AFK_WORKER_RULES.md` | Operating modes, scope rules, status language |
-| `CLAUDE.md.sample` | Recommended CLAUDE.md starting point |
-| `config.json` | Optional overrides (model, tools, permissions) |
-| `runs/` | Local archive of RUN_RESULT.md files (gitignored) |
+| File                  | Purpose                                           |
+| --------------------- | ------------------------------------------------- |
+| `worker-prompt.md`    | System prompt appended for the worker pass        |
+| `review-prompt.md`    | System prompt for the review pass                 |
+| `AFK_WORKER_RULES.md` | Operating modes, scope rules, status language     |
+| `CLAUDE.md.sample`    | Recommended CLAUDE.md starting point              |
+| `config.json`         | Optional overrides (model, tools, permissions)    |
+| `runs/`               | Tracked run result files, one per run (merged with your branch) |
 
 ### config.json
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `engine` | string | `"claude"` | Execution engine (`claude` or `codex`) |
-| `model` | string | `"claude-opus-4-6"` | Model ID passed to the selected engine |
-| `permissionMode` | string | `"acceptEdits"` | Sandbox/permission mode for the selected engine |
-| `effort` | string | `"max"` | Effort level: low, medium, high, max |
-| `headless` | boolean | `true` | Run with `-p` flag (set false for interactive) |
-| `allowedTools` | string[] | _(see below)_ | Tools auto-approved without prompting |
-| `disallowedTools` | string[] | _(see below)_ | Tools hard-blocked from use |
-| `workerPrompt` | string | `"worker-prompt.md"` | Worker system prompt filename |
-| `reviewPrompt` | string | `"review-prompt.md"` | Review system prompt filename |
-| `notifications` | boolean | `true` | Enable macOS notification hooks |
+| Key               | Type     | Default              | Description                                     |
+| ----------------- | -------- | -------------------- | ----------------------------------------------- | ---------- |
+| `engine`          | string   | `"claude"`           | Execution engine (`claude` or `codex`)          |
+| `model`           | string   | `"claude-opus-4-7"`  | Model ID passed to the selected engine          |
+| `permissionMode`  | string   | `"acceptEdits"`      | Sandbox/permission mode for the selected engine |
+| `effort`          | string   | `"max"`              | Effort level: low, medium, high                 | xhigh, max |
+| `headless`        | boolean  | `true`               | Run with `-p` flag (set false for interactive)  |
+| `allowedTools`    | string[] | _(see below)_        | Tools auto-approved without prompting           |
+| `disallowedTools` | string[] | _(see below)_        | Tools hard-blocked from use                     |
+| `workerPrompt`    | string   | `"worker-prompt.md"` | Worker system prompt filename                   |
+| `reviewPrompt`    | string   | `"review-prompt.md"` | Review system prompt filename                   |
+| `notifications`   | boolean  | `true`               | Enable macOS notification hooks                 |
 
 ### Default Tool Permissions
 
 **Allowed (auto-approved):**
+
 - `Read`, `Edit`, `Write`, `Grep`, `Glob`
 - `WebSearch`, `WebFetch`
 - `mcp__*` (all MCP servers)
 - `Bash(git status *)`, `Bash(git diff *)`, `Bash(git log *)`, `Bash(git add *)`, `Bash(git commit *)`, `Bash(git branch *)`
 
 **Disallowed (hard-blocked):**
+
 - `Bash(git push *)`, `Bash(git reset --hard *)`, `Bash(rm -rf *)`, `Bash(git branch -D *)`
 
 ## Why Host-Native Instead of Containerized
@@ -416,13 +426,13 @@ The safety model is different:
 - **Codex** MCP is configured in `~/.codex/config.toml` under `[mcp_servers]`.
 - Keep entries aligned across both tools if you want equivalent MCP behavior for both engines.
 
-| Layer | Docker-based | Dangeresque |
-|-------|-------------|-------------|
-| **Filesystem** | Container sandbox | Git worktree (isolated branch, shared repo) |
-| **Permissions** | `--dangerously-skip-permissions` | `acceptEdits` + allowedTools/disallowedTools |
-| **MCP servers** | Not practical | Native access |
-| **Review** | You write the orchestration | Built-in adversarial reviewer |
-| **Merge control** | Varies | Always manual — nothing touches main without `dangeresque merge` |
+| Layer             | Docker-based                     | Dangeresque                                                      |
+| ----------------- | -------------------------------- | ---------------------------------------------------------------- |
+| **Filesystem**    | Container sandbox                | Git worktree (isolated branch, shared repo)                      |
+| **Permissions**   | `--dangerously-skip-permissions` | `acceptEdits` + allowedTools/disallowedTools                     |
+| **MCP servers**   | Not practical                    | Native access                                                    |
+| **Review**        | You write the orchestration      | Built-in adversarial reviewer                                    |
+| **Merge control** | Varies                           | Always manual — nothing touches main without `dangeresque merge` |
 
 The name is intentional — running agents on your host filesystem is slightly more dangerous. The mitigation is the human review loop: worker → reviewer → you inspect diff → explicit merge. No code lands without your approval.
 

@@ -4,8 +4,8 @@ import { homedir } from "node:os";
 
 export const CONFIG_DIR = ".dangeresque";
 export const RUNS_DIR = "runs";
+export const ADHOC_DIR = "adhoc";
 export const TASK_FILE = "NEXT_TASK.md";
-export const RESULT_FILE = "RUN_RESULT.md";
 export const PID_FILE = ".dangeresque.pid";
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
@@ -41,7 +41,7 @@ export interface DangeresqueConfig {
 
 const DEFAULT_CONFIG: DangeresqueConfig = {
   engine: "claude",
-  model: "claude-opus-4-6",
+  model: "claude-opus-4-7",
   permissionMode: "acceptEdits",
   effort: "max",
   headless: true,
@@ -98,7 +98,9 @@ export function validateSetup(projectRoot: string): ValidationResult {
   const config = loadConfig(projectRoot);
 
   if (!["claude", "codex"].includes(config.engine)) {
-    errors.push(`Invalid engine '${config.engine}' (expected 'claude' or 'codex')`);
+    errors.push(
+      `Invalid engine '${config.engine}' (expected 'claude' or 'codex')`,
+    );
   }
 
   const workerPromptPath = join(configDir, config.workerPrompt);
