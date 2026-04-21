@@ -1,5 +1,5 @@
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "run_id": "fa34b2ed-fecf-4261-9288-c5b220211533",
   "issue_number": 11,
   "issue_url": "https://github.com/slikk66/dangeresque/issues/11",
@@ -7,6 +7,8 @@
   "engine": "claude",
   "model": "claude-opus-4-7",
   "effort": "max",
+  "review_model": "claude-opus-4-7",
+  "review_effort": "max",
   "worktree_name": "dangeresque-implement-11",
   "branch": "worktree-dangeresque-implement-11",
   "started_at": "2026-04-21T18:32:11.717Z",

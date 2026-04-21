@@ -4,7 +4,7 @@ import { relative, basename, join } from "node:path";
 import { execSync } from "node:child_process";
 import type { Engine } from "./config.js";
 
-export const ARTIFACT_SCHEMA_VERSION = "1";
+export const ARTIFACT_SCHEMA_VERSION = "2";
 
 export type ResultClassification = "success" | "partial_success" | "failure";
 
@@ -51,6 +51,8 @@ export interface RunArtifact {
   engine: Engine;
   model: string;
   effort: string | null;
+  review_model?: string;
+  review_effort?: string;
   worktree_name: string;
   branch: string;
   started_at: string;
@@ -79,6 +81,8 @@ export interface BuilderInit {
   engine: Engine;
   model: string;
   effort?: string;
+  reviewModel?: string;
+  reviewEffort?: string;
   worktreeName: string;
   branch: string;
   archivePath: string;
@@ -194,6 +198,8 @@ export class ArtifactBuilder {
       reviewer_verdict: reviewerVerdict,
     });
 
+    const reviewRan = review !== null && !review.skipped;
+
     return {
       schema_version: ARTIFACT_SCHEMA_VERSION,
       run_id: this.runId,
@@ -206,6 +212,12 @@ export class ArtifactBuilder {
       engine: this.init.engine,
       model: this.init.model,
       effort: this.init.effort ?? null,
+      ...(reviewRan && this.init.reviewModel !== undefined
+        ? { review_model: this.init.reviewModel }
+        : {}),
+      ...(reviewRan && this.init.reviewEffort !== undefined
+        ? { review_effort: this.init.reviewEffort }
+        : {}),
       worktree_name: this.init.worktreeName,
       branch: this.init.branch,
       started_at: new Date(this.startedAtMs).toISOString(),

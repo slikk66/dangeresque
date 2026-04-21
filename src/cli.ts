@@ -294,6 +294,8 @@ async function cmdRun(args: string[]) {
     engine: config.engine,
     model: config.model,
     effort: config.effort,
+    reviewModel: effectiveReviewModel,
+    reviewEffort: effectiveReviewEffort,
     worktreeName: workerResult.worktreeName,
     branch: workerResult.branch,
     archivePath: workerResult.archivePath,
