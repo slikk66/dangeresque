@@ -150,7 +150,7 @@ export function loadIssueFixture(path: string): IssueData {
   };
 }
 
-function formatIssueComments(issueData: IssueData): string {
+export function formatIssueComments(issueData: IssueData): string {
   const visibleComments = issueData.comments.filter(c => !c.isMinimized);
   const stagedComments = visibleComments.filter((c) => c.body.startsWith("**[staged"));
   const humanComments = visibleComments.filter(

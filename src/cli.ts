@@ -6,7 +6,7 @@ import {
   resolveProjectRoot,
   type Engine,
 } from "./config.js";
-import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, type IssueData } from "./runner.js";
+import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, type IssueData } from "./runner.js";
 import {
   ArtifactBuilder,
   writeArtifact,
@@ -350,7 +350,7 @@ async function cmdRun(args: string[]) {
   try {
     const { execSync } = await import("node:child_process");
     const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
-    const changedFiles = execSync("git diff main --name-only", {
+    const changedFiles = execSync("git diff main...HEAD --name-only", {
       cwd: worktreePath,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -359,9 +359,8 @@ async function cmdRun(args: string[]) {
       .split("\n")
       .filter((f) => f && !f.startsWith(".dangeresque/runs/"));
 
-    const unexpected = changedFiles.filter(
-      (f) => !issueData.body.includes(f),
-    );
+    const haystack = issueData.body + formatIssueComments(issueData);
+    const unexpected = changedFiles.filter((f) => !haystack.includes(f));
     if (unexpected.length > 0) {
       console.warn(
         `\n⚠️  Worker modified files not mentioned in issue body:`,
