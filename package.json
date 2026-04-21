@@ -7,9 +7,13 @@
   "bin": "./dist/cli.js",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "imports": {
+    "#dist/*": "./dist/*"
+  },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch"
+    "build": "tsc && tsc -p tsconfig.test.json",
+    "dev": "tsc --watch",
+    "test": "yarn build && node --test dist/__tests__"
   },
   "engines": {
     "node": ">=22"

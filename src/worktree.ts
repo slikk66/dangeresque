@@ -234,7 +234,7 @@ export function extractIssueNumber(branch: string): number | undefined {
  * Extract mode from branch name.
  * worktree-dangeresque-investigate-63 → INVESTIGATE
  */
-function extractMode(branch: string): string {
+export function extractMode(branch: string): string {
   // Remove worktree- and dangeresque- prefixes, then take the part before the issue number
   const stripped = branch.replace(/^worktree-/, "").replace(/^dangeresque-/, "");
   const modeMatch = stripped.match(/^([a-z]+)-\d+$/);
