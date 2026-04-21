@@ -20,6 +20,7 @@
     "Bash(gh issue list *)",
     "Bash(gh label list *)",
     "Bash(yarn build)",
-    "Bash(yarn install --immutable)"
+    "Bash(yarn install --immutable)",
+    "Bash(yarn test)"
   ]
 }

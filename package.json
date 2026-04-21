@@ -13,7 +13,7 @@
   "scripts": {
     "build": "tsc && tsc -p tsconfig.test.json",
     "dev": "tsc --watch",
-    "test": "yarn build && node --test dist/__tests__"
+    "test": "yarn build && node --test 'dist/__tests__/**/*.test.js'"
   },
   "engines": {
     "node": ">=22"
