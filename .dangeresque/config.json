@@ -18,6 +18,8 @@
     "Bash(gh issue create *)",
     "Bash(gh issue view *)",
     "Bash(gh issue list *)",
-    "Bash(gh label list *)"
+    "Bash(gh label list *)",
+    "Bash(yarn build)",
+    "Bash(yarn install --immutable)"
   ]
 }
