@@ -143,8 +143,11 @@ export function resolveBranch(projectRoot: string, input: string): string {
 }
 
 // --- Run archive readers ---
-// Workers write their run result directly to .dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md
-// (in the project root, not the worktree). These helpers read that directory.
+// Workers write their run result inside the worktree at
+// <worktree>/.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md and commit it on
+// the worktree branch. It only lands at <projectRoot>/.dangeresque/runs/…
+// after `dangeresque merge`. Callers pass whichever root matches the lookup
+// they want: worktree path for pre-merge, project root for post-merge.
 
 function getRunsDir(projectRoot: string): string {
   return join(projectRoot, CONFIG_DIR, RUNS_DIR);
@@ -369,22 +372,24 @@ export function getWorktreeResults(
 
   const issueNum = extractIssueNumber(targetWorktree.branch);
   if (issueNum) {
-    const archived = listArchivedRuns(projectRoot, issueNum);
+    // Read artifacts from the worktree, not the project root — they only land
+    // at the project root after `dangeresque merge`.
+    const archived = listArchivedRuns(targetWorktree.path, issueNum);
     if (archived.length > 0) {
       if (archived.length > 1) {
         lines.push("--- Previous runs ---");
         for (let i = 0; i < archived.length - 1; i++) {
-          const content = readArchivedRun(projectRoot, issueNum, archived[i]);
+          const content = readArchivedRun(targetWorktree.path, issueNum, archived[i]);
           lines.push(formatRunOneLiner(archived[i], content, i));
         }
         lines.push("");
       }
       const latestName = archived[archived.length - 1];
-      const latest = readArchivedRun(projectRoot, issueNum, latestName);
+      const latest = readArchivedRun(targetWorktree.path, issueNum, latestName);
       lines.push(`--- Latest run: ${latestName} ---`);
       lines.push(latest);
     } else {
-      lines.push(`No run artifacts in .dangeresque/runs/issue-${issueNum}/`);
+      lines.push(`No run artifacts in ${targetWorktree.path}/.dangeresque/runs/issue-${issueNum}/`);
     }
   } else {
     lines.push("Worktree has no associated issue — no run artifacts tracked.");
