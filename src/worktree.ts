@@ -342,7 +342,7 @@ export function discardWorktree(
 
 export function getWorktreeResults(
   projectRoot: string,
-  branchOrLatest: string | "latest"
+  branch: string
 ): string {
   const worktrees = listWorktrees(projectRoot);
 
@@ -350,18 +350,11 @@ export function getWorktreeResults(
     return `No active dangeresque worktrees found. (cwd=${process.cwd()})`;
   }
 
-  let targetWorktree: WorktreeInfo;
-
-  if (branchOrLatest === "latest") {
-    targetWorktree = worktrees.reduce((a, b) => a.commitEpoch >= b.commitEpoch ? a : b);
-  } else {
-    const found = worktrees.find(
-      (wt) => wt.branch === branchOrLatest || wt.path.includes(branchOrLatest)
-    );
-    if (!found) {
-      return `Worktree not found: ${branchOrLatest}\nActive worktrees: ${worktrees.map((w) => w.branch).join(", ")}`;
-    }
-    targetWorktree = found;
+  const targetWorktree = worktrees.find(
+    (wt) => wt.branch === branch || wt.path.includes(branch)
+  );
+  if (!targetWorktree) {
+    return `Worktree not found: ${branch}\nActive worktrees: ${worktrees.map((w) => w.branch).join(", ")}`;
   }
 
   const lines: string[] = [];

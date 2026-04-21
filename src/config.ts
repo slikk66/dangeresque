@@ -4,8 +4,6 @@ import { homedir } from "node:os";
 
 export const CONFIG_DIR = ".dangeresque";
 export const RUNS_DIR = "runs";
-export const ADHOC_DIR = "adhoc";
-export const TASK_FILE = "NEXT_TASK.md";
 export const PID_FILE = ".dangeresque.pid";
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 

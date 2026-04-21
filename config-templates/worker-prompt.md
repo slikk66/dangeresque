@@ -4,7 +4,7 @@ You are an AFK worker executing a bounded task in a git worktree. You operate au
 
 ## Run Result File
 
-Your initial prompt specifies an absolute path for your **run result file** — it lives inside your worktree at `.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md` (or `adhoc/…` for issue-less runs). Write your entire run result there using the Write tool. Do NOT create `RUN_RESULT.md` — that legacy file has been replaced.
+Your initial prompt specifies an absolute path for your **run result file** — it lives inside your worktree at `.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md`. Write your entire run result there using the Write tool. Do NOT create `RUN_RESULT.md` — that legacy file has been replaced.
 
 Prior runs for the same issue live in the same directory (they were merged to main from previous worktrees). If you need context from a prior run, read the newest file there. Do not read them all.
 

@@ -6,8 +6,6 @@ import {
   type DangeresqueConfig,
   CONFIG_DIR,
   RUNS_DIR,
-  ADHOC_DIR,
-  TASK_FILE,
   projectHash,
 } from "./config.js";
 import { writePidFile, updatePidFile, removePidFile, readPidFile } from "./worktree.js";
@@ -18,8 +16,8 @@ export interface RunOptions {
   name?: string;
   /** Run review pass after worker (default: true) */
   review?: boolean;
-  /** GitHub Issue number (replaces NEXT_TASK.md) */
-  issueData?: IssueData;
+  /** GitHub Issue data — required */
+  issueData: IssueData;
   /** Task mode: INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST */
   mode?: string;
 }
@@ -41,12 +39,11 @@ export interface RunResult {
  */
 export function computeRunArchivePath(
   worktreePath: string,
-  issueNumber: number | undefined,
+  issueNumber: number,
   mode: string
 ): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const subdir = issueNumber ? `issue-${issueNumber}` : ADHOC_DIR;
-  return join(worktreePath, CONFIG_DIR, RUNS_DIR, subdir, `${timestamp}-${mode}.md`);
+  return join(worktreePath, CONFIG_DIR, RUNS_DIR, `issue-${issueNumber}`, `${timestamp}-${mode}.md`);
 }
 
 function commitArchiveFile(worktreePath: string, archivePath: string): void {
@@ -174,39 +171,25 @@ function formatIssueComments(issueData: IssueData): string {
 function buildTaskPrompt(opts: RunOptions, archivePath: string): string {
   const mode = opts.mode ?? "INVESTIGATE";
   const runsDir = dirname(archivePath);
+  const { issueData } = opts;
 
-  if (opts.issueData) {
-    const { issueData } = opts;
-    let prompt =
-      `You are an AFK worker executing a bounded task.\n` +
-      `Mode: ${mode}.\n\n` +
-      `Your task is defined in the following GitHub Issue:\n\n` +
-      `# #${issueData.number}: ${issueData.title}\n\n` +
-      `${issueData.body}`;
+  let prompt =
+    `You are an AFK worker executing a bounded task.\n` +
+    `Mode: ${mode}.\n\n` +
+    `Your task is defined in the following GitHub Issue:\n\n` +
+    `# #${issueData.number}: ${issueData.title}\n\n` +
+    `${issueData.body}`;
 
-    prompt += formatIssueComments(issueData);
+  prompt += formatIssueComments(issueData);
 
-    prompt +=
-      `\n\n## Run Artifacts\n\n` +
-      `- Write your run result to exactly this absolute path: ${archivePath}\n` +
-      `- Prior runs for this issue live at ${runsDir}/ (one timestamped file per run, newest last). ` +
-      `Read the latest there ONLY if you need prior context — do not read them all.\n\n` +
-      `Follow .dangeresque/AFK_WORKER_RULES.md (appended to your system prompt).`;
+  prompt +=
+    `\n\n## Run Artifacts\n\n` +
+    `- Write your run result to exactly this absolute path: ${archivePath}\n` +
+    `- Prior runs for this issue live at ${runsDir}/ (one timestamped file per run, newest last). ` +
+    `Read the latest there ONLY if you need prior context — do not read them all.\n\n` +
+    `Follow .dangeresque/AFK_WORKER_RULES.md (appended to your system prompt).`;
 
-    return prompt;
-  }
-
-  const taskContent = readFileSync(join(opts.projectRoot, TASK_FILE), "utf-8");
-  const modeMatch = taskContent.match(/^-\s*Mode:\s*(\w+)/m);
-  const fileMode = modeMatch?.[1] ?? mode;
-
-  return (
-    `You are an AFK worker executing a bounded task. ` +
-    `Mode: ${fileMode}. ` +
-    `Read NEXT_TASK.md for your full instructions. ` +
-    `Follow .dangeresque/AFK_WORKER_RULES.md (appended to your system prompt). ` +
-    `Write your run result to exactly this absolute path: ${archivePath}`
-  );
+  return prompt;
 }
 
 function buildClaudeWorkerArgs(opts: RunOptions, worktreeName: string, archivePath: string): { args: string[]; workerSessionId: string } {
@@ -300,13 +283,13 @@ function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string, archivePa
 }
 
 function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: string): string {
-  const header = opts.issueData
-    ? `You are an adversarial reviewer of an AFK worker run.\n` +
-      `The task was GitHub Issue #${opts.issueData.number}: ${opts.issueData.title}\n` +
-      `Mode: ${opts.mode ?? "INVESTIGATE"}\n\n` +
-      `## Issue Body\n\n${opts.issueData.body}\n` +
-      formatIssueComments(opts.issueData)
-    : `You are an adversarial reviewer of an AFK worker run.`;
+  const { issueData } = opts;
+  const header =
+    `You are an adversarial reviewer of an AFK worker run.\n` +
+    `The task was GitHub Issue #${issueData.number}: ${issueData.title}\n` +
+    `Mode: ${opts.mode ?? "INVESTIGATE"}\n\n` +
+    `## Issue Body\n\n${issueData.body}\n` +
+    formatIssueComments(issueData);
 
   return (
     `${header}\n\n` +
@@ -447,7 +430,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
 
   const archivePath = computeRunArchivePath(
     worktreePath,
-    opts.issueData?.number,
+    opts.issueData.number,
     opts.mode ?? "INVESTIGATE"
   );
   mkdirSync(dirname(archivePath), { recursive: true });

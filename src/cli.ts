@@ -6,7 +6,7 @@ import {
   resolveProjectRoot,
   type Engine,
 } from "./config.js";
-import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture } from "./runner.js";
+import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, type IssueData } from "./runner.js";
 import {
   ArtifactBuilder,
   writeArtifact,
@@ -22,6 +22,7 @@ import {
   resolveBranch,
   cleanArchivedRuns,
   readPidFile,
+  type WorktreeInfo,
 } from "./worktree.js";
 import { initProject } from "./init.js";
 import { stageComment } from "./stage.js";
@@ -43,8 +44,8 @@ ${engineLine}
 
 Commands:
   run [options]                        Execute worker + review pass
-  logs [branch] [options]              Pretty-print session transcript
-  results [--latest | <branch>]        Show run results from a worktree
+  logs <branch> [options]              Pretty-print session transcript
+  results <branch>                     Show run results from a worktree
   results --issue <N> [--all]          Show archived results for an issue
   stage <number> --comment "text"      Add context comment to an issue
   status                               List active dangeresque worktrees
@@ -68,7 +69,7 @@ ${engineRunNotes}  Advanced: --engine <name> (hidden), DANGERESQUE_ENGINE env va
 Examples:
   dangeresque run --issue 63
   dangeresque run --issue 63 --mode IMPLEMENT
-  dangeresque results --latest
+  dangeresque results investigate-63
   dangeresque stage 63 --comment "root cause confirmed" --mode IMPLEMENT
   dangeresque init
 `;
@@ -197,8 +198,19 @@ async function cmdRun(args: string[]) {
     process.exit(1);
   }
 
+  if (issueNumber === undefined && issueFixturePath === undefined) {
+    console.error(
+      "Usage: dangeresque run --issue <N> [options]\n" +
+        "   or: dangeresque run --issue-fixture <path> [options]\n\n" +
+        "A task source is required. Pass one of:\n" +
+        "  --issue <N>              Read task from GitHub Issue #N\n" +
+        "  --issue-fixture <path>   Read task from a local JSON fixture",
+    );
+    process.exit(1);
+  }
+
   // Load issue content from fixture or gh
-  let issueData;
+  let issueData: IssueData;
   const fixtureUsed = issueFixturePath !== undefined;
   if (issueFixturePath !== undefined) {
     try {
@@ -213,9 +225,9 @@ async function cmdRun(args: string[]) {
       );
       process.exit(1);
     }
-  } else if (issueNumber) {
+  } else {
     try {
-      issueData = fetchIssue(projectRoot, issueNumber);
+      issueData = fetchIssue(projectRoot, issueNumber!);
       console.log(`Fetched issue #${issueNumber}: ${issueData.title}`);
     } catch (err) {
       console.error(
@@ -241,10 +253,8 @@ async function cmdRun(args: string[]) {
 
   console.log("\ndangeresque — starting AFK run");
   console.log(`  Project: ${projectRoot}`);
-  if (issueData) {
-    console.log(`  Issue: #${issueData.number} — ${issueData.title}`);
-    console.log(`  Mode: ${effectiveMode}`);
-  }
+  console.log(`  Issue: #${issueData.number} — ${issueData.title}`);
+  console.log(`  Mode: ${effectiveMode}`);
   console.log(`  Engine: ${config.engine}`);
   console.log(`  Model: ${config.model} (effort: ${config.effort})`);
   console.log(`  Mode: ${config.headless ? "headless (-p)" : "interactive"}`);
@@ -319,39 +329,37 @@ async function cmdRun(args: string[]) {
   }
 
   // Post-worker scope check: flag files changed that aren't mentioned in the issue body
-  if (issueData) {
-    try {
-      const { execSync } = await import("node:child_process");
-      const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
-      const changedFiles = execSync("git diff main --name-only", {
-        cwd: worktreePath,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      })
-        .trim()
-        .split("\n")
-        .filter((f) => f && !f.startsWith(".dangeresque/runs/"));
+  try {
+    const { execSync } = await import("node:child_process");
+    const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
+    const changedFiles = execSync("git diff main --name-only", {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+      .trim()
+      .split("\n")
+      .filter((f) => f && !f.startsWith(".dangeresque/runs/"));
 
-      const unexpected = changedFiles.filter(
-        (f) => !issueData.body.includes(f),
+    const unexpected = changedFiles.filter(
+      (f) => !issueData.body.includes(f),
+    );
+    if (unexpected.length > 0) {
+      console.warn(
+        `\n⚠️  Worker modified files not mentioned in issue body:`,
       );
-      if (unexpected.length > 0) {
-        console.warn(
-          `\n⚠️  Worker modified files not mentioned in issue body:`,
-        );
-        for (const f of unexpected) {
-          console.warn(`   ${f}`);
-        }
-        console.warn(`   Review carefully for scope violations.\n`);
-        builder.setScopeViolations(unexpected);
+      for (const f of unexpected) {
+        console.warn(`   ${f}`);
       }
-      builder.recordEvent("scope_check_completed", {
-        changed_files: changedFiles.length,
-        scope_violations: unexpected.length,
-      });
-    } catch {
-      // Silently ignore — worktree state query failures aren't fatal here
+      console.warn(`   Review carefully for scope violations.\n`);
+      builder.setScopeViolations(unexpected);
     }
+    builder.recordEvent("scope_check_completed", {
+      changed_files: changedFiles.length,
+      scope_violations: unexpected.length,
+    });
+  } catch {
+    // Silently ignore — worktree state query failures aren't fatal here
   }
 
   // Rebase worktree onto latest origin/main before review
@@ -434,7 +442,7 @@ async function cmdRun(args: string[]) {
     console.log(`  Result:   ${artifact.result} (verdict=${artifact.reviewer_verdict})`);
   }
   console.log(`\nNext steps:`);
-  console.log(`  Review:  dangeresque results --latest`);
+  console.log(`  Review:  dangeresque results ${workerResult.branch}`);
   console.log(`  Merge:   dangeresque merge ${workerResult.branch}`);
   console.log(`  Discard: dangeresque discard ${workerResult.branch}`);
   console.log("=".repeat(60));
@@ -463,8 +471,10 @@ async function cmdLogs(args: string[]) {
   const projectRoot = resolveProjectRoot();
   const worktrees = listWorktrees(projectRoot);
 
-  if (worktrees.length === 0) {
-    console.error(`No active dangeresque worktrees (cwd=${process.cwd()})`);
+  const KNOWN_FLAGS = new Set(["--raw", "--review", "-f", "--follow"]);
+  const unknown = args.filter((a) => a.startsWith("-") && !KNOWN_FLAGS.has(a));
+  if (unknown.length > 0) {
+    console.error(`Unknown flag(s): ${unknown.join(", ")}`);
     process.exit(1);
   }
 
@@ -473,20 +483,16 @@ async function cmdLogs(args: string[]) {
   const followFlag = args.includes("-f") || args.includes("--follow");
   const positional = args.find((a) => !a.startsWith("-"));
 
-  // Resolve target worktree
-  let target;
-  if (positional) {
-    const branch = resolveBranch(projectRoot, positional);
-    target = worktrees.find((wt) => wt.branch === branch);
-    if (!target) {
-      console.error(`Worktree not found for branch: ${branch}`);
-      process.exit(1);
-    }
-  } else {
-    // Latest by commit timestamp
-    target = worktrees.reduce((a, b) =>
-      a.commitEpoch >= b.commitEpoch ? a : b,
-    );
+  if (!positional) {
+    console.error(formatMissingTargetError("logs", "<branch>", worktrees));
+    process.exit(1);
+  }
+
+  const branch = resolveBranch(projectRoot, positional);
+  const target = worktrees.find((wt) => wt.branch === branch);
+  if (!target) {
+    console.error(`Worktree not found for branch: ${branch}`);
+    process.exit(1);
   }
 
   // Read PID file for session IDs
@@ -527,6 +533,36 @@ function formatElapsed(ms: number): string {
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m`;
+}
+
+function shortBranch(branch: string): string {
+  return branch.replace(/^worktree-dangeresque-/, "");
+}
+
+function formatMissingTargetError(
+  cmd: string,
+  argName: string,
+  worktrees: WorktreeInfo[],
+): string {
+  let msg = `Usage: dangeresque ${cmd} ${argName} [options]\n\n`;
+  if (worktrees.length === 0) {
+    msg += "No active dangeresque worktrees.";
+    return msg;
+  }
+  msg += "Active worktrees:\n";
+  for (const wt of worktrees) {
+    const name = shortBranch(wt.branch);
+    let state = "IDLE";
+    if (wt.running && wt.pidInfo) {
+      const elapsed = formatElapsed(Date.now() - wt.pidInfo.startedAt);
+      state = `RUNNING (pid ${wt.pidInfo.pid}, ${elapsed} elapsed)`;
+    } else if (wt.pidInfo && !wt.running) {
+      state = "IDLE (worker exited)";
+    }
+    msg += `  ${name.padEnd(20)} ${state}\n`;
+  }
+  msg += `\nPass one explicitly, e.g.: dangeresque ${cmd} ${shortBranch(worktrees[0].branch)}`;
+  return msg;
 }
 
 function cmdStatus() {
@@ -620,21 +656,28 @@ function cmdResults(args: string[]) {
     return;
   }
 
-  const target = args.find((a) => !a.startsWith("-")) ?? "latest";
-  const isLatest = target === "latest" || args.includes("--latest");
-
-  let branchOrLatest: string | "latest";
-  if (isLatest) {
-    branchOrLatest = "latest";
-  } else {
-    try {
-      branchOrLatest = resolveBranch(projectRoot, target);
-    } catch {
-      branchOrLatest = target; // Fall through to getWorktreeResults which has its own error message
-    }
+  const KNOWN_FLAGS = new Set<string>();
+  const unknown = args.filter((a) => a.startsWith("-") && !KNOWN_FLAGS.has(a));
+  if (unknown.length > 0) {
+    console.error(`Unknown flag(s): ${unknown.join(", ")}`);
+    process.exit(1);
   }
 
-  const output = getWorktreeResults(projectRoot, branchOrLatest);
+  const target = args.find((a) => !a.startsWith("-"));
+  if (!target) {
+    const worktrees = listWorktrees(projectRoot);
+    console.error(formatMissingTargetError("results", "<branch>", worktrees));
+    process.exit(1);
+  }
+
+  let branch: string;
+  try {
+    branch = resolveBranch(projectRoot, target);
+  } catch {
+    branch = target; // Fall through to getWorktreeResults which has its own error message
+  }
+
+  const output = getWorktreeResults(projectRoot, branch);
   console.log(output);
 }
 

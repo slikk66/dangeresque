@@ -5,7 +5,6 @@ export {
   type DangeresqueConfig,
   type ValidationResult,
   CONFIG_DIR,
-  TASK_FILE,
 } from "./config.js";
 
 export {

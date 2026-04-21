@@ -169,10 +169,10 @@ This dispatches an **INVESTIGATE** run (the default mode). The worker reads the 
 
 ```bash
 # From your main Claude session — the ! prefix runs the command inline
-! dangeresque results --latest
+! dangeresque results investigate-63
 
 # Or from a separate terminal
-dangeresque results --latest
+dangeresque results investigate-63
 ```
 
 Pull the results into your Claude session so you can discuss what the worker found. Ask questions, challenge conclusions, or plan next steps.
@@ -207,7 +207,7 @@ The worker reads the issue + your staged comment + prior run files for the same 
 
 ```bash
 # Read results (shows the latest run file + diff summary vs main)
-! dangeresque results --latest
+! dangeresque results implement-63
 
 # Discuss with Claude — ask about edge cases, risks, test coverage
 # Then merge when satisfied
@@ -225,16 +225,13 @@ dangeresque merge implement-63
 
 ```bash
 # Pretty-print live transcript (auto-follows while running)
-dangeresque logs
-
-# Specific worktree
 dangeresque logs investigate-63
 
 # Review pass transcript
-dangeresque logs --review
+dangeresque logs investigate-63 --review
 
 # Raw JSONL for custom processing
-dangeresque logs --raw | jq '.message.content[]?.text'
+dangeresque logs investigate-63 --raw | jq '.message.content[]?.text'
 ```
 
 ## CLI Reference
@@ -296,8 +293,10 @@ Help output adapts to the active engine (`config.engine` or `DANGERESQUE_ENGINE`
 Pretty-print engine transcripts (Claude or Codex JSONL).
 
 ```
+Arguments:
+  <branch>       Target worktree (required)
+
 Options:
-  [branch]       Target worktree (default: latest by commit timestamp)
   -f, --follow   Follow mode — tail new output (default when worker is RUNNING)
   --review       Show review session instead of worker
   --raw          Output raw JSONL without formatting
@@ -308,10 +307,9 @@ Options:
 Show run results from active worktrees or the local archive.
 
 ```bash
-dangeresque results --latest               # Latest active worktree
-dangeresque results investigate-63          # Specific worktree
-dangeresque results --issue 63             # Summary + latest for issue
-dangeresque results --issue 63 --all       # Full history
+dangeresque results investigate-63          # Specific active worktree
+dangeresque results --issue 63              # Summary + latest for issue
+dangeresque results --issue 63 --all        # Full history
 ```
 
 ### `dangeresque stage <number> --comment "text" [--mode MODE]`
