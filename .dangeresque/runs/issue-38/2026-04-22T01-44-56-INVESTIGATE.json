@@ -1,0 +1,77 @@
+{
+  "schema_version": "2",
+  "run_id": "85a23518-850e-461d-a899-09280ab91e99",
+  "issue_number": 38,
+  "issue_url": "https://github.com/slikk66/dangeresque/issues/38",
+  "mode": "INVESTIGATE",
+  "engine": "claude",
+  "model": "claude-opus-4-7[1m]",
+  "effort": "max",
+  "worktree_name": "dangeresque-investigate-38-pass2",
+  "branch": "worktree-dangeresque-investigate-38-pass2",
+  "started_at": "2026-04-22T01:44:55.355Z",
+  "ended_at": "2026-04-22T01:56:49.633Z",
+  "duration_ms": 714278,
+  "worker": {
+    "started_at": "2026-04-22T01:44:55.915Z",
+    "ended_at": "2026-04-22T01:56:46.832Z",
+    "duration_ms": 710917,
+    "exit_code": 0
+  },
+  "review": {
+    "started_at": "2026-04-22T01:56:46.832Z",
+    "ended_at": "2026-04-22T01:56:46.832Z",
+    "duration_ms": 0,
+    "exit_code": 0,
+    "skipped": true,
+    "skip_reason": "mode=INVESTIGATE"
+  },
+  "result": "success",
+  "reviewer_verdict": "skipped",
+  "failure_categories": [],
+  "scope_violations": [],
+  "summary": "INVESTIGATE success | verdict=skipped | file=2026-04-22T01-44-56-INVESTIGATE.md",
+  "artifact_paths": {
+    "md": ".claude/worktrees/dangeresque-investigate-38-pass2/.dangeresque/runs/issue-38/2026-04-22T01-44-56-INVESTIGATE.md",
+    "json": ".claude/worktrees/dangeresque-investigate-38-pass2/.dangeresque/runs/issue-38/2026-04-22T01-44-56-INVESTIGATE.json"
+  },
+  "lifecycle_events": [
+    {
+      "ts": "2026-04-22T01:56:46.832Z",
+      "event": "run_started",
+      "data": {
+        "run_id": "85a23518-850e-461d-a899-09280ab91e99",
+        "issue_number": 38,
+        "mode": "INVESTIGATE",
+        "engine": "claude"
+      }
+    },
+    {
+      "ts": "2026-04-22T01:56:46.832Z",
+      "event": "worker_completed",
+      "data": {
+        "exit_code": 0
+      }
+    },
+    {
+      "ts": "2026-04-22T01:56:46.848Z",
+      "event": "scope_check_completed",
+      "data": {
+        "changed_files": 0,
+        "scope_violations": 0
+      }
+    },
+    {
+      "ts": "2026-04-22T01:56:48.369Z",
+      "event": "rebase_completed"
+    },
+    {
+      "ts": "2026-04-22T01:56:49.633Z",
+      "event": "run_completed",
+      "data": {
+        "result": "success",
+        "reviewer_verdict": "skipped"
+      }
+    }
+  ]
+}
