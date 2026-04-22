@@ -235,6 +235,21 @@ dangeresque passes the effort value as a prompt hint for planning depth
 (see `src/runner.ts:319`) and the help output adapts per engine so Claude
 users see `--effort` and Codex users don't.
 
+**Codex worker commits are owned by dangeresque, not the worker (issue
+#38).** Codex runs with `--full-auto` inside a sandbox that explicitly
+marks the linked-worktree gitdir at `<main-checkout>/.git/worktrees/<name>/`
+as read-only, so `git add` / `git commit` from inside a codex worker always
+fail with `Operation not permitted` on `index.lock`. The restriction is
+hardcoded in codex-rs and has no public config escape that does not
+regress security. Dangeresque's parent Node process has full host
+permissions, so after a successful codex worker exit it runs
+`commitWorkerChanges` (see `src/runner.ts`) to stage every change in the
+worktree — excluding `.dangeresque/runs/` so the artifact stays in its own
+follow-up commit — and commit with a message of the form
+`codex <MODE> worker: issue #<N>`. Claude workers commit themselves with
+their own message; `commitWorkerChanges` is called only in the codex
+branch.
+
 The engine abstraction is narrow by design: dangeresque makes the worktree,
 permissions, rebase, and review work regardless of which engine executes
 the task, but it does not try to paper over every CLI-level difference.

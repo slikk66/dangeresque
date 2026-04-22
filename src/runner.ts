@@ -57,6 +57,46 @@ function commitArchiveFile(worktreePath: string, archivePath: string): void {
   }
 }
 
+/**
+ * Capture a worker's code changes into a single commit on its branch.
+ *
+ * Codex under `--full-auto` runs inside a sandbox that denies writes to the
+ * linked-worktree gitdir at `<main-checkout>/.git/worktrees/<name>/`, so
+ * `git add` / `git commit` from inside the worker always fail. This helper
+ * runs from the dangeresque parent process (which has full host permissions)
+ * to salvage the worker's file changes. Claude workers commit themselves and
+ * do not need this path.
+ *
+ * Scope rules:
+ * - `git add -A` captures every tracked/untracked change in the worktree.
+ *   Safe because the worktree is a throwaway branch from origin/HEAD and
+ *   `.gitignore` still excludes build output, node_modules, PID files, etc.
+ * - The run artifact directory (`.dangeresque/runs/`) is excluded so it
+ *   stays in its own follow-up commit via `commitArchiveFile`.
+ */
+export function commitWorkerChanges(
+  worktreePath: string,
+  issueNumber: number,
+  mode: string
+): void {
+  try {
+    execSync(`git add -A -- ':(exclude).dangeresque/runs'`, {
+      cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
+    });
+    const staged = execSync("git diff --cached --name-only", {
+      cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
+    }).trim();
+    if (!staged) return;
+    const message = `codex ${mode} worker: issue #${issueNumber}`;
+    execSync(`git commit -m "${message}"`, {
+      cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
+    });
+  } catch {
+    // Nothing to commit or transient git error — commitArchiveFile runs after
+    // and reports its own outcome.
+  }
+}
+
 export interface IssueData {
   number: number;
   title: string;
@@ -490,7 +530,14 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
       child.on("close", (code: number | null) => {
         logStream.end();
         removePidFile(worktreePath);
-        if ((code ?? 0) === 0) commitArchiveFile(worktreePath, archivePath);
+        if ((code ?? 0) === 0) {
+          commitWorkerChanges(
+            worktreePath,
+            opts.issueData.number,
+            opts.mode ?? "INVESTIGATE"
+          );
+          commitArchiveFile(worktreePath, archivePath);
+        }
         resolve({ worktreeName, branch, exitCode: code ?? 0, archivePath });
       });
     });
