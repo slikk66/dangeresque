@@ -367,7 +367,7 @@ function buildCodexWorkerArgs(opts: RunOptions, worktreeName: string, archivePat
     "exec",
     "--json",
     "--full-auto",
-    "--model", opts.config.model,
+    "--model", opts.config.codexModel ?? opts.config.model,
     "--cd", worktreePath,
     prompt,
   ];
@@ -385,7 +385,11 @@ function buildCodexReviewArgs(opts: RunOptions, worktreeName: string, archivePat
     diffStat = "(could not capture diff stat)";
   }
 
-  const reviewModel = opts.config.reviewModel ?? opts.config.model;
+  const reviewModel =
+    opts.config.codexReviewModel ??
+    opts.config.codexModel ??
+    opts.config.reviewModel ??
+    opts.config.model;
   const reviewEffort = opts.config.reviewEffort ?? opts.config.effort;
   const reviewPromptPath = join(opts.projectRoot, CONFIG_DIR, opts.config.reviewPrompt);
   const reviewPromptContent = readFileSync(reviewPromptPath, "utf-8");

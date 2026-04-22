@@ -39,6 +39,10 @@ export interface DangeresqueConfig {
   reviewModel?: string;
   /** Effort level for review pass (falls back to `effort` when unset) */
   reviewEffort?: string;
+  /** Model when engine is codex (falls back to `model` when unset) */
+  codexModel?: string;
+  /** Review-pass model when engine is codex (falls back to `codexModel`, then `reviewModel`, then `model`) */
+  codexReviewModel?: string;
 }
 
 const DEFAULT_CONFIG: DangeresqueConfig = {
