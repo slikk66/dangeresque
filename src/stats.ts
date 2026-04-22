@@ -195,6 +195,9 @@ export function formatStats(summary: StatsSummary, extras: FormatExtras): string
   const lines: string[] = [];
   lines.push("Run Evaluation Stats");
   lines.push("====================");
+  lines.push("");
+  lines.push(...formatSummary(summary));
+  lines.push("");
   lines.push(`Path: ${extras.runsDir}`);
   lines.push(`Total artifacts: ${summary.total}`);
   lines.push(formatSchemaLine(extras.schemaVersions));
@@ -287,6 +290,34 @@ export function formatStats(summary: StatsSummary, extras: FormatExtras): string
   return lines.join("\n") + "\n";
 }
 
+function formatSummary(summary: StatsSummary): string[] {
+  const successfulRuns = summary.byResult.success;
+  const reviewedRuns =
+    summary.byVerdict.accept +
+    summary.byVerdict.reject +
+    summary.byVerdict.needs_human_review;
+  const topFailureCategory = Object.entries(summary.failureCategories).sort(
+    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+  )[0];
+
+  return [
+    "Summary",
+    "-------",
+    `Overall success:     ${formatPctWithCount(successfulRuns, summary.total)}`,
+    `Hard failures:       ${summary.byResult.failure}`,
+    `Review coverage:     ${formatPctWithCount(
+      reviewedRuns,
+      summary.total,
+    )} runs reviewed`,
+    `Reviewer verdicts:   ${summary.byVerdict.accept} accept, ${summary.byVerdict.reject} reject, ${summary.byVerdict.needs_human_review} needs_human_review`,
+    `Top failure category: ${
+      topFailureCategory
+        ? `${topFailureCategory[0]} (${topFailureCategory[1]})`
+        : "(none)"
+    }`,
+  ];
+}
+
 function median(arr: number[]): number {
   if (arr.length === 0) return 0;
   const s = [...arr].sort((a, b) => a - b);
@@ -312,6 +343,11 @@ function padLeft(s: string, n: number): string {
 
 function formatPct(pct: number): string {
   return `${pct.toFixed(1)}%`;
+}
+
+function formatPctWithCount(count: number, total: number): string {
+  const pct = total > 0 ? (count * 100) / total : 0;
+  return `${formatPct(pct)} (${count}/${total})`;
 }
 
 function formatMs(n: number): string {
