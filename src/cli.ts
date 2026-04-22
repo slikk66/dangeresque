@@ -62,7 +62,7 @@ Commands:
   discard <branch>                     Remove a worktree without merging
   clean --issue <N>                    Delete archived runs for an issue
   stats [options]                      Aggregate run evaluation artifacts; --glossary explains terms
-  allow mcp [<server>] [--dry-run]     Add mcp__<server> entries to allowedTools (discovers via 'claude mcp list' if no server given)
+  allow mcp [<server>] [--dry-run]     Add mcp__<server> entries to allowedTools (reads ./.mcp.json if no server given)
   allow bash "<pattern>" [--dry-run]   Append Bash(<pattern>) to allowedTools (e.g. allow bash "npm install *")
   init                                 Scaffold .dangeresque/ config + skills
 
@@ -943,8 +943,18 @@ function cmdAllow(args: string[]) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
+    if (positional.length > 1) {
+      console.error(
+        `Server id must be a single argument; got ${positional.length} positionals.\n` +
+          `Example: dangeresque allow mcp context7`,
+      );
+      process.exit(1);
+    }
     if (result.added.length === 0 && result.skipped.length === 0) {
-      console.log("No MCP servers reported by 'claude mcp list'. Nothing to add.");
+      console.log(
+        "No mcpServers in .mcp.json. Nothing to add.\n" +
+          "For user-scope or plugin-scope servers, pass the id explicitly: dangeresque allow mcp <server>",
+      );
       return;
     }
   } else if (sub === "bash") {
@@ -983,8 +993,8 @@ function allowUsage(): string {
     "  dangeresque allow bash \"<pattern>\" [--dry-run]",
     "",
     "Examples:",
-    "  dangeresque allow mcp                       # discover via 'claude mcp list'",
-    "  dangeresque allow mcp context7              # add mcp__context7",
+    "  dangeresque allow mcp                       # read ./.mcp.json mcpServers keys",
+    "  dangeresque allow mcp context7              # add mcp__context7 (user/plugin scope)",
     "  dangeresque allow bash \"npm install *\"      # add Bash(npm install *)",
   ].join("\n");
 }

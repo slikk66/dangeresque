@@ -1,4 +1,3 @@
-import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CONFIG_DIR } from "./config.js";
@@ -90,88 +89,42 @@ function applyAdditions(
   };
 }
 
-/**
- * Run `claude mcp list` and return server names.
- * Tries `--json` first; falls back to parsing the human-readable output.
- * Throws if the claude CLI is missing or exits with a non-zero status.
- */
-export function discoverMcpServers(): string[] {
-  let output: string;
-  try {
-    output = execSync("claude mcp list --json", {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-  } catch {
-    try {
-      output = execSync("claude mcp list", {
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Failed to run 'claude mcp list'. Is the claude CLI installed and on PATH?\n` +
-          `Underlying error: ${detail}`,
-      );
-    }
-  }
-  return parseMcpListOutput(output);
-}
+export const MCP_JSON_FILENAME = ".mcp.json";
 
 /**
- * Parse `claude mcp list` output into server names.
- * Accepts either JSON (array of strings, array of {name}, object map, or
- * {servers: [...]}) or one-server-per-line text.
- * Exported for unit testing.
+ * Read server names (internal ids) from the project-scoped .mcp.json.
+ * Top-level `mcpServers` keys are the exact ids used in `mcp__<id>__<tool>`.
+ * Throws if the file is absent — caller surfaces a hint pointing at the explicit form.
  */
-export function parseMcpListOutput(output: string): string[] {
-  const trimmed = output.trim();
-  if (!trimmed) return [];
-
+export function readMcpJsonServers(projectRoot: string): string[] {
+  const path = join(projectRoot, MCP_JSON_FILENAME);
+  if (!existsSync(path)) {
+    throw new Error(
+      `${MCP_JSON_FILENAME} not found in ${projectRoot}. ` +
+        `To grant a user-scope or plugin-scope server, pass its id explicitly: ` +
+        `dangeresque allow mcp <server>`,
+    );
+  }
+  const raw = readFileSync(path, "utf-8");
+  let parsed: unknown;
   try {
-    const data = JSON.parse(trimmed);
-    if (Array.isArray(data)) {
-      return data
-        .map((entry) => extractServerName(entry))
-        .filter((s): s is string => typeof s === "string" && s.length > 0);
-    }
-    if (data && typeof data === "object") {
-      const obj = data as Record<string, unknown>;
-      if (Array.isArray(obj.servers)) {
-        return obj.servers
-          .map((entry) => extractServerName(entry))
-          .filter((s): s is string => typeof s === "string" && s.length > 0);
-      }
-      return Object.keys(obj).filter((k) => k && !k.startsWith("_"));
-    }
-  } catch {
-    // not JSON — fall through to text parsing
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to parse ${path}: ${detail}`);
   }
-
-  const servers: string[] = [];
-  for (const rawLine of trimmed.split("\n")) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    if (/^no\s+mcp\s+servers/i.test(line)) return [];
-    if (/^checking\b/i.test(line)) continue;
-    const m = line.match(/^([A-Za-z0-9_.\-]+)/);
-    if (m && m[1]) servers.push(m[1]);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${path} must be a JSON object`);
   }
-  return servers;
-}
-
-function extractServerName(entry: unknown): string | undefined {
-  if (typeof entry === "string") return entry;
-  if (entry && typeof entry === "object") {
-    const name = (entry as { name?: unknown }).name;
-    if (typeof name === "string") return name;
+  const servers = (parsed as { mcpServers?: unknown }).mcpServers;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+    return [];
   }
-  return undefined;
+  return Object.keys(servers as Record<string, unknown>);
 }
 
 export interface AllowMcpOptions {
-  /** Specific server name. When omitted, discover via `claude mcp list`. */
+  /** Specific server id. When omitted, read from project-scoped .mcp.json. */
   server?: string;
   dryRun?: boolean;
 }
@@ -181,7 +134,7 @@ export function allowMcp(projectRoot: string, options: AllowMcpOptions): AllowRe
   if (options.server) {
     patterns = [`mcp__${options.server}`];
   } else {
-    const servers = discoverMcpServers();
+    const servers = readMcpJsonServers(projectRoot);
     if (servers.length === 0) {
       return {
         added: [],

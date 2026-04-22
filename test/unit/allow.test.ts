@@ -6,7 +6,7 @@ import { join } from "node:path";
 import {
   allowBash,
   allowMcp,
-  parseMcpListOutput,
+  readMcpJsonServers,
 } from "#dist/allow.js";
 import { CONFIG_DIR } from "#dist/config.js";
 
@@ -17,6 +17,12 @@ function makeTmp(): string {
 function writeConfig(projectRoot: string, body: object): string {
   mkdirSync(join(projectRoot, CONFIG_DIR), { recursive: true });
   const path = join(projectRoot, CONFIG_DIR, "config.json");
+  writeFileSync(path, JSON.stringify(body, null, 2) + "\n");
+  return path;
+}
+
+function writeMcpJson(projectRoot: string, body: object): string {
+  const path = join(projectRoot, ".mcp.json");
   writeFileSync(path, JSON.stringify(body, null, 2) + "\n");
   return path;
 }
@@ -87,6 +93,47 @@ test("allowMcp: with explicit server adds mcp__<server> once", () => {
   }
 });
 
+test("allowMcp: reads .mcp.json mcpServers keys when no server given", () => {
+  const tmp = makeTmp();
+  try {
+    writeConfig(tmp, { allowedTools: ["Read"] });
+    writeMcpJson(tmp, {
+      mcpServers: {
+        "mcp-unity": { command: "node", args: ["x"] },
+        context7: { command: "node", args: ["y"] },
+      },
+    });
+    const result = allowMcp(tmp, {});
+    assert.deepEqual(result.added.sort(), ["mcp__context7", "mcp__mcp-unity"]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("allowMcp: throws when .mcp.json is absent and no explicit server given", () => {
+  const tmp = makeTmp();
+  try {
+    writeConfig(tmp, { allowedTools: [] });
+    assert.throws(() => allowMcp(tmp, {}), /\.mcp\.json not found/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("allowMcp: .mcp.json with empty or missing mcpServers returns nothing added", () => {
+  const tmp = makeTmp();
+  try {
+    writeConfig(tmp, { allowedTools: [] });
+    writeMcpJson(tmp, { mcpServers: {} });
+    const result = allowMcp(tmp, {});
+    assert.deepEqual(result.added, []);
+    assert.deepEqual(result.skipped, []);
+    assert.equal(result.totalAllowedTools, 0);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("allow: creates config.json when absent and not in dry-run", () => {
   const tmp = makeTmp();
   try {
@@ -131,40 +178,32 @@ test("allow: preserves indent and trailing newline of existing config", () => {
   }
 });
 
-test("parseMcpListOutput: JSON array of strings", () => {
-  assert.deepEqual(parseMcpListOutput('["context7", "linear"]'), ["context7", "linear"]);
+test("readMcpJsonServers: returns keys in insertion order", () => {
+  const tmp = makeTmp();
+  try {
+    writeMcpJson(tmp, { mcpServers: { alpha: {}, beta: {}, gamma: {} } });
+    assert.deepEqual(readMcpJsonServers(tmp), ["alpha", "beta", "gamma"]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
-test("parseMcpListOutput: JSON array of {name} objects", () => {
-  const json = JSON.stringify([{ name: "context7" }, { name: "linear", url: "x" }]);
-  assert.deepEqual(parseMcpListOutput(json), ["context7", "linear"]);
+test("readMcpJsonServers: returns empty when mcpServers key is missing", () => {
+  const tmp = makeTmp();
+  try {
+    writeMcpJson(tmp, { somethingElse: {} });
+    assert.deepEqual(readMcpJsonServers(tmp), []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
-test("parseMcpListOutput: JSON object map (server name → meta)", () => {
-  const json = JSON.stringify({ context7: { url: "x" }, linear: { url: "y" } });
-  assert.deepEqual(parseMcpListOutput(json), ["context7", "linear"]);
-});
-
-test("parseMcpListOutput: {servers: [...]} envelope", () => {
-  const json = JSON.stringify({ servers: [{ name: "context7" }, "linear"] });
-  assert.deepEqual(parseMcpListOutput(json), ["context7", "linear"]);
-});
-
-test("parseMcpListOutput: text format 'name: url'", () => {
-  const text = "context7: https://api.example.com\nlinear: https://api.linear.app\n";
-  assert.deepEqual(parseMcpListOutput(text), ["context7", "linear"]);
-});
-
-test("parseMcpListOutput: text 'No MCP servers configured' returns empty", () => {
-  assert.deepEqual(parseMcpListOutput("No MCP servers configured.\n"), []);
-});
-
-test("parseMcpListOutput: empty input returns empty", () => {
-  assert.deepEqual(parseMcpListOutput(""), []);
-  assert.deepEqual(parseMcpListOutput("   \n"), []);
-});
-
-test("parseMcpListOutput: skips 'Checking...' header", () => {
-  const text = "Checking MCP server health...\ncontext7: ok\n";
-  assert.deepEqual(parseMcpListOutput(text), ["context7"]);
+test("readMcpJsonServers: malformed JSON throws", () => {
+  const tmp = makeTmp();
+  try {
+    writeFileSync(join(tmp, ".mcp.json"), "{ not valid");
+    assert.throws(() => readMcpJsonServers(tmp), /Failed to parse/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

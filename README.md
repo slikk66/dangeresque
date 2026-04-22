@@ -436,7 +436,7 @@ This keeps the prompt focused. Use `dangeresque stage` to add guidance the worke
 
 - `Bash(git push *)`, `Bash(git reset --hard *)`, `Bash(rm -rf *)`, `Bash(git branch -D *)`
 
-**Granting more permissions.** MCP and arbitrary `Bash(...)` patterns are NOT auto-approved by `acceptEdits`. To enable an MCP server, run `dangeresque allow mcp` (auto-discovers via `claude mcp list`). To allow a bash command pattern, `dangeresque allow bash "<pattern>"` — e.g. `dangeresque allow bash "npm install *"`. The matcher form `mcp__<server>` / `mcp__<server>__*` is per [Anthropic's permissions docs](https://code.claude.com/docs/en/permissions); bare `mcp__*` is not honored. See `.dangeresque/PERMISSIONS.md` (created by `dangeresque init`) for the full reference.
+**Granting more permissions.** MCP and arbitrary `Bash(...)` patterns are NOT auto-approved by `acceptEdits`. To enable an MCP server, run `dangeresque allow mcp` (reads `./.mcp.json` `mcpServers` keys) or `dangeresque allow mcp <server>` for user-scope / plugin-scope servers not in `.mcp.json`. To allow a bash command pattern, `dangeresque allow bash "<pattern>"` — e.g. `dangeresque allow bash "npm install *"`. The matcher form `mcp__<server>` / `mcp__<server>__*` is per [Anthropic's permissions docs](https://code.claude.com/docs/en/permissions); bare `mcp__*` is not honored. See `.dangeresque/PERMISSIONS.md` (created by `dangeresque init`) for the full reference.
 
 ## Why Host-Native Instead of Containerized
 

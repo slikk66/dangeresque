@@ -32,7 +32,7 @@ From <https://code.claude.com/docs/en/permissions> — the only forms claude-cod
 
 **Bare `mcp__*` does NOT work.** The wildcard at the server-name slot is not supported (see anthropics/claude-code#3107). Dangeresque used to default `mcp__*` and silently leaked block-and-prompt failures in headless `-p` mode; it has been removed.
 
-Plugin-installed MCP servers carry a `plugin_*` prefix in their name — for example, `mcp__plugin_context7_context7` matches the context7 plugin. Run `claude mcp list` to see the exact server names on your machine.
+Server ids are the exact top-level keys under `mcpServers` in your project's `.mcp.json`. Plugin-installed servers carry a `plugin_*` prefix (e.g. `mcp__plugin_context7_context7`) — those live in user-scope (`~/.claude.json`) and need to be granted by id: `dangeresque allow mcp <server>`.
 
 ## `acceptEdits` ≠ "auto-approve everything"
 
@@ -41,10 +41,10 @@ The default `permissionMode: "acceptEdits"` only auto-approves file edits and a 
 ## Self-serve with `dangeresque allow`
 
 ```bash
-# Discover and add every MCP server reported by `claude mcp list`
+# Add every MCP server listed in ./.mcp.json (project scope)
 dangeresque allow mcp
 
-# Add one server by name (no claude CLI probe)
+# Add one server by id (for user-scope or plugin-scope servers not in .mcp.json)
 dangeresque allow mcp context7
 
 # Preview what would change without writing the file
@@ -73,7 +73,7 @@ dangeresque allow bash "yarn build"
     "Bash(gh issue list *)",
     "Bash(gh issue create *)",
 
-    // MCP servers — replace with your actual server names from `claude mcp list`
+    // MCP servers — ids match top-level keys in ./.mcp.json mcpServers
     "mcp__context7",
     "mcp__linear"
   ]
