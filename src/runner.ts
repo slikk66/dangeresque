@@ -91,9 +91,14 @@ export function commitWorkerChanges(
     execSync(`git commit -m "${message}"`, {
       cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
     });
-  } catch {
-    // Nothing to commit or transient git error — commitArchiveFile runs after
-    // and reports its own outcome.
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `dangeresque: failed to commit codex worker changes in ${worktreePath} ` +
+      `(issue #${issueNumber}, mode ${mode}). ` +
+      `Worker output remains in the worktree for manual salvage. ` +
+      `Underlying error: ${detail}`
+    );
   }
 }
 
