@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   loadIssueFixture,
   computeRunArchivePath,
+  commitWorkerChanges,
   formatIssueComments,
 } from "#dist/runner.js";
 
@@ -85,6 +87,129 @@ test("formatIssueComments: empty comments → empty string", () => {
     comments: [],
   });
   assert.equal(result, "");
+});
+
+function makeRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-commit-test-"));
+  const env = { cwd: dir, encoding: "utf-8" as const, stdio: "pipe" as const };
+  execSync("git init -b test-main", env);
+  execSync("git config user.email test@dangeresque.local", env);
+  execSync("git config user.name test", env);
+  execSync("git config commit.gpgsign false", env);
+  writeFileSync(join(dir, ".gitignore"), "node_modules/\ndist/\n");
+  execSync("git add .gitignore", env);
+  execSync('git commit -m "init"', env);
+  return dir;
+}
+
+function commitCount(dir: string): number {
+  const out = execSync("git rev-list --count HEAD", {
+    cwd: dir, encoding: "utf-8", stdio: "pipe",
+  }).trim();
+  return parseInt(out, 10);
+}
+
+function headMessage(dir: string): string {
+  return execSync("git log -1 --pretty=%s", {
+    cwd: dir, encoding: "utf-8", stdio: "pipe",
+  }).trim();
+}
+
+function headFiles(dir: string): string[] {
+  return execSync("git show --name-only --pretty=format: HEAD", {
+    cwd: dir, encoding: "utf-8", stdio: "pipe",
+  }).trim().split("\n").filter(Boolean);
+}
+
+test("commitWorkerChanges: stages + commits worker file changes", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, "src.ts"), "export const x = 1;\n");
+    const before = commitCount(dir);
+
+    commitWorkerChanges(dir, 99, "IMPLEMENT");
+
+    assert.equal(commitCount(dir), before + 1);
+    assert.equal(headMessage(dir), "codex IMPLEMENT worker: issue #99");
+    assert.deepEqual(headFiles(dir), ["src.ts"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("commitWorkerChanges: no changes → no-op", () => {
+  const dir = makeRepo();
+  try {
+    const before = commitCount(dir);
+    commitWorkerChanges(dir, 99, "IMPLEMENT");
+    assert.equal(commitCount(dir), before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("commitWorkerChanges: excludes .dangeresque/runs/ artifacts", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, "code.ts"), "export const y = 2;\n");
+    mkdirSync(join(dir, ".dangeresque", "runs", "issue-99"), { recursive: true });
+    writeFileSync(
+      join(dir, ".dangeresque", "runs", "issue-99", "2026-01-01T00-00-00-IMPLEMENT.md"),
+      "# artifact\n"
+    );
+
+    commitWorkerChanges(dir, 99, "IMPLEMENT");
+
+    const files = headFiles(dir);
+    assert.deepEqual(files, ["code.ts"]);
+    const untracked = execSync("git ls-files --others --exclude-standard", {
+      cwd: dir, encoding: "utf-8", stdio: "pipe",
+    }).trim();
+    assert.match(untracked, /\.dangeresque\/runs\/issue-99\/2026-01-01T00-00-00-IMPLEMENT\.md/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("commitWorkerChanges: only artifact present → no commit (artifact excluded)", () => {
+  const dir = makeRepo();
+  try {
+    mkdirSync(join(dir, ".dangeresque", "runs", "issue-99"), { recursive: true });
+    writeFileSync(
+      join(dir, ".dangeresque", "runs", "issue-99", "2026-01-01T00-00-00-IMPLEMENT.md"),
+      "# artifact only\n"
+    );
+    const before = commitCount(dir);
+
+    commitWorkerChanges(dir, 99, "IMPLEMENT");
+
+    assert.equal(commitCount(dir), before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("commitWorkerChanges: captures deletions + modifications, not only new files", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, "keep.ts"), "old\n");
+    writeFileSync(join(dir, "gone.ts"), "old\n");
+    execSync("git add keep.ts gone.ts", { cwd: dir, encoding: "utf-8", stdio: "pipe" });
+    execSync('git commit -m "baseline"', { cwd: dir, encoding: "utf-8", stdio: "pipe" });
+
+    writeFileSync(join(dir, "keep.ts"), "new\n");
+    rmSync(join(dir, "gone.ts"));
+    const before = commitCount(dir);
+
+    commitWorkerChanges(dir, 7, "REFACTOR");
+
+    assert.equal(commitCount(dir), before + 1);
+    assert.equal(headMessage(dir), "codex REFACTOR worker: issue #7");
+    const files = headFiles(dir).sort();
+    assert.deepEqual(files, ["gone.ts", "keep.ts"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("formatIssueComments: keeps staged + last-3 humans, drops dangeresque logs + minimized", () => {
