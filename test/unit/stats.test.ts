@@ -129,6 +129,7 @@ test("formatStats: output contains all required sections, no ANSI, fits 80 cols"
   });
   const sections = [
     "Run Evaluation Stats",
+    "Summary",
     "Total artifacts:",
     "Schema versions:",
     "Filters:",
@@ -144,10 +145,76 @@ test("formatStats: output contains all required sections, no ANSI, fits 80 cols"
   for (const s of sections) {
     assert.ok(text.includes(s), `missing section: ${s}`);
   }
+  assert.ok(
+    text.indexOf("Summary\n-------") < text.indexOf("Results:"),
+    "Summary must appear before Results",
+  );
   assert.equal(/\[/.test(text), false, "must not contain ANSI escape (ESC sequence)");
   for (const line of text.split("\n")) {
     assert.ok(line.length <= 80, `line over 80 cols: "${line}" (${line.length})`);
   }
+});
+
+test("formatStats: Summary shows derived top-level facts first", () => {
+  const s = computeStats([
+    mkArtifact({
+      result: "success",
+      reviewer_verdict: "accept",
+      failure_categories: [],
+    }),
+    mkArtifact({
+      result: "success",
+      reviewer_verdict: "needs_human_review",
+      failure_categories: [],
+    }),
+    mkArtifact({
+      result: "partial_success",
+      reviewer_verdict: "skipped",
+      failure_categories: ["scope_violation"],
+    }),
+    mkArtifact({
+      result: "failure",
+      reviewer_verdict: "reject",
+      failure_categories: ["scope_violation", "reviewer_rejected"],
+    }),
+  ]);
+  const text = formatStats(s, {
+    runsDir: "/tmp/runs",
+    filters: {},
+    schemaVersions: { "2": 4 },
+    parseErrorCount: 0,
+    unsupportedVersions: {},
+    filesScanned: 4,
+  });
+  const lines = text.split("\n");
+
+  assert.deepEqual(lines.slice(0, 10), [
+    "Run Evaluation Stats",
+    "====================",
+    "",
+    "Summary",
+    "-------",
+    "Overall success:     50.0% (2/4)",
+    "Hard failures:       1",
+    "Review coverage:     75.0% (3/4) runs reviewed",
+    "Reviewer verdicts:   1 accept, 1 reject, 1 needs_human_review",
+    "Top failure category: scope_violation (2)",
+  ]);
+});
+
+test("formatStats: Summary reports empty data without invented categories", () => {
+  const text = formatStats(computeStats([]), {
+    runsDir: "/tmp/runs",
+    filters: {},
+    schemaVersions: {},
+    parseErrorCount: 0,
+    unsupportedVersions: {},
+    filesScanned: 0,
+  });
+
+  assert.match(text, /Overall success:\s+0\.0% \(0\/0\)/);
+  assert.match(text, /Review coverage:\s+0\.0% \(0\/0\) runs reviewed/);
+  assert.match(text, /Top failure category: \(none\)/);
 });
 
 test("formatStats: zero-match with filters emits Note line", () => {
@@ -263,6 +330,77 @@ test("gatherArtifacts: filters compose (issue + engine + mode)", () => {
     assert.equal(r.artifacts[0].issue_number, 12);
     assert.equal(r.artifacts[0].engine, "claude");
     assert.equal(r.artifacts[0].mode, "IMPLEMENT");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("formatStats: Summary reflects filtered artifact scope", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-stats-"));
+  try {
+    const dir12 = join(tmp, ".dangeresque", "runs", "issue-12");
+    mkdirSync(dir12, { recursive: true });
+    writeFileSync(
+      join(dir12, "a.json"),
+      JSON.stringify(
+        mkArtifact({
+          issue_number: 12,
+          engine: "claude",
+          mode: "IMPLEMENT",
+          result: "success",
+          reviewer_verdict: "accept",
+        }),
+      ),
+    );
+    writeFileSync(
+      join(dir12, "b.json"),
+      JSON.stringify(
+        mkArtifact({
+          issue_number: 12,
+          engine: "codex",
+          mode: "IMPLEMENT",
+          result: "failure",
+          reviewer_verdict: "reject",
+          failure_categories: ["reviewer_rejected"],
+        }),
+      ),
+    );
+    const dir13 = join(tmp, ".dangeresque", "runs", "issue-13");
+    mkdirSync(dir13, { recursive: true });
+    writeFileSync(
+      join(dir13, "c.json"),
+      JSON.stringify(
+        mkArtifact({
+          issue_number: 13,
+          engine: "claude",
+          mode: "VERIFY",
+          result: "partial_success",
+          reviewer_verdict: "skipped",
+          failure_categories: ["scope_violation"],
+        }),
+      ),
+    );
+
+    const gathered = gatherArtifacts(tmp, {
+      issueNumber: 12,
+      engine: "claude",
+      mode: "IMPLEMENT",
+    });
+    const text = formatStats(computeStats(gathered.artifacts), {
+      runsDir: gathered.runsDir,
+      filters: { issueNumber: 12, engine: "claude", mode: "IMPLEMENT" },
+      schemaVersions: gathered.schemaVersions,
+      parseErrorCount: gathered.parseErrorPaths.length,
+      unsupportedVersions: gathered.unsupportedVersions,
+      filesScanned: gathered.filesScanned,
+    });
+
+    assert.match(text, /Filters: --issue 12 --engine claude --mode IMPLEMENT/);
+    assert.match(text, /Total artifacts: 1/);
+    assert.match(text, /Overall success:\s+100\.0% \(1\/1\)/);
+    assert.match(text, /Hard failures:\s+0/);
+    assert.match(text, /Reviewer verdicts:\s+1 accept, 0 reject, 0 needs_human_review/);
+    assert.match(text, /Top failure category: \(none\)/);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
