@@ -51,6 +51,9 @@ const DEFAULT_CONFIG: DangeresqueConfig = {
   permissionMode: "acceptEdits",
   effort: "max",
   headless: true,
+  // MCP allow rules must name the server (mcp__<server> or mcp__<server>__*);
+  // bare `mcp__*` is not honored by claude-code. Run `dangeresque allow mcp`
+  // to add per-server entries — see config-templates/PERMISSIONS.md.
   allowedTools: [
     "Read",
     "Edit",
@@ -59,7 +62,6 @@ const DEFAULT_CONFIG: DangeresqueConfig = {
     "Glob",
     "WebSearch",
     "WebFetch",
-    "mcp__*",
     "Bash(git status *)",
     "Bash(git diff *)",
     "Bash(git log *)",

@@ -169,6 +169,9 @@ export function initProject(projectRoot: string): void {
   console.log("\nDone. Next steps:");
   console.log("  1. Customize CLAUDE.md with your project's rules (workers read this first)");
   console.log("  2. Review .dangeresque/ prompts and customize for your project");
-  console.log("  3. Create a GitHub Issue, then: dangeresque run --issue <number>");
+  console.log("  3. Allow the tools your workers need — see .dangeresque/PERMISSIONS.md");
+  console.log("     Quick start:  dangeresque allow mcp        (auto-discover MCP servers)");
+  console.log('                   dangeresque allow bash "npm install *"');
+  console.log("  4. Create a GitHub Issue, then: dangeresque run --issue <number>");
   console.log("\nRe-run 'dangeresque init' to refresh skills from the latest version.");
 }

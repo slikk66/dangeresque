@@ -26,6 +26,7 @@ import {
   type WorktreeInfo,
 } from "./worktree.js";
 import { initProject } from "./init.js";
+import { allowMcp, allowBash, type AllowResult } from "./allow.js";
 import { stageComment } from "./stage.js";
 import { resolveSessionPath, tailLog } from "./logs.js";
 import {
@@ -61,6 +62,8 @@ Commands:
   discard <branch>                     Remove a worktree without merging
   clean --issue <N>                    Delete archived runs for an issue
   stats [options]                      Aggregate run evaluation artifacts; --glossary explains terms
+  allow mcp [<server>] [--dry-run]     Add mcp__<server> entries to allowedTools (discovers via 'claude mcp list' if no server given)
+  allow bash "<pattern>" [--dry-run]   Append Bash(<pattern>) to allowedTools (e.g. allow bash "npm install *")
   init                                 Scaffold .dangeresque/ config + skills
 
 Run options:
@@ -170,6 +173,9 @@ async function main() {
       break;
     case "stats":
       cmdStats(args.slice(1));
+      break;
+    case "allow":
+      cmdAllow(args.slice(1));
       break;
     case "init":
       cmdInit();
@@ -913,6 +919,98 @@ function cmdStage(args: string[]) {
   } else {
     console.error(result.message);
     process.exit(1);
+  }
+}
+
+function cmdAllow(args: string[]) {
+  const sub = args[0];
+  if (!sub) {
+    console.error(allowUsage());
+    process.exit(1);
+  }
+
+  const dryRun = args.includes("--dry-run");
+  const positional = args.slice(1).filter((a) => a !== "--dry-run");
+
+  const projectRoot = resolveProjectRoot();
+  let result: AllowResult;
+
+  if (sub === "mcp") {
+    const server = positional[0];
+    try {
+      result = allowMcp(projectRoot, { server, dryRun });
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+    if (result.added.length === 0 && result.skipped.length === 0) {
+      console.log("No MCP servers reported by 'claude mcp list'. Nothing to add.");
+      return;
+    }
+  } else if (sub === "bash") {
+    const pattern = positional[0];
+    if (!pattern) {
+      console.error('Usage: dangeresque allow bash "<pattern>" [--dry-run]');
+      console.error('Example: dangeresque allow bash "npm install *"');
+      process.exit(1);
+    }
+    if (positional.length > 1) {
+      console.error(
+        `Bash pattern must be a single quoted argument; got ${positional.length} positionals.\n` +
+          `Did you forget to quote the pattern? e.g. dangeresque allow bash "npm install *"`,
+      );
+      process.exit(1);
+    }
+    try {
+      result = allowBash(projectRoot, { pattern, dryRun });
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  } else {
+    console.error(`Unknown 'allow' subcommand: ${sub}`);
+    console.error(allowUsage());
+    process.exit(1);
+  }
+
+  printAllowResult(result, dryRun);
+}
+
+function allowUsage(): string {
+  return [
+    "Usage:",
+    "  dangeresque allow mcp [<server>] [--dry-run]",
+    "  dangeresque allow bash \"<pattern>\" [--dry-run]",
+    "",
+    "Examples:",
+    "  dangeresque allow mcp                       # discover via 'claude mcp list'",
+    "  dangeresque allow mcp context7              # add mcp__context7",
+    "  dangeresque allow bash \"npm install *\"      # add Bash(npm install *)",
+  ].join("\n");
+}
+
+function printAllowResult(result: AllowResult, dryRun: boolean): void {
+  const verb = dryRun ? "would add" : "added";
+  if (result.added.length > 0) {
+    for (const entry of result.added) {
+      console.log(`  ${verb}: ${entry}`);
+    }
+  }
+  for (const entry of result.skipped) {
+    console.log(`  already allowed: ${entry}`);
+  }
+  if (dryRun) {
+    console.log(
+      `\n[dry-run] would add ${result.added.length} entries to ${result.configPath}`,
+    );
+  } else {
+    if (result.configCreated) {
+      console.log(`\nCreated ${result.configPath}`);
+    }
+    console.log(
+      `added ${result.added.length} entries to ${result.configPath}; ` +
+        `total allowedTools: ${result.totalAllowedTools}`,
+    );
   }
 }
 

@@ -9,7 +9,6 @@
     "Glob",
     "WebSearch",
     "WebFetch",
-    "mcp__*",
     "Bash(git status *)",
     "Bash(git diff *)",
     "Bash(git log *)",
