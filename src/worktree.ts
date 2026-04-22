@@ -3,6 +3,25 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync
 import { join } from "node:path";
 import { CONFIG_DIR, RUNS_DIR, PID_FILE } from "./config.js";
 
+/**
+ * Resolve the ref reviewers should diff against. Worktrees branch from
+ * origin/HEAD (see createWorktree), and are rebased onto origin/main before
+ * review. Diffing against local `main` would bleed local-only commits into the
+ * review as phantom deletions when local is ahead of origin. Falls back to
+ * `main` when origin is absent (e.g. offline repos, fresh clones without a
+ * remote).
+ */
+export function resolveDiffBase(projectRoot: string): string {
+  try {
+    const ref = execSync("git symbolic-ref --quiet --short refs/remotes/origin/HEAD", {
+      cwd: projectRoot, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    return ref || "main";
+  } catch {
+    return "main";
+  }
+}
+
 export interface PidInfo {
   pid: number;
   startedAt: number; // epoch ms
@@ -412,9 +431,10 @@ export function getWorktreeResults(
   }
 
   lines.push("");
-  lines.push("--- Diff Summary (vs main) ---");
+  const diffBase = resolveDiffBase(projectRoot);
+  lines.push(`--- Diff Summary (vs ${diffBase}) ---`);
   try {
-    const diff = execSync("git diff main --stat", {
+    const diff = execSync(`git diff ${diffBase} --stat`, {
       cwd: targetWorktree.path,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],

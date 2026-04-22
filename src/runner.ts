@@ -8,7 +8,7 @@ import {
   RUNS_DIR,
   projectHash,
 } from "./config.js";
-import { writePidFile, updatePidFile, removePidFile, readPidFile } from "./worktree.js";
+import { writePidFile, updatePidFile, removePidFile, readPidFile, resolveDiffBase } from "./worktree.js";
 
 export interface RunOptions {
   projectRoot: string;
@@ -313,9 +313,10 @@ function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string, archivePa
   const reviewSessionId = randomUUID();
   args.push("--session-id", reviewSessionId);
 
+  const diffBase = resolveDiffBase(opts.projectRoot);
   let diffStat = "";
   try {
-    diffStat = execSync("git diff main --stat", {
+    diffStat = execSync(`git diff ${diffBase} --stat`, {
       cwd: join(opts.projectRoot, ".claude", "worktrees", worktreeName),
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -324,12 +325,12 @@ function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string, archivePa
     diffStat = "(could not capture diff stat)";
   }
 
-  args.push(buildReviewPrompt(opts, archivePath, diffStat));
+  args.push(buildReviewPrompt(opts, archivePath, diffStat, diffBase));
 
   return { args, reviewSessionId };
 }
 
-function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: string): string {
+function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: string, diffBase: string): string {
   const { issueData } = opts;
   const header =
     `You are an adversarial reviewer of an AFK worker run.\n` +
@@ -345,7 +346,7 @@ function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: stri
     `The worker's run result is committed in the worktree at: ${archivePath}\n` +
     `Treat this as a claims document — verify against the diff. ` +
     `Append your review findings to the SAME file.\n\n` +
-    `Start by running git diff main to see full code changes. ` +
+    `Start by running git diff ${diffBase} to see full code changes. ` +
     `Then read the run artifact and compare the worker's claims against the diff. ` +
     `When counting files, EXCLUDE any path under .dangeresque/runs/ — those are auto-committed artifacts, not worker claims. ` +
     `Any remaining file-count discrepancy is an automatic FAIL.\n\n` +
@@ -374,9 +375,10 @@ function buildCodexWorkerArgs(opts: RunOptions, worktreeName: string, archivePat
 }
 
 function buildCodexReviewArgs(opts: RunOptions, worktreeName: string, archivePath: string): string[] {
+  const diffBase = resolveDiffBase(opts.projectRoot);
   let diffStat = "";
   try {
-    diffStat = execSync("git diff main --stat", {
+    diffStat = execSync(`git diff ${diffBase} --stat`, {
       cwd: join(opts.projectRoot, ".claude", "worktrees", worktreeName),
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -396,7 +398,7 @@ function buildCodexReviewArgs(opts: RunOptions, worktreeName: string, archivePat
   const prompt =
     reviewPromptContent +
     `\n\n` +
-    buildReviewPrompt(opts, archivePath, diffStat) +
+    buildReviewPrompt(opts, archivePath, diffStat, diffBase) +
     `\n\nEffort preference: ${reviewEffort} (map this to response depth and planning thoroughness).`;
 
   return [

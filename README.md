@@ -134,7 +134,7 @@ In `review-prompt.md`, add domain checks:
 The full cycle looks like this:
 
 ```
-INVESTIGATE → read → discuss → stage → merge → IMPLEMENT → read → discuss → merge → push
+INVESTIGATE → read → discuss → stage → merge → push → IMPLEMENT → read → discuss → merge → push
 ```
 
 For simple, well-scoped issues you can skip straight to IMPLEMENT:
@@ -142,6 +142,8 @@ For simple, well-scoped issues you can skip straight to IMPLEMENT:
 ```
 IMPLEMENT → read → merge → push
 ```
+
+**Push `main` to origin after every merge, before dispatching the next run.** Worktrees branch from `origin/main`, so any local-only commits make the next worker start from a stale base and produce phantom-regression noise in review.
 
 Here's each step in detail.
 

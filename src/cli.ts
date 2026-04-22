@@ -398,8 +398,10 @@ async function cmdRun(args: string[]) {
   // Post-worker scope check: flag files changed that aren't mentioned in the issue body
   try {
     const { execSync } = await import("node:child_process");
+    const { resolveDiffBase } = await import("./worktree.js");
     const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
-    const changedFiles = execSync("git diff main...HEAD --name-only", {
+    const diffBase = resolveDiffBase(projectRoot);
+    const changedFiles = execSync(`git diff ${diffBase}...HEAD --name-only`, {
       cwd: worktreePath,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
