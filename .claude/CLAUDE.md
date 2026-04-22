@@ -59,7 +59,7 @@
 ## Permissions & Safety
 
 - Workers run with `acceptEdits` permission mode (Claude) or `--full-auto` (Codex).
-- `allowedTools` / `disallowedTools` in config gate bash commands. `git push`, `git reset --hard`, `rm -rf`, `git branch -D` are hard-blocked.
+- `allowedTools` / `disallowedTools` in config gate bash commands. `git push`, `git reset --hard`, `rm -rf`, `git branch -D` are hard-blocked under both engines: claude via `--disallowed-tools`, codex via a generated `<worktree>/.codex/rules/dangeresque.rules` (Starlark `prefix_rule(..., decision="forbidden")`) written by `writeCodexRulesFile` before spawn.
 - Nothing touches main until the human runs `dangeresque merge`.
 
 ## What NOT to Change Without an Explicit Issue
