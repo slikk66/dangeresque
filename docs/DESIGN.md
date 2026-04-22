@@ -60,7 +60,11 @@ Beyond policy, host execution is what actually works for day-to-day use:
   `allowedTools`/`disallowedTools` patterns (see `src/config.ts:44-75`).
   Every destructive git command the worker might reach for — `git push`,
   `git reset --hard`, `git branch -D`, and `rm -rf` — is hard-blocked at
-  the Claude Code tool layer, regardless of what the prompt says.
+  the tool layer of both engines, regardless of what the prompt says:
+  claude via `--disallowed-tools`, codex via a generated
+  `<worktree>/.codex/rules/dangeresque.rules` file of
+  `prefix_rule(..., decision="forbidden")` entries translated from the
+  same `disallowedTools` list.
 
 The isolation boundary is a **git worktree**, not a container. Worktrees
 share the repository's object store but have their own checkout, index, and
@@ -96,13 +100,20 @@ of origin" case with a warning; see `src/runner.ts:367-381`).
 
 ### Layer 2 — Permission Allowlist
 
-Claude Code is launched with `--permission-mode acceptEdits` and explicit
-`--allowed-tools`/`--disallowed-tools` flags. The defaults (see
-`src/config.ts:44-75`) allow read/write inside the repo,
-`git status|diff|log|add|commit|branch`, MCP servers, and web access. They
-explicitly disallow `git push`, `git reset --hard`, `git branch -D`, and
-`rm -rf`. Projects extend the allowlist through `.dangeresque/config.json` —
-for example, this repo adds `Bash(yarn build)` and
+Workers are launched with `--permission-mode acceptEdits` (claude) or
+`--full-auto` (codex) plus engine-specific command-gating derived from the
+same config. The defaults (see `src/config.ts:44-75`) allow read/write
+inside the repo, `git status|diff|log|add|commit|branch`, MCP servers, and
+web access. They explicitly disallow `git push`, `git reset --hard`,
+`git branch -D`, and `rm -rf`. Under claude these pass through as
+`--allowed-tools`/`--disallowed-tools` flags. Under codex, each
+`Bash(<cmd> *)` entry in `disallowedTools` is translated into a Starlark
+`prefix_rule(pattern=[...], decision="forbidden", ...)` line and written to
+`<worktree>/.codex/rules/dangeresque.rules` before the codex process spawns
+(see `writeCodexRulesFile` in `src/runner.ts`); codex's project-layer rules
+scan picks up the file and refuses the matching commands at exec time.
+Projects extend the allowlist through `.dangeresque/config.json` — for
+example, this repo adds `Bash(yarn build)` and
 `Bash(yarn install --immutable)` so TypeScript workers can verify their code
 compiles without being allowed to mutate `package.json`.
 

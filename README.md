@@ -436,6 +436,8 @@ This keeps the prompt focused. Use `dangeresque stage` to add guidance the worke
 
 - `Bash(git push *)`, `Bash(git reset --hard *)`, `Bash(rm -rf *)`, `Bash(git branch -D *)`
 
+Both engines enforce these at the tool layer: claude via `--disallowed-tools`, codex via a generated `<worktree>/.codex/rules/dangeresque.rules` file (Starlark `prefix_rule(..., decision="forbidden")` entries translated from the same config) that codex picks up through its project-layer rules scan.
+
 ## Why Host-Native Instead of Containerized
 
 Some agent orchestration tools run each agent in a Docker container. Dangeresque runs Claude Code directly on the host. This is deliberate.
