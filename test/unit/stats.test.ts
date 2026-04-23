@@ -115,6 +115,193 @@ test("computeStats: median + p95 durations", () => {
   assert.equal(s.workerDurationsMs.p95, 1000);
 });
 
+test("computeStats: per-mode durations grouped by mode", () => {
+  const artifacts: RunArtifact[] = [
+    mkArtifact({
+      mode: "IMPLEMENT",
+      duration_ms: 1000,
+      worker: { started_at: "", ended_at: "", duration_ms: 800, exit_code: 0 },
+    }),
+    mkArtifact({
+      mode: "IMPLEMENT",
+      duration_ms: 3000,
+      worker: { started_at: "", ended_at: "", duration_ms: 2400, exit_code: 0 },
+    }),
+    mkArtifact({
+      mode: "INVESTIGATE",
+      duration_ms: 500,
+      worker: { started_at: "", ended_at: "", duration_ms: 450, exit_code: 0 },
+    }),
+  ];
+  const s = computeStats(artifacts);
+  assert.equal(s.byModeDurations.IMPLEMENT.worker.median, 1600);
+  assert.equal(s.byModeDurations.IMPLEMENT.worker.p95, 2400);
+  assert.equal(s.byModeDurations.IMPLEMENT.total.median, 2000);
+  assert.equal(s.byModeDurations.IMPLEMENT.total.p95, 3000);
+  assert.equal(s.byModeDurations.INVESTIGATE.worker.median, 450);
+  assert.equal(s.byModeDurations.INVESTIGATE.worker.p95, 450);
+  assert.equal(s.byModeDurations.INVESTIGATE.total.median, 500);
+  assert.equal(s.byModeDurations.INVESTIGATE.total.p95, 500);
+});
+
+test("computeStats: reviewRanCount counts only executed reviews", () => {
+  const artifacts: RunArtifact[] = [
+    mkArtifact({ mode: "IMPLEMENT", review: null }),
+    mkArtifact({
+      mode: "IMPLEMENT",
+      review: {
+        started_at: "",
+        ended_at: "",
+        duration_ms: 0,
+        exit_code: 0,
+        skipped: true,
+        skip_reason: "mode=IMPLEMENT --no-review",
+      },
+    }),
+    mkArtifact({
+      mode: "IMPLEMENT",
+      review: {
+        started_at: "",
+        ended_at: "",
+        duration_ms: 1000,
+        exit_code: 0,
+        skipped: false,
+      },
+    }),
+    mkArtifact({
+      mode: "INVESTIGATE",
+      review: {
+        started_at: "",
+        ended_at: "",
+        duration_ms: 0,
+        exit_code: 0,
+        skipped: true,
+        skip_reason: "mode=INVESTIGATE",
+      },
+    }),
+  ];
+  const s = computeStats(artifacts);
+  assert.equal(s.byModeDurations.IMPLEMENT.reviewRanCount, 1);
+  assert.equal(s.byModeDurations.INVESTIGATE.reviewRanCount, 0);
+});
+
+test("computeStats: empty + single-artifact modes", () => {
+  const artifacts: RunArtifact[] = [
+    mkArtifact({
+      mode: "VERIFY",
+      duration_ms: 777,
+      worker: { started_at: "", ended_at: "", duration_ms: 555, exit_code: 0 },
+    }),
+  ];
+  const s = computeStats(artifacts);
+  assert.equal(s.byModeDurations.VERIFY.worker.median, 555);
+  assert.equal(s.byModeDurations.VERIFY.worker.p95, 555);
+  assert.equal(s.byModeDurations.VERIFY.total.median, 777);
+  assert.equal(s.byModeDurations.VERIFY.total.p95, 777);
+  assert.deepEqual(computeStats([]).byModeDurations, {});
+});
+
+test("formatStats: Durations shows per-mode block with total (run) gated on review", () => {
+  const artifacts: RunArtifact[] = [
+    mkArtifact({
+      mode: "IMPLEMENT",
+      duration_ms: 1000,
+      worker: { started_at: "", ended_at: "", duration_ms: 800, exit_code: 0 },
+      review: {
+        started_at: "",
+        ended_at: "",
+        duration_ms: 200,
+        exit_code: 0,
+        skipped: false,
+      },
+    }),
+    mkArtifact({
+      mode: "INVESTIGATE",
+      duration_ms: 500,
+      worker: { started_at: "", ended_at: "", duration_ms: 450, exit_code: 0 },
+      review: {
+        started_at: "",
+        ended_at: "",
+        duration_ms: 0,
+        exit_code: 0,
+        skipped: true,
+        skip_reason: "mode=INVESTIGATE",
+      },
+    }),
+  ];
+  const text = formatStats(computeStats(artifacts), {
+    runsDir: "/tmp/runs",
+    filters: {},
+    schemaVersions: { "2": 2 },
+    parseErrorCount: 0,
+    unsupportedVersions: {},
+    filesScanned: 2,
+  });
+  assert.match(text, /overall worker/);
+  assert.match(text, /overall total \(run\)/);
+  assert.match(text, /IMPLEMENT worker/);
+  assert.match(text, /IMPLEMENT total \(run\)/);
+  assert.match(text, /INVESTIGATE worker/);
+  assert.ok(
+    !/INVESTIGATE total \(run\)/.test(text),
+    "INVESTIGATE total (run) must not appear when review was skipped",
+  );
+});
+
+test("formatStats: Durations stays within 80 cols with widest mode label", () => {
+  const artifacts: RunArtifact[] = [
+    mkArtifact({
+      mode: "INVESTIGATE",
+      duration_ms: 123456789,
+      worker: {
+        started_at: "",
+        ended_at: "",
+        duration_ms: 987654321,
+        exit_code: 0,
+      },
+      review: {
+        started_at: "",
+        ended_at: "",
+        duration_ms: 1000,
+        exit_code: 0,
+        skipped: false,
+      },
+    }),
+  ];
+  const text = formatStats(computeStats(artifacts), {
+    runsDir: "/tmp/runs",
+    filters: {},
+    schemaVersions: { "2": 1 },
+    parseErrorCount: 0,
+    unsupportedVersions: {},
+    filesScanned: 1,
+  });
+  assert.match(text, /INVESTIGATE total \(run\)/);
+  for (const line of text.split("\n")) {
+    assert.ok(line.length <= 80, `line over 80 cols: "${line}" (${line.length})`);
+  }
+});
+
+test("formatStats: per-mode block omitted when no duration data", () => {
+  const text = formatStats(computeStats([]), {
+    runsDir: "/tmp/runs",
+    filters: {},
+    schemaVersions: {},
+    parseErrorCount: 0,
+    unsupportedVersions: {},
+    filesScanned: 0,
+  });
+  const durIdx = text.indexOf("Durations (ms):");
+  assert.ok(durIdx >= 0);
+  const after = text.slice(durIdx).split("\n");
+  assert.equal(after[0], "Durations (ms):");
+  assert.match(after[1], /median.*p95/);
+  assert.match(after[2], /overall worker/);
+  assert.match(after[3], /overall total \(run\)/);
+  assert.equal(after[4], "", "trailing newline only — no per-mode rows");
+  assert.equal(after.length, 5);
+});
+
 test("formatStats: output contains all required sections, no ANSI, fits 80 cols", () => {
   const s = computeStats([
     mkArtifact({ result: "success", reviewer_verdict: "accept" }),

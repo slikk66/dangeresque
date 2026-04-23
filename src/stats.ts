@@ -50,6 +50,14 @@ export interface StatsSummary {
   failureCategories: Record<string, number>;
   workerDurationsMs: { median: number; p95: number };
   totalDurationsMs: { median: number; p95: number };
+  byModeDurations: Record<
+    string,
+    {
+      worker: { median: number; p95: number };
+      total: { median: number; p95: number };
+      reviewRanCount: number;
+    }
+  >;
 }
 
 export interface FormatExtras {
@@ -151,6 +159,9 @@ export function computeStats(artifacts: RunArtifact[]): StatsSummary {
   const failureCategories: Record<string, number> = {};
   const workerDurations: number[] = [];
   const totalDurations: number[] = [];
+  const workerByMode: Record<string, number[]> = {};
+  const totalByMode: Record<string, number[]> = {};
+  const reviewRanByMode: Record<string, number> = {};
 
   for (const a of artifacts) {
     byResult[a.result] = (byResult[a.result] ?? 0) + 1;
@@ -166,10 +177,26 @@ export function computeStats(artifacts: RunArtifact[]): StatsSummary {
     }
     if (a.worker && typeof a.worker.duration_ms === "number") {
       workerDurations.push(a.worker.duration_ms);
+      (workerByMode[a.mode] ??= []).push(a.worker.duration_ms);
     }
     if (typeof a.duration_ms === "number") {
       totalDurations.push(a.duration_ms);
+      (totalByMode[a.mode] ??= []).push(a.duration_ms);
     }
+    if (a.review && !a.review.skipped) {
+      reviewRanByMode[a.mode] = (reviewRanByMode[a.mode] ?? 0) + 1;
+    }
+  }
+
+  const byModeDurations: StatsSummary["byModeDurations"] = {};
+  for (const mode of Object.keys(byMode)) {
+    const w = workerByMode[mode] ?? [];
+    const t = totalByMode[mode] ?? [];
+    byModeDurations[mode] = {
+      worker: { median: median(w), p95: percentile(w, 0.95) },
+      total: { median: median(t), p95: percentile(t, 0.95) },
+      reviewRanCount: reviewRanByMode[mode] ?? 0,
+    };
   }
 
   return {
@@ -188,6 +215,7 @@ export function computeStats(artifacts: RunArtifact[]): StatsSummary {
       median: median(totalDurations),
       p95: percentile(totalDurations, 0.95),
     },
+    byModeDurations,
   };
 }
 
@@ -279,13 +307,32 @@ export function formatStats(summary: StatsSummary, extras: FormatExtras): string
 
   lines.push("");
   lines.push("Durations (ms):");
-  lines.push(`  ${pad("", 20)}${padLeft("median", 12)}${padLeft("p95", 14)}`);
+  lines.push(`  ${pad("", 24)}${padLeft("median", 12)}${padLeft("p95", 14)}`);
   lines.push(
-    `  ${pad("worker", 20)}${padLeft(formatMs(summary.workerDurationsMs.median), 12)}${padLeft(formatMs(summary.workerDurationsMs.p95), 14)}`,
+    `  ${pad("overall worker", 24)}${padLeft(formatMs(summary.workerDurationsMs.median), 12)}${padLeft(formatMs(summary.workerDurationsMs.p95), 14)}`,
   );
   lines.push(
-    `  ${pad("total (run)", 20)}${padLeft(formatMs(summary.totalDurationsMs.median), 12)}${padLeft(formatMs(summary.totalDurationsMs.p95), 14)}`,
+    `  ${pad("overall total (run)", 24)}${padLeft(formatMs(summary.totalDurationsMs.median), 12)}${padLeft(formatMs(summary.totalDurationsMs.p95), 14)}`,
   );
+
+  const perModeEntries = Object.entries(summary.byModeDurations).sort(
+    (a, b) =>
+      (summary.byMode[b[0]]?.total ?? 0) - (summary.byMode[a[0]]?.total ?? 0) ||
+      a[0].localeCompare(b[0]),
+  );
+  if (perModeEntries.length > 0) {
+    lines.push("");
+    for (const [mode, d] of perModeEntries) {
+      lines.push(
+        `  ${pad(`${mode} worker`, 24)}${padLeft(formatMs(d.worker.median), 12)}${padLeft(formatMs(d.worker.p95), 14)}`,
+      );
+      if (d.reviewRanCount > 0) {
+        lines.push(
+          `  ${pad(`${mode} total (run)`, 24)}${padLeft(formatMs(d.total.median), 12)}${padLeft(formatMs(d.total.p95), 14)}`,
+        );
+      }
+    }
+  }
 
   return lines.join("\n") + "\n";
 }
