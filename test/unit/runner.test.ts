@@ -13,8 +13,12 @@ import {
   bashPatternToPrefixRule,
   buildCodexRulesContent,
   writeCodexRulesFile,
+  buildCodexWorkerArgs,
+  buildCodexReviewArgs,
   CODEX_RULES_RELPATH,
 } from "#dist/runner.js";
+import type { RunOptions } from "#dist/runner.js";
+import type { DangeresqueConfig } from "#dist/config.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(HERE, "..", "..", "..");
@@ -343,5 +347,104 @@ test("writeCodexRulesFile: no Bash entries → no file written, returns null", (
     assert.equal(existsSync(join(dir, CODEX_RULES_RELPATH)), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function makeCodexArgsFixture(): { projectRoot: string; opts: RunOptions; cleanup: () => void } {
+  const projectRoot = mkdtempSync(join(tmpdir(), "dangeresque-codex-args-"));
+  mkdirSync(join(projectRoot, ".dangeresque"), { recursive: true });
+  writeFileSync(join(projectRoot, ".dangeresque", "worker-prompt.md"), "WORKER_PROMPT_TEMPLATE_BODY\n");
+  writeFileSync(join(projectRoot, ".dangeresque", "review-prompt.md"), "REVIEW_PROMPT_TEMPLATE_BODY\n");
+
+  const config: DangeresqueConfig = {
+    engine: "codex",
+    model: "claude-model-default",
+    codexModel: "codex-model-worker",
+    codexReviewModel: "codex-model-review",
+    permissionMode: "acceptEdits",
+    effort: "max",
+    reviewEffort: "low",
+    headless: true,
+    allowedTools: [],
+    disallowedTools: [],
+    workerPrompt: "worker-prompt.md",
+    reviewPrompt: "review-prompt.md",
+    notifications: true,
+  };
+
+  const opts: RunOptions = {
+    projectRoot,
+    config,
+    mode: "IMPLEMENT",
+    issueData: {
+      number: 35,
+      title: "codex argv prompt leak title",
+      body: "UNIQUE_ISSUE_BODY_MARKER_XYZZY please do the thing",
+      comments: [
+        { body: "**[staged IMPLEMENT]** STAGED_COMMENT_MARKER_ABCDE", author: { login: "alice" }, isMinimized: false },
+      ],
+    },
+  };
+
+  return { projectRoot, opts, cleanup: () => rmSync(projectRoot, { recursive: true, force: true }) };
+}
+
+test("buildCodexWorkerArgs: returns {args, prompt}; args ends with '-'; prompt carries issue body; argv has no leak", () => {
+  const { opts, cleanup } = makeCodexArgsFixture();
+  try {
+    const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-35/2026-04-23T00-00-00-IMPLEMENT.md";
+    const result = buildCodexWorkerArgs(opts, "dangeresque-implement-35", archivePath);
+
+    assert.ok(Array.isArray(result.args));
+    assert.equal(result.args[result.args.length - 1], "-");
+    assert.ok(result.prompt.length > 0);
+
+    const argv = result.args.join(" ");
+    assert.doesNotMatch(argv, /UNIQUE_ISSUE_BODY_MARKER_XYZZY/);
+    assert.doesNotMatch(argv, /STAGED_COMMENT_MARKER_ABCDE/);
+    assert.doesNotMatch(argv, /WORKER_PROMPT_TEMPLATE_BODY/);
+    assert.doesNotMatch(argv, /Effort preference/);
+
+    assert.match(result.prompt, /UNIQUE_ISSUE_BODY_MARKER_XYZZY/);
+    assert.match(result.prompt, /STAGED_COMMENT_MARKER_ABCDE/);
+    assert.match(result.prompt, /WORKER_PROMPT_TEMPLATE_BODY/);
+    assert.match(result.prompt, /Effort preference: max/);
+
+    assert.ok(result.args.includes("exec"));
+    assert.ok(result.args.includes("--json"));
+    assert.ok(result.args.includes("--full-auto"));
+    assert.ok(result.args.includes("codex-model-worker"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("buildCodexReviewArgs: returns {args, prompt}; args ends with '-'; prompt carries issue body; argv has no leak", () => {
+  const { opts, cleanup } = makeCodexArgsFixture();
+  try {
+    const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-35/2026-04-23T00-00-00-IMPLEMENT.md";
+    const result = buildCodexReviewArgs(opts, "dangeresque-implement-35", archivePath);
+
+    assert.ok(Array.isArray(result.args));
+    assert.equal(result.args[result.args.length - 1], "-");
+    assert.ok(result.prompt.length > 0);
+
+    const argv = result.args.join(" ");
+    assert.doesNotMatch(argv, /UNIQUE_ISSUE_BODY_MARKER_XYZZY/);
+    assert.doesNotMatch(argv, /STAGED_COMMENT_MARKER_ABCDE/);
+    assert.doesNotMatch(argv, /REVIEW_PROMPT_TEMPLATE_BODY/);
+    assert.doesNotMatch(argv, /Effort preference/);
+
+    assert.match(result.prompt, /UNIQUE_ISSUE_BODY_MARKER_XYZZY/);
+    assert.match(result.prompt, /STAGED_COMMENT_MARKER_ABCDE/);
+    assert.match(result.prompt, /REVIEW_PROMPT_TEMPLATE_BODY/);
+    assert.match(result.prompt, /Effort preference: low/);
+
+    assert.ok(result.args.includes("exec"));
+    assert.ok(result.args.includes("--json"));
+    assert.ok(result.args.includes("--full-auto"));
+    assert.ok(result.args.includes("codex-model-review"));
+  } finally {
+    cleanup();
   }
 });

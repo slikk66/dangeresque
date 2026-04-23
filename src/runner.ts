@@ -413,7 +413,11 @@ function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: stri
   );
 }
 
-function buildCodexWorkerArgs(opts: RunOptions, worktreeName: string, archivePath: string): string[] {
+export function buildCodexWorkerArgs(
+  opts: RunOptions,
+  worktreeName: string,
+  archivePath: string
+): { args: string[]; prompt: string } {
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
   const workerPromptPath = join(opts.projectRoot, CONFIG_DIR, opts.config.workerPrompt);
   const workerPromptContent = readFileSync(workerPromptPath, "utf-8");
@@ -423,17 +427,22 @@ function buildCodexWorkerArgs(opts: RunOptions, worktreeName: string, archivePat
     buildTaskPrompt(opts, archivePath) +
     `\n\nEffort preference: ${opts.config.effort} (map this to response depth and planning thoroughness).`;
 
-  return [
+  const args = [
     "exec",
     "--json",
     "--full-auto",
     "--model", opts.config.codexModel ?? opts.config.model,
     "--cd", worktreePath,
-    prompt,
+    "-",
   ];
+  return { args, prompt };
 }
 
-function buildCodexReviewArgs(opts: RunOptions, worktreeName: string, archivePath: string): string[] {
+export function buildCodexReviewArgs(
+  opts: RunOptions,
+  worktreeName: string,
+  archivePath: string
+): { args: string[]; prompt: string } {
   const diffBase = resolveDiffBase(opts.projectRoot);
   let diffStat = "";
   try {
@@ -460,14 +469,15 @@ function buildCodexReviewArgs(opts: RunOptions, worktreeName: string, archivePat
     buildReviewPrompt(opts, archivePath, diffStat, diffBase) +
     `\n\nEffort preference: ${reviewEffort} (map this to response depth and planning thoroughness).`;
 
-  return [
+  const args = [
     "exec",
     "--json",
     "--full-auto",
     "--model", reviewModel,
     "--cd", join(opts.projectRoot, ".claude", "worktrees", worktreeName),
-    prompt,
+    "-",
   ];
+  return { args, prompt };
 }
 
 function ensureDangeresquePrefix(name: string): string {
@@ -555,7 +565,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
 
   if (opts.config.engine === "codex") {
     writeCodexRulesFile(worktreePath, opts.config.disallowedTools);
-    const args = buildCodexWorkerArgs(opts, worktreeName, archivePath);
+    const { args, prompt } = buildCodexWorkerArgs(opts, worktreeName, archivePath);
     const logPath = createCodexLogPath(opts.projectRoot, worktreeName, "worker");
 
     return new Promise((resolve, reject) => {
@@ -569,9 +579,12 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
 
       const child = spawn("codex", args, {
         cwd: worktreePath,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
       });
+
+      child.stdin?.on("error", () => { /* tolerate EPIPE if codex exits before reading */ });
+      child.stdin?.end(prompt);
 
       const logStream = createWriteStream(logPath, { flags: "a" });
       child.stdout?.on("data", (chunk: Buffer) => {
@@ -666,7 +679,7 @@ export function runReview(
   const hash = projectHash(worktreePath);
 
   if (opts.config.engine === "codex") {
-    const args = buildCodexReviewArgs(opts, worktreeName, archivePath);
+    const { args, prompt } = buildCodexReviewArgs(opts, worktreeName, archivePath);
     const logPath = createCodexLogPath(opts.projectRoot, worktreeName, "review");
 
     return new Promise((resolve, reject) => {
@@ -674,9 +687,12 @@ export function runReview(
 
       const child = spawn("codex", args, {
         cwd: worktreePath,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
       });
+
+      child.stdin?.on("error", () => { /* tolerate EPIPE if codex exits before reading */ });
+      child.stdin?.end(prompt);
 
       const logStream = createWriteStream(logPath, { flags: "a" });
       child.stdout?.on("data", (chunk: Buffer) => {
