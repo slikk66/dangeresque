@@ -412,11 +412,11 @@ This keeps the prompt focused. Use `dangeresque stage` to add guidance the worke
 ### config.json
 
 | Key               | Type     | Default              | Description                                     |
-| ----------------- | -------- | -------------------- | ----------------------------------------------- | ---------- |
+| ----------------- | -------- | -------------------- | ----------------------------------------------- |
 | `engine`          | string   | `"claude"`           | Execution engine (`claude` or `codex`)          |
 | `model`           | string   | `"claude-opus-4-7"`  | Model ID passed to the selected engine          |
 | `permissionMode`  | string   | `"acceptEdits"`      | Sandbox/permission mode for the selected engine |
-| `effort`          | string   | `"max"`              | Effort level: low, medium, high                 | xhigh, max |
+| `effort`          | string   | `"max"`              | Effort level: low, medium, high, xhigh, max     |
 | `headless`        | boolean  | `true`               | Run with `-p` flag (set false for interactive)  |
 | `allowedTools`    | string[] | _(see below)_        | Tools auto-approved without prompting           |
 | `disallowedTools` | string[] | _(see below)_        | Tools hard-blocked from use                     |
