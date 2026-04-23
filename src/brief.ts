@@ -20,11 +20,10 @@ INVESTIGATE → read → discuss → stage → merge → push →
 IMPLEMENT   → read → discuss → merge → push → (VERIFY)
 \`\`\`
 
-For a well-scoped issue, skip straight to IMPLEMENT:
-
-\`\`\`
-IMPLEMENT → read → merge → push
-\`\`\`
+**Every issue starts with INVESTIGATE. No exceptions.** Even a "trivial one-liner"
+gets an INVESTIGATE first — it independently verifies the hypothesis, surfaces
+side-effects you missed, and lands a research artifact that the IMPLEMENT can
+cite. Skipping INVESTIGATE is the most common way a run goes wrong.
 
 ## The One Hard Rule
 

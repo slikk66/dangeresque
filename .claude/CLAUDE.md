@@ -7,6 +7,7 @@
 - **NO-BANDAID** — Every fix must be researched and confirmed correct. No try/catch that swallows the problem.
 - **ONE-PATH** — Extend the existing system. Do not add a parallel code path when the existing one can be widened.
 - **FILE-IMMEDIATELY** — If you discover a bug/issue that is important, raise it or file it (gh cli) immediately. We can decide if it is uneeded later.
+- **INVESTIGATE-ALWAYS** — Every GitHub Issue gets an INVESTIGATE run before IMPLEMENT. No exceptions, no "trivial one-liner" shortcuts. INVESTIGATE independently verifies the hypothesis, surfaces missed side-effects, and lands a research artifact the IMPLEMENT cites. Applies to the orchestrator (you) dispatching runs — not just AFK workers.
 
 ## Honest Scoping
 

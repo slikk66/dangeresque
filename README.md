@@ -137,11 +137,7 @@ The full cycle looks like this:
 INVESTIGATE → read → discuss → stage → merge → push → IMPLEMENT → read → discuss → merge → push
 ```
 
-For simple, well-scoped issues you can skip straight to IMPLEMENT:
-
-```
-IMPLEMENT → read → merge → push
-```
+**Every issue starts with INVESTIGATE. No exceptions** — even "trivial one-liners" get a read-only INVESTIGATE first to verify the hypothesis, surface missed side-effects, and land a research artifact the IMPLEMENT can cite.
 
 **Push `main` to origin after every merge, before dispatching the next run.** Worktrees branch from `origin/main`, so any local-only commits make the next worker start from a stale base and produce phantom-regression noise in review.
 
