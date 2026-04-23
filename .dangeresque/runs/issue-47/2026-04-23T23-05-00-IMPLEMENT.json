@@ -1,0 +1,85 @@
+{
+  "schema_version": "2",
+  "run_id": "911f11fe-1ecb-4365-9021-b26f6a9737e0",
+  "issue_number": 47,
+  "issue_url": "https://github.com/slikk66/dangeresque/issues/47",
+  "mode": "IMPLEMENT",
+  "engine": "claude",
+  "model": "claude-opus-4-7[1m]",
+  "effort": "max",
+  "review_model": "claude-opus-4-7[1m]",
+  "review_effort": "max",
+  "worktree_name": "dangeresque-implement-47",
+  "branch": "worktree-dangeresque-implement-47",
+  "started_at": "2026-04-23T23:04:59.848Z",
+  "ended_at": "2026-04-23T23:18:36.071Z",
+  "duration_ms": 816223,
+  "worker": {
+    "started_at": "2026-04-23T23:05:00.516Z",
+    "ended_at": "2026-04-23T23:17:02.799Z",
+    "duration_ms": 722283,
+    "exit_code": 0
+  },
+  "review": {
+    "started_at": "2026-04-23T23:17:04.213Z",
+    "ended_at": "2026-04-23T23:18:34.883Z",
+    "duration_ms": 90670,
+    "exit_code": 0,
+    "skipped": false
+  },
+  "result": "success",
+  "reviewer_verdict": "accept",
+  "failure_categories": [],
+  "scope_violations": [],
+  "summary": "IMPLEMENT success | verdict=accept | file=2026-04-23T23-05-00-IMPLEMENT.md",
+  "artifact_paths": {
+    "md": ".claude/worktrees/dangeresque-implement-47/.dangeresque/runs/issue-47/2026-04-23T23-05-00-IMPLEMENT.md",
+    "json": ".claude/worktrees/dangeresque-implement-47/.dangeresque/runs/issue-47/2026-04-23T23-05-00-IMPLEMENT.json"
+  },
+  "lifecycle_events": [
+    {
+      "ts": "2026-04-23T23:17:02.799Z",
+      "event": "run_started",
+      "data": {
+        "run_id": "911f11fe-1ecb-4365-9021-b26f6a9737e0",
+        "issue_number": 47,
+        "mode": "IMPLEMENT",
+        "engine": "claude"
+      }
+    },
+    {
+      "ts": "2026-04-23T23:17:02.799Z",
+      "event": "worker_completed",
+      "data": {
+        "exit_code": 0
+      }
+    },
+    {
+      "ts": "2026-04-23T23:17:02.827Z",
+      "event": "scope_check_completed",
+      "data": {
+        "changed_files": 7,
+        "scope_violations": 0
+      }
+    },
+    {
+      "ts": "2026-04-23T23:17:04.213Z",
+      "event": "rebase_completed"
+    },
+    {
+      "ts": "2026-04-23T23:18:34.883Z",
+      "event": "review_completed",
+      "data": {
+        "exit_code": 0
+      }
+    },
+    {
+      "ts": "2026-04-23T23:18:36.072Z",
+      "event": "run_completed",
+      "data": {
+        "result": "success",
+        "reviewer_verdict": "accept"
+      }
+    }
+  ]
+}
