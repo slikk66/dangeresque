@@ -24,6 +24,8 @@ export {
   discardWorktree,
   getWorktreeResults,
   type WorktreeInfo,
+  type WorktreeOpResult,
+  type WorktreePhase,
 } from "./worktree.js";
 
 export { initProject } from "./init.js";

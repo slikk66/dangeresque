@@ -283,103 +283,207 @@ export function extractMode(branch: string): string {
   return modeMatch ? modeMatch[1].toUpperCase() : "UNKNOWN";
 }
 
+export type WorktreePhase = "merge" | "cleanup" | "branch-delete" | "noop";
+
+export interface WorktreeOpResult {
+  success: boolean;
+  message: string;
+  phase?: WorktreePhase;
+  /** True iff main's HEAD advanced as a result of this call. */
+  headAdvanced?: boolean;
+  headBefore?: string;
+  headAfter?: string;
+}
+
 export function mergeWorktree(
   projectRoot: string,
   branch: string
-): { success: boolean; message: string } {
+): WorktreeOpResult {
+  let headBefore: string;
   try {
-    const headBefore = execSync("git rev-parse HEAD", {
+    headBefore = execSync("git rev-parse HEAD", {
       cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
     }).trim();
+  } catch (err) {
+    return {
+      success: false,
+      phase: "merge",
+      headAdvanced: false,
+      message: `Could not read HEAD before merge: ${err instanceof Error ? err.message : String(err)}. Main is unchanged.`,
+    };
+  }
 
-    const mergeOutput = execSync(`git merge ${branch}`, {
+  // Phase 1: merge
+  let mergeOutput: string;
+  try {
+    mergeOutput = execSync(`git merge ${branch}`, {
       cwd: projectRoot,
       encoding: "utf-8",
       stdio: "pipe",
     });
+  } catch (err) {
+    return {
+      success: false,
+      phase: "merge",
+      headAdvanced: false,
+      headBefore,
+      message: `Merge did not occur: ${err instanceof Error ? err.message : String(err)}. Main is unchanged at ${headBefore.slice(0, 8)}.`,
+    };
+  }
 
-    const headAfter = execSync("git rev-parse HEAD", {
+  let headAfter: string;
+  try {
+    headAfter = execSync("git rev-parse HEAD", {
       cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
     }).trim();
+  } catch (err) {
+    return {
+      success: false,
+      phase: "merge",
+      headBefore,
+      message: `Could not read HEAD after merge: ${err instanceof Error ? err.message : String(err)}. Main state unknown — inspect 'git log' before retrying.`,
+    };
+  }
 
-    if (headBefore === headAfter) {
-      return {
-        success: false,
-        message: `Merge had no effect — HEAD unchanged (${headBefore.slice(0, 8)}). git said: "${mergeOutput.trim()}". Worktree NOT cleaned up.`,
-      };
-    }
+  if (headBefore === headAfter) {
+    return {
+      success: false,
+      phase: "noop",
+      headAdvanced: false,
+      headBefore,
+      headAfter,
+      message: `Merge had no effect — HEAD unchanged (${headBefore.slice(0, 8)}). git said: "${mergeOutput.trim()}". Worktree NOT cleaned up.`,
+    };
+  }
 
-    // Clean up worktree and branch
-    const worktreePath = join(projectRoot, ".claude", "worktrees", branch.replace("worktree-", ""));
-    if (existsSync(worktreePath)) {
+  const worktreePath = join(projectRoot, ".claude", "worktrees", branch.replace("worktree-", ""));
+
+  // Phase 2: worktree cleanup
+  if (existsSync(worktreePath)) {
+    try {
       execSync(`git worktree remove "${worktreePath}"`, {
         cwd: projectRoot,
         encoding: "utf-8",
         stdio: "pipe",
       });
+    } catch (err) {
+      return {
+        success: false,
+        phase: "cleanup",
+        headAdvanced: true,
+        headBefore,
+        headAfter,
+        message:
+          `Merge succeeded — main is now at ${headAfter.slice(0, 8)} (was ${headBefore.slice(0, 8)}). ` +
+          `Worktree cleanup failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Recovery: (1) inspect ${worktreePath} for uncommitted work, ` +
+          `(2) 'git worktree remove --force "${worktreePath}"' if safe, ` +
+          `(3) 'git branch -d ${branch}'.`,
+      };
     }
+  }
 
-    try {
-      execSync(`git branch -d ${branch}`, {
-        cwd: projectRoot,
-        encoding: "utf-8",
-        stdio: "pipe",
-      });
-    } catch {
-      // Branch may already be deleted by worktree remove
-    }
-
-    return { success: true, message: `Merged ${branch} and cleaned up` };
+  // Phase 3: branch delete
+  try {
+    execSync(`git branch -d ${branch}`, {
+      cwd: projectRoot,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
   } catch (err) {
     return {
       success: false,
-      message: `Merge failed: ${err instanceof Error ? err.message : String(err)}`,
+      phase: "branch-delete",
+      headAdvanced: true,
+      headBefore,
+      headAfter,
+      message:
+        `Merge succeeded and worktree removed — main is now at ${headAfter.slice(0, 8)} (was ${headBefore.slice(0, 8)}). ` +
+        `Branch delete failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Recovery: 'git branch -d ${branch}' (or '-D' to force).`,
     };
   }
+
+  return {
+    success: true,
+    phase: "merge",
+    headAdvanced: true,
+    headBefore,
+    headAfter,
+    message: `Merged ${branch} into main. Main: ${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}.`,
+  };
 }
 
 export function discardWorktree(
   projectRoot: string,
   branch: string
-): { success: boolean; message: string } {
-  try {
-    const worktreeName = branch.replace("worktree-", "");
-    const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
+): WorktreeOpResult {
+  const worktreeName = branch.replace("worktree-", "");
+  const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
 
-    let removedWorktree = false;
-    let removedBranch = false;
+  let removedWorktree = false;
 
-    if (existsSync(worktreePath)) {
+  // Phase 1: worktree cleanup
+  if (existsSync(worktreePath)) {
+    try {
       execSync(`git worktree remove --force "${worktreePath}"`, {
         cwd: projectRoot,
         encoding: "utf-8",
         stdio: "pipe",
       });
       removedWorktree = true;
+    } catch (err) {
+      return {
+        success: false,
+        phase: "cleanup",
+        message:
+          `Worktree cleanup failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Recovery: (1) inspect ${worktreePath}, ` +
+          `(2) 'git worktree remove --force "${worktreePath}"', ` +
+          `(3) 'git branch -D ${branch}'.`,
+      };
     }
+  }
 
-    try {
-      execSync(`git branch -D ${branch}`, {
-        cwd: projectRoot,
-        encoding: "utf-8",
-        stdio: "pipe",
-      });
-      removedBranch = true;
-    } catch {
-      // Branch may already be deleted by worktree remove
+  // Phase 2: branch delete
+  let branchExists = true;
+  try {
+    execSync(`git rev-parse --verify --quiet ${branch}`, {
+      cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+    });
+  } catch {
+    branchExists = false;
+  }
+
+  if (!branchExists) {
+    if (!removedWorktree) {
+      return {
+        success: false,
+        phase: "cleanup",
+        message: `Nothing to discard: no worktree or branch found for ${branch}`,
+      };
     }
+    return { success: true, phase: "cleanup", message: `Discarded ${branch} and cleaned up (branch was already gone)` };
+  }
 
-    if (!removedWorktree && !removedBranch) {
-      return { success: false, message: `Nothing to discard: no worktree or branch found for ${branch}` };
-    }
-
-    return { success: true, message: `Discarded ${branch} and cleaned up` };
+  try {
+    execSync(`git branch -D ${branch}`, {
+      cwd: projectRoot,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
   } catch (err) {
+    const prefix = removedWorktree ? "Worktree removed. " : "";
     return {
       success: false,
-      message: `Discard failed: ${err instanceof Error ? err.message : String(err)}`,
+      phase: "branch-delete",
+      message:
+        `${prefix}Branch delete failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Recovery: 'git branch -D ${branch}'.`,
     };
   }
+
+  return { success: true, phase: "branch-delete", message: `Discarded ${branch} and cleaned up` };
 }
 
 export function getWorktreeResults(
