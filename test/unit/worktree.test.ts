@@ -212,7 +212,7 @@ test("mergeWorktree: cleanup fails (untracked file) → phase=cleanup, headAdvan
   }
 });
 
-test("mergeWorktree: branch-delete fails (upstream blocks -d) → phase=branch-delete, headAdvanced=true", () => {
+test("mergeWorktree: stale upstream tracking → -D succeeds (the #44 fix)", () => {
   const dir = makeRepo();
   try {
     execSync("git branch side-branch", env(dir));
@@ -228,6 +228,38 @@ test("mergeWorktree: branch-delete fails (upstream blocks -d) → phase=branch-d
     execSync("git config branch.worktree-echo.merge refs/heads/side-branch", env(dir));
 
     const result = mergeWorktree(dir, "worktree-echo");
+    assert.equal(result.success, true);
+    assert.equal(result.phase, "merge");
+    assert.equal(result.headAdvanced, true);
+    assert.ok(result.headBefore);
+    assert.ok(result.headAfter);
+    assert.notEqual(result.headBefore, result.headAfter);
+    assert.match(result.message, /Merged worktree-echo into main/);
+    assert.match(result.message, new RegExp(result.headBefore!.slice(0, 7)));
+    assert.match(result.message, new RegExp(result.headAfter!.slice(0, 7)));
+
+    assert.equal(existsSync(worktreePath), false);
+    assert.equal(branchExists(dir, "worktree-echo"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: branch checked out elsewhere → phase=branch-delete, headAdvanced=true", () => {
+  const dir = makeRepo();
+  const externalHolder = mkdtempSync(join(tmpdir(), "dangeresque-external-"));
+  const externalWtPath = join(externalHolder, "external-wt");
+  try {
+    // Create worktree-kilo only in an external worktree (not at
+    // .claude/worktrees/kilo). mergeWorktree's Phase 2 existsSync check
+    // then skips cleanup, and Phase 3's `git branch -D` hits the real
+    // post-fix failure mode: branch checked out in another worktree.
+    execSync(`git worktree add -b worktree-kilo "${externalWtPath}"`, env(dir));
+    writeFileSync(join(externalWtPath, "kilo.txt"), "kilo\n");
+    execSync("git add kilo.txt", env(externalWtPath));
+    execSync('git commit -m "kilo diverge"', env(externalWtPath));
+
+    const result = mergeWorktree(dir, "worktree-kilo");
     assert.equal(result.success, false);
     assert.equal(result.phase, "branch-delete");
     assert.equal(result.headAdvanced, true);
@@ -236,11 +268,13 @@ test("mergeWorktree: branch-delete fails (upstream blocks -d) → phase=branch-d
     assert.match(result.message, /Merge succeeded and worktree removed/);
     assert.match(result.message, new RegExp(result.headAfter!.slice(0, 7)));
     assert.match(result.message, /Branch delete failed/i);
-    assert.match(result.message, /worktree-echo/);
+    assert.match(result.message, /worktree-kilo/);
+    assert.match(result.message, /git worktree list/);
 
-    assert.equal(existsSync(worktreePath), false);
-    assert.equal(branchExists(dir, "worktree-echo"), true);
+    assert.equal(branchExists(dir, "worktree-kilo"), true);
   } finally {
+    try { execSync(`git worktree remove --force "${externalWtPath}"`, env(dir)); } catch { /* ignore */ }
+    rmSync(externalHolder, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
 });

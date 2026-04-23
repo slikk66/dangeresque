@@ -383,9 +383,13 @@ export function mergeWorktree(
     }
   }
 
-  // Phase 3: branch delete
+  // Phase 3: branch delete. Use -D because the dangeresque workflow merges
+  // locally before the human pushes — so -d's upstream-tracking safety check
+  // refuses even though the branch is merged to HEAD. Phase 1's
+  // headBefore !== headAfter guard already enforces the real invariant (merge
+  // landed on local HEAD), which is the check we actually care about.
   try {
-    execSync(`git branch -d ${branch}`, {
+    execSync(`git branch -D ${branch}`, {
       cwd: projectRoot,
       encoding: "utf-8",
       stdio: "pipe",
@@ -400,7 +404,7 @@ export function mergeWorktree(
       message:
         `Merge succeeded and worktree removed — main is now at ${headAfter.slice(0, 8)} (was ${headBefore.slice(0, 8)}). ` +
         `Branch delete failed: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Recovery: 'git branch -d ${branch}' (or '-D' to force).`,
+        `Recovery: check 'git branch --list ${branch}' and 'git worktree list'; if the branch is checked out in another worktree, remove that worktree first, then 'git branch -D ${branch}'.`,
     };
   }
 
