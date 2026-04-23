@@ -265,6 +265,34 @@ The engine abstraction is narrow by design: dangeresque makes the worktree,
 permissions, rebase, and review work regardless of which engine executes
 the task, but it does not try to paper over every CLI-level difference.
 
+### Engine capability matrix
+
+The engines have first-class parity on orchestration (worktree, rebase,
+review, merge) but expose different tool names and configuration surfaces
+for the common capabilities a worker reaches for. The table below is the
+canonical mapping — prompt authors and scope reviewers should consult it
+when a tool does not resolve under one engine.
+
+| Capability                        | claude                                       | codex                                                            |
+| --------------------------------- | -------------------------------------------- | ---------------------------------------------------------------- |
+| Web search                        | `WebSearch` tool (native)                    | `web_search` built-in (default mode: cached)                     |
+| Web fetch                         | `WebFetch(url, prompt)` tool (native)        | Shell `curl` (network egress enabled) or MCP server              |
+| Effort hint                       | `--effort` flag (native)                     | Prompt-suffix hint (existing)                                    |
+| Destructive-command blocking      | `--disallowed-tools Bash(...)`               | `.codex/rules/dangeresque.rules` prefix_rules (#39)              |
+| MCP                               | `~/.claude.json` / `.mcp.json` (project)     | `~/.codex/config.toml` / `.codex/config.toml` (project)          |
+| Task-prompt delivery              | stdin via pipe in headless (#43)             | stdin via `-` in headless (#35)                                  |
+| Network egress from spawned shell | Unrestricted (claude model)                  | Gated by `sandbox_workspace_write.network_access` (this issue)   |
+
+Enabling `sandbox_workspace_write.network_access=true` on the codex worker
+widens its blast radius from "workspace-write filesystem only" to
+"workspace-write filesystem + unrestricted network egress." The tradeoff
+is accepted as parity with claude's existing `WebFetch` allowlist: the
+codex worker is already trusted at the content level via `--full-auto`
+(and claude's equivalent via `acceptEdits`), so gating its outbound
+connections while its file writes are already unrestricted would be a
+half-measure. Destructive shell commands remain blocked under both
+engines via the existing `disallowedTools` / `dangeresque.rules` paths.
+
 ## 6. Known Limitations
 
 These are current gaps, not future plans. They appear here as honest

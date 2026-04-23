@@ -110,6 +110,12 @@ When a tool call fails, the failure is usually structural, not a parsing acciden
 - **Multi-operation shell syntax** — pipes (`|`), redirects (`>`, `2>&1`), semicolons (`;`), chains (`&&`, `||`) are blocked regardless of `allowedTools`. Use plain commands. Prefer Grep over `cat | grep`, Read over `cat`, Glob over `find`.
 - **Two-strike rule** — if the same tool call fails twice with related errors, switch strategy entirely. Don't try a third variation.
 
+## Tool Naming by Engine
+
+- `WebSearch` and `WebFetch` are **claude-only** tool names (surfaced via `allowedTools`).
+- Under **codex**, there is no `WebSearch`/`WebFetch` tool. Use the built-in `web_search` tool for search, or shell `curl` for arbitrary URL fetch — shell network egress is enabled for dangeresque codex workers via `sandbox_workspace_write.network_access=true`.
+- Do not hallucinate a `WebSearch` tool call under codex; it will not resolve.
+
 ## Critical Rules
 
 - **Read first**: Read files before editing. The world is never as you assume.

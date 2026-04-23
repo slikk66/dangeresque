@@ -450,6 +450,7 @@ export function buildCodexWorkerArgs(
     "--json",
     "--full-auto",
     "--model", opts.config.codexModel ?? opts.config.model,
+    "-c", "sandbox_workspace_write.network_access=true",
     "--cd", worktreePath,
     "-",
   ];
@@ -492,6 +493,7 @@ export function buildCodexReviewArgs(
     "--json",
     "--full-auto",
     "--model", reviewModel,
+    "-c", "sandbox_workspace_write.network_access=true",
     "--cd", join(opts.projectRoot, ".claude", "worktrees", worktreeName),
     "-",
   ];

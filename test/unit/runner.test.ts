@@ -421,6 +421,21 @@ test("buildCodexWorkerArgs: returns {args, prompt}; args ends with '-'; prompt c
   }
 });
 
+test("buildCodexWorkerArgs: args include '-c sandbox_workspace_write.network_access=true' adjacent pair", () => {
+  const { opts, cleanup } = makeCodexArgsFixture();
+  try {
+    const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-35/2026-04-23T00-00-00-IMPLEMENT.md";
+    const { args } = buildCodexWorkerArgs(opts, "dangeresque-implement-35", archivePath);
+
+    const flagValue = "sandbox_workspace_write.network_access=true";
+    const flagIndex = args.indexOf(flagValue);
+    assert.ok(flagIndex > 0, `expected args to contain ${flagValue}`);
+    assert.equal(args[flagIndex - 1], "-c", "flag value must be preceded by '-c'");
+  } finally {
+    cleanup();
+  }
+});
+
 test("buildCodexReviewArgs: returns {args, prompt}; args ends with '-'; prompt carries issue body; argv has no leak", () => {
   const { opts, cleanup } = makeCodexArgsFixture();
   try {
@@ -446,6 +461,21 @@ test("buildCodexReviewArgs: returns {args, prompt}; args ends with '-'; prompt c
     assert.ok(result.args.includes("--json"));
     assert.ok(result.args.includes("--full-auto"));
     assert.ok(result.args.includes("codex-model-review"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("buildCodexReviewArgs: args include '-c sandbox_workspace_write.network_access=true' adjacent pair", () => {
+  const { opts, cleanup } = makeCodexArgsFixture();
+  try {
+    const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-35/2026-04-23T00-00-00-IMPLEMENT.md";
+    const { args } = buildCodexReviewArgs(opts, "dangeresque-implement-35", archivePath);
+
+    const flagValue = "sandbox_workspace_write.network_access=true";
+    const flagIndex = args.indexOf(flagValue);
+    assert.ok(flagIndex > 0, `expected args to contain ${flagValue}`);
+    assert.equal(args[flagIndex - 1], "-c", "flag value must be preceded by '-c'");
   } finally {
     cleanup();
   }
