@@ -63,7 +63,7 @@ Commands:
   merge <branch>                       Merge a reviewed worktree
   discard <branch>                     Remove a worktree without merging
   clean --issue <N>                    Delete archived runs for an issue
-  stats [options]                      Aggregate run evaluation artifacts; --glossary explains terms
+  stats [options]                      Aggregate run evaluation artifacts; review auto-skipped for INVESTIGATE/VERIFY modes; --glossary explains terms
   allow mcp [<server>] [--dry-run]     Add mcp__<server> entries to allowedTools (reads ./.mcp.json if no server given)
   allow bash "<pattern>" [--dry-run]   Append Bash(<pattern>) to allowedTools (e.g. allow bash "npm install *")
   init                                 Scaffold .dangeresque/ config + skills
@@ -130,7 +130,7 @@ Reviewer verdicts:
   needs_human_review
     The reviewer could not accept or reject outright and asked for human judgment; this makes the run a partial_success.
   skipped
-    No reviewer decision exists because review was intentionally skipped.
+    The reviewer did not run. Automatically skipped for INVESTIGATE and VERIFY modes (no code changes to audit), and manually skipped by --no-review.
   unknown
     Dangeresque could not derive a reviewer verdict, usually because the worker failed, the artifact was missing or unreadable, or the markdown verdict was absent or unparseable.
 

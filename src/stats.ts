@@ -58,6 +58,7 @@ export interface StatsSummary {
       reviewRanCount: number;
     }
   >;
+  reviewCoveragePercent: number;
 }
 
 export interface FormatExtras {
@@ -199,8 +200,13 @@ export function computeStats(artifacts: RunArtifact[]): StatsSummary {
     };
   }
 
+  const total = artifacts.length;
+  // `unknown` verdicts are lumped with "reviewed" here so `reviewed + skipped = total` holds.
+  const reviewCoveragePercent =
+    total > 0 ? (1 - byVerdict.skipped / total) * 100 : 0;
+
   return {
-    total: artifacts.length,
+    total,
     byResult,
     byVerdict,
     byEngine,
@@ -216,6 +222,7 @@ export function computeStats(artifacts: RunArtifact[]): StatsSummary {
       p95: percentile(totalDurations, 0.95),
     },
     byModeDurations,
+    reviewCoveragePercent,
   };
 }
 
@@ -339,10 +346,8 @@ export function formatStats(summary: StatsSummary, extras: FormatExtras): string
 
 function formatSummary(summary: StatsSummary): string[] {
   const successfulRuns = summary.byResult.success;
-  const reviewedRuns =
-    summary.byVerdict.accept +
-    summary.byVerdict.reject +
-    summary.byVerdict.needs_human_review;
+  const skippedRuns = summary.byVerdict.skipped;
+  const reviewedRuns = summary.total - skippedRuns;
   const topFailureCategory = Object.entries(summary.failureCategories).sort(
     (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
   )[0];
@@ -352,10 +357,7 @@ function formatSummary(summary: StatsSummary): string[] {
     "-------",
     `Overall success:     ${formatPctWithCount(successfulRuns, summary.total)}`,
     `Hard failures:       ${summary.byResult.failure}`,
-    `Review coverage:     ${formatPctWithCount(
-      reviewedRuns,
-      summary.total,
-    )} runs reviewed`,
+    `Review coverage:     ${formatPct(summary.reviewCoveragePercent)} (${reviewedRuns}/${summary.total} runs reviewed, ${skippedRuns} skipped)`,
     `Reviewer verdicts:   ${summary.byVerdict.accept} accept, ${summary.byVerdict.reject} reject, ${summary.byVerdict.needs_human_review} needs_human_review`,
     `Top failure category: ${
       topFailureCategory

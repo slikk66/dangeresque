@@ -360,7 +360,7 @@ These terms are derived from worker exit code, review phase, run artifact presen
 - `reviewer_verdict=accept`: The reviewer accepted the worker's changes.
 - `reviewer_verdict=reject`: The reviewer rejected the worker's changes; this makes the run a `failure`.
 - `reviewer_verdict=needs_human_review`: The reviewer could not accept or reject outright and asked for human judgment; this makes the run a `partial_success`.
-- `reviewer_verdict=skipped`: No reviewer decision exists because review was intentionally skipped.
+- `reviewer_verdict=skipped`: The reviewer did not run (INVESTIGATE/VERIFY modes auto-skip; `--no-review` forces skip).
 - `reviewer_verdict=unknown`: Dangeresque could not derive a reviewer verdict, usually because the worker failed, the artifact was missing or unreadable, or the markdown verdict was absent or unparseable.
 
 Review normally runs after a successful worker run for code-changing modes. It is automatically skipped for `INVESTIGATE` and `VERIFY`, and manually skipped by `--no-review`.

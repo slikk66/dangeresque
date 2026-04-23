@@ -201,6 +201,41 @@ test("computeStats: empty + single-artifact modes", () => {
   assert.deepEqual(computeStats([]).byModeDurations, {});
 });
 
+test("computeStats: reviewCoveragePercent = (1 - skipped/total) * 100", () => {
+  // total=0 → 0.0
+  assert.equal(computeStats([]).reviewCoveragePercent, 0);
+
+  // all accepted (0 skipped) → 100.0
+  const allAccepted = [
+    mkArtifact({ reviewer_verdict: "accept" }),
+    mkArtifact({ reviewer_verdict: "accept" }),
+    mkArtifact({ reviewer_verdict: "accept" }),
+  ];
+  assert.equal(computeStats(allAccepted).reviewCoveragePercent, 100);
+
+  // all skipped → 0.0
+  const allSkipped = [
+    mkArtifact({ reviewer_verdict: "skipped" }),
+    mkArtifact({ reviewer_verdict: "skipped" }),
+  ];
+  assert.equal(computeStats(allSkipped).reviewCoveragePercent, 0);
+
+  // mixed: 12 reviewed + 13 skipped out of 25 → 48.0 (toFixed guards FP noise)
+  const mixed: RunArtifact[] = [];
+  for (let i = 0; i < 12; i++) mixed.push(mkArtifact({ reviewer_verdict: "accept" }));
+  for (let i = 0; i < 13; i++) mixed.push(mkArtifact({ reviewer_verdict: "skipped" }));
+  assert.equal(computeStats(mixed).reviewCoveragePercent.toFixed(1), "48.0");
+
+  // unknown is lumped with "reviewed" so invariant reviewed + skipped = total holds
+  const withUnknown = [
+    mkArtifact({ reviewer_verdict: "accept" }),
+    mkArtifact({ reviewer_verdict: "unknown" }),
+    mkArtifact({ reviewer_verdict: "skipped" }),
+    mkArtifact({ reviewer_verdict: "skipped" }),
+  ];
+  assert.equal(computeStats(withUnknown).reviewCoveragePercent, 50);
+});
+
 test("formatStats: Durations shows per-mode block with total (run) gated on review", () => {
   const artifacts: RunArtifact[] = [
     mkArtifact({
@@ -383,7 +418,7 @@ test("formatStats: Summary shows derived top-level facts first", () => {
     "-------",
     "Overall success:     50.0% (2/4)",
     "Hard failures:       1",
-    "Review coverage:     75.0% (3/4) runs reviewed",
+    "Review coverage:     75.0% (3/4 runs reviewed, 1 skipped)",
     "Reviewer verdicts:   1 accept, 1 reject, 1 needs_human_review",
     "Top failure category: scope_violation (2)",
   ]);
@@ -400,7 +435,7 @@ test("formatStats: Summary reports empty data without invented categories", () =
   });
 
   assert.match(text, /Overall success:\s+0\.0% \(0\/0\)/);
-  assert.match(text, /Review coverage:\s+0\.0% \(0\/0\) runs reviewed/);
+  assert.match(text, /Review coverage:\s+0\.0% \(0\/0 runs reviewed, 0 skipped\)/);
   assert.match(text, /Top failure category: \(none\)/);
 });
 
