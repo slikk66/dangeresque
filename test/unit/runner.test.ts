@@ -17,6 +17,7 @@ import {
   buildCodexReviewArgs,
   buildClaudeWorkerArgs,
   buildClaudeReviewArgs,
+  readPromptWithLocal,
   CODEX_RULES_RELPATH,
 } from "#dist/runner.js";
 import type { RunOptions } from "#dist/runner.js";
@@ -607,5 +608,63 @@ test("buildClaudeReviewArgs(headless=false): prompt returned AND appended positi
     assert.match(argv, /CLAUDE_STAGED_COMMENT_MARKER_LMNOP/);
   } finally {
     cleanup();
+  }
+});
+
+test("readPromptWithLocal: canonical only, .local.md missing → canonical", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-prompt-local-"));
+  try {
+    writeFileSync(join(dir, "worker-prompt.md"), "CANON\n");
+    assert.equal(readPromptWithLocal(dir, "worker-prompt.md"), "CANON\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readPromptWithLocal: canonical + .local.md with content → concatenated with double newline", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-prompt-local-"));
+  try {
+    writeFileSync(join(dir, "worker-prompt.md"), "CANON\n");
+    writeFileSync(join(dir, "worker-prompt.local.md"), "LOCAL ADDITION\n");
+    assert.equal(
+      readPromptWithLocal(dir, "worker-prompt.md"),
+      "CANON\n\n\nLOCAL ADDITION",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readPromptWithLocal: canonical + empty .local.md → canonical only", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-prompt-local-"));
+  try {
+    writeFileSync(join(dir, "worker-prompt.md"), "CANON\n");
+    writeFileSync(join(dir, "worker-prompt.local.md"), "");
+    assert.equal(readPromptWithLocal(dir, "worker-prompt.md"), "CANON\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readPromptWithLocal: canonical + whitespace-only .local.md → canonical only (trim)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-prompt-local-"));
+  try {
+    writeFileSync(join(dir, "worker-prompt.md"), "CANON\n");
+    writeFileSync(join(dir, "worker-prompt.local.md"), "   \n\n  \t\n");
+    assert.equal(readPromptWithLocal(dir, "worker-prompt.md"), "CANON\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readPromptWithLocal: canonical missing → throws (readFileSync ENOENT)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-prompt-local-"));
+  try {
+    assert.throws(
+      () => readPromptWithLocal(dir, "missing-prompt.md"),
+      /ENOENT/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

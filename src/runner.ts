@@ -296,6 +296,23 @@ function buildTaskPrompt(opts: RunOptions, archivePath: string): string {
   return prompt;
 }
 
+/**
+ * Read <configDir>/<baseName> and, if a sibling <baseName-minus-md>.local.md
+ * exists with non-blank content, return canonical + "\n\n" + local.
+ * Missing or blank local file returns canonical alone (silent, optional-by-design).
+ * Missing canonical propagates the underlying readFileSync error.
+ */
+export function readPromptWithLocal(configDir: string, baseName: string): string {
+  const canonical = readFileSync(join(configDir, baseName), "utf-8");
+  const localName = baseName.replace(/\.md$/, ".local.md");
+  const localPath = join(configDir, localName);
+  if (existsSync(localPath)) {
+    const local = readFileSync(localPath, "utf-8").trim();
+    if (local.length > 0) return canonical + "\n\n" + local;
+  }
+  return canonical;
+}
+
 export function buildClaudeWorkerArgs(
   opts: RunOptions,
   worktreeName: string,
@@ -319,8 +336,7 @@ export function buildClaudeWorkerArgs(
 
   args.push("--permission-mode", config.permissionMode);
 
-  const workerPromptPath = join(configDir, config.workerPrompt);
-  args.push("--append-system-prompt-file", workerPromptPath);
+  args.push("--append-system-prompt", readPromptWithLocal(configDir, config.workerPrompt));
 
   if (config.allowedTools.length > 0) {
     args.push("--allowed-tools", ...config.allowedTools);
@@ -378,8 +394,7 @@ export function buildClaudeReviewArgs(
     args.push("--disallowed-tools", ...config.disallowedTools);
   }
 
-  const reviewPromptPath = join(configDir, config.reviewPrompt);
-  args.push("--append-system-prompt-file", reviewPromptPath);
+  args.push("--append-system-prompt", readPromptWithLocal(configDir, config.reviewPrompt));
 
   args.push("--name", `dangeresque-review-${worktreeName}`);
   const reviewSessionId = randomUUID();
@@ -437,8 +452,8 @@ export function buildCodexWorkerArgs(
   archivePath: string
 ): { args: string[]; prompt: string } {
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
-  const workerPromptPath = join(opts.projectRoot, CONFIG_DIR, opts.config.workerPrompt);
-  const workerPromptContent = readFileSync(workerPromptPath, "utf-8");
+  const configDir = join(opts.projectRoot, CONFIG_DIR);
+  const workerPromptContent = readPromptWithLocal(configDir, opts.config.workerPrompt);
   const prompt =
     workerPromptContent +
     `\n\n` +
@@ -480,8 +495,8 @@ export function buildCodexReviewArgs(
     opts.config.reviewModel ??
     opts.config.model;
   const reviewEffort = opts.config.reviewEffort ?? opts.config.effort;
-  const reviewPromptPath = join(opts.projectRoot, CONFIG_DIR, opts.config.reviewPrompt);
-  const reviewPromptContent = readFileSync(reviewPromptPath, "utf-8");
+  const configDir = join(opts.projectRoot, CONFIG_DIR);
+  const reviewPromptContent = readPromptWithLocal(configDir, opts.config.reviewPrompt);
   const prompt =
     reviewPromptContent +
     `\n\n` +
