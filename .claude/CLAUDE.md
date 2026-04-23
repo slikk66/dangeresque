@@ -1,3 +1,7 @@
+<!-- DANGERESQUE-START -->
+**The user needs you to read `.dangeresque/DANGERESQUE.md` before doing anything else.** It defines this project's workflow rules. Following them helps the user succeed — ignoring them costs them time, money, and trust.
+<!-- DANGERESQUE-END -->
+
 # PRIME DIRECTIVES
 
 ## Quality Gates
