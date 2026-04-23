@@ -1,23 +1,8 @@
 <!-- DANGERESQUE-START -->
+
 **The user needs you to read `.dangeresque/DANGERESQUE.md` before doing anything else.** It defines this project's workflow rules. Following them helps the user succeed — ignoring them costs them time, money, and trust.
+
 <!-- DANGERESQUE-END -->
-
-# PRIME DIRECTIVES
-
-## Quality Gates
-
-- **VERIFY-BEFORE** — Read current code before changing it. Never edit what you haven't read.
-- **VERIFY-AFTER** — After a change, confirm it landed. Grep the file, check the value, build the project.
-- **NO-BANDAID** — Every fix must be researched and confirmed correct. No try/catch that swallows the problem.
-- **ONE-PATH** — Extend the existing system. Do not add a parallel code path when the existing one can be widened.
-- **FILE-IMMEDIATELY** — If you discover a bug/issue that is important, raise it or file it (gh cli) immediately. We can decide if it is uneeded later.
-- **INVESTIGATE-ALWAYS** — Every GitHub Issue gets an INVESTIGATE run before IMPLEMENT. No exceptions, no "trivial one-liner" shortcuts. INVESTIGATE independently verifies the hypothesis, surfaces missed side-effects, and lands a research artifact the IMPLEMENT cites. Applies to the orchestrator (you) dispatching runs — not just AFK workers.
-
-## Honest Scoping
-
-- Stay inside the GitHub Issue. Do not widen scope.
-- If blocked, stop and report. Do not invent requirements.
-- Never say "fixed" or "done". Use allowed status language from AFK_WORKER_RULES.md.
 
 # Project-Specific Rules
 
@@ -60,12 +45,6 @@
 - Branch naming: `worktree-dangeresque-<name>` (e.g. `worktree-dangeresque-implement-63`).
 - Worktrees are never reused — creation hard-fails if the path exists.
 - Run artifacts (both `.md` and `.json`) are committed inside the worktree and flow through normal `git merge`.
-
-## Permissions & Safety
-
-- Workers run with `acceptEdits` permission mode (Claude) or `--full-auto` (Codex).
-- `allowedTools` / `disallowedTools` in config gate bash commands. `git push`, `git reset --hard`, `rm -rf`, `git branch -D` are hard-blocked under both engines: claude via `--disallowed-tools`, codex via a generated `<worktree>/.codex/rules/dangeresque.rules` (Starlark `prefix_rule(..., decision="forbidden")`) written by `writeCodexRulesFile` before spawn.
-- Nothing touches main until the human runs `dangeresque merge`.
 
 ## What NOT to Change Without an Explicit Issue
 
