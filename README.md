@@ -356,6 +356,10 @@ dangeresque stats --glossary
 
 Scaffold `.dangeresque/` config, copy skills, merge notification hooks. Re-run to refresh skills. Existing config files are not overwritten. If a legacy `.dangeresque/runs/` pattern is found in `.gitignore`, it is removed (run results are tracked in git, not ignored).
 
+### `dangeresque brief`
+
+Print a self-contained workflow primer to stdout (markdown, version-stamped). Use `dangeresque brief >> CLAUDE.md` to embed the primer into your project's CLAUDE.md, or `dangeresque brief | less` for a quick read. The document covers the workflow loop, issue body shape, command surface, modes, and what-not-to-do — enough to drive dangeresque end-to-end without reading this README.
+
 ## Evaluation Vocabulary
 
 These terms are derived from worker exit code, review phase, run artifact presence, recorded scope violations, and parsed reviewer verdicts in `src/artifact.ts`. For design rationale, see [docs/DESIGN.md](docs/DESIGN.md#4-observability--evaluation).

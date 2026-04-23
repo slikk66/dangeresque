@@ -26,6 +26,7 @@ import {
   type WorktreeInfo,
 } from "./worktree.js";
 import { initProject } from "./init.js";
+import { printBrief } from "./brief.js";
 import { allowMcp, allowBash, type AllowResult } from "./allow.js";
 import { stageComment } from "./stage.js";
 import { resolveSessionPath, tailLog } from "./logs.js";
@@ -65,6 +66,7 @@ Commands:
   allow mcp [<server>] [--dry-run]     Add mcp__<server> entries to allowedTools (reads ./.mcp.json if no server given)
   allow bash "<pattern>" [--dry-run]   Append Bash(<pattern>) to allowedTools (e.g. allow bash "npm install *")
   init                                 Scaffold .dangeresque/ config + skills
+  brief                                Print a self-contained workflow primer (pipe to CLAUDE.md or less)
 
 Run options:
   --issue <number>  Read task from GitHub Issue (recommended)
@@ -86,6 +88,7 @@ Examples:
   dangeresque results investigate-63
   dangeresque stage 63 --comment "root cause confirmed" --mode IMPLEMENT
   dangeresque init
+  dangeresque brief >> CLAUDE.md
 `;
 }
 
@@ -179,6 +182,9 @@ async function main() {
       break;
     case "init":
       cmdInit();
+      break;
+    case "brief":
+      printBrief();
       break;
     default:
       console.error(`Unknown command: ${command}`);

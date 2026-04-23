@@ -28,6 +28,8 @@ export {
 
 export { initProject } from "./init.js";
 
+export { BRIEF_MARKDOWN, printBrief } from "./brief.js";
+
 export { stageComment } from "./stage.js";
 
 export {
