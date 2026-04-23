@@ -15,6 +15,8 @@ import {
   writeCodexRulesFile,
   buildCodexWorkerArgs,
   buildCodexReviewArgs,
+  buildClaudeWorkerArgs,
+  buildClaudeReviewArgs,
   CODEX_RULES_RELPATH,
 } from "#dist/runner.js";
 import type { RunOptions } from "#dist/runner.js";
@@ -444,6 +446,135 @@ test("buildCodexReviewArgs: returns {args, prompt}; args ends with '-'; prompt c
     assert.ok(result.args.includes("--json"));
     assert.ok(result.args.includes("--full-auto"));
     assert.ok(result.args.includes("codex-model-review"));
+  } finally {
+    cleanup();
+  }
+});
+
+function makeClaudeArgsFixture(headless: boolean): { projectRoot: string; opts: RunOptions; cleanup: () => void } {
+  const projectRoot = mkdtempSync(join(tmpdir(), "dangeresque-claude-args-"));
+  mkdirSync(join(projectRoot, ".dangeresque"), { recursive: true });
+  writeFileSync(join(projectRoot, ".dangeresque", "worker-prompt.md"), "CLAUDE_WORKER_PROMPT_BODY\n");
+  writeFileSync(join(projectRoot, ".dangeresque", "review-prompt.md"), "CLAUDE_REVIEW_PROMPT_BODY\n");
+
+  const config: DangeresqueConfig = {
+    engine: "claude",
+    model: "claude-model-default",
+    permissionMode: "acceptEdits",
+    effort: "max",
+    reviewEffort: "low",
+    headless,
+    allowedTools: [],
+    disallowedTools: ["Bash(git push *)"],
+    workerPrompt: "worker-prompt.md",
+    reviewPrompt: "review-prompt.md",
+    notifications: true,
+  };
+
+  const opts: RunOptions = {
+    projectRoot,
+    config,
+    mode: "IMPLEMENT",
+    issueData: {
+      number: 43,
+      title: "claude argv prompt leak title",
+      body: "CLAUDE_ISSUE_BODY_MARKER_QWXYZ please do the thing",
+      comments: [
+        { body: "**[staged IMPLEMENT]** CLAUDE_STAGED_COMMENT_MARKER_LMNOP", author: { login: "alice" }, isMinimized: false },
+      ],
+    },
+  };
+
+  return { projectRoot, opts, cleanup: () => rmSync(projectRoot, { recursive: true, force: true }) };
+}
+
+test("buildClaudeWorkerArgs(headless=true): prompt returned; argv carries no issue body", () => {
+  const { opts, cleanup } = makeClaudeArgsFixture(true);
+  try {
+    const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-43/2026-04-23T00-00-00-IMPLEMENT.md";
+    const result = buildClaudeWorkerArgs(opts, "dangeresque-implement-43", archivePath);
+
+    assert.ok(Array.isArray(result.args));
+    assert.ok(result.prompt.length > 0);
+    assert.ok(typeof result.workerSessionId === "string" && result.workerSessionId.length > 0);
+
+    const argv = result.args.join(" ");
+    assert.doesNotMatch(argv, /CLAUDE_ISSUE_BODY_MARKER_QWXYZ/);
+    assert.doesNotMatch(argv, /CLAUDE_STAGED_COMMENT_MARKER_LMNOP/);
+    assert.doesNotMatch(argv, /You are an AFK worker/);
+
+    assert.match(result.prompt, /CLAUDE_ISSUE_BODY_MARKER_QWXYZ/);
+    assert.match(result.prompt, /CLAUDE_STAGED_COMMENT_MARKER_LMNOP/);
+    assert.match(result.prompt, /You are an AFK worker/);
+
+    assert.ok(result.args.includes("-p"));
+    assert.ok(result.args.includes("--session-id"));
+    assert.equal(result.args[result.args.length - 1], result.workerSessionId);
+  } finally {
+    cleanup();
+  }
+});
+
+test("buildClaudeWorkerArgs(headless=false): prompt returned AND appended positionally (interactive fallback)", () => {
+  const { opts, cleanup } = makeClaudeArgsFixture(false);
+  try {
+    const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-43/2026-04-23T00-00-00-IMPLEMENT.md";
+    const result = buildClaudeWorkerArgs(opts, "dangeresque-implement-43", archivePath);
+
+    assert.ok(result.prompt.length > 0);
+    assert.ok(!result.args.includes("-p"));
+
+    assert.equal(result.args[result.args.length - 1], result.prompt);
+
+    const argv = result.args.join(" ");
+    assert.match(argv, /CLAUDE_ISSUE_BODY_MARKER_QWXYZ/);
+    assert.match(argv, /CLAUDE_STAGED_COMMENT_MARKER_LMNOP/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("buildClaudeReviewArgs(headless=true): prompt returned; argv carries no issue body", () => {
+  const { opts, cleanup } = makeClaudeArgsFixture(true);
+  try {
+    const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-43/2026-04-23T00-00-00-IMPLEMENT.md";
+    const result = buildClaudeReviewArgs(opts, "dangeresque-implement-43", archivePath);
+
+    assert.ok(Array.isArray(result.args));
+    assert.ok(result.prompt.length > 0);
+    assert.ok(typeof result.reviewSessionId === "string" && result.reviewSessionId.length > 0);
+
+    const argv = result.args.join(" ");
+    assert.doesNotMatch(argv, /CLAUDE_ISSUE_BODY_MARKER_QWXYZ/);
+    assert.doesNotMatch(argv, /CLAUDE_STAGED_COMMENT_MARKER_LMNOP/);
+    assert.doesNotMatch(argv, /adversarial reviewer/);
+
+    assert.match(result.prompt, /CLAUDE_ISSUE_BODY_MARKER_QWXYZ/);
+    assert.match(result.prompt, /CLAUDE_STAGED_COMMENT_MARKER_LMNOP/);
+    assert.match(result.prompt, /adversarial reviewer/);
+
+    assert.ok(result.args.includes("-p"));
+    assert.ok(result.args.includes("--session-id"));
+    assert.equal(result.args[result.args.length - 1], result.reviewSessionId);
+  } finally {
+    cleanup();
+  }
+});
+
+test("buildClaudeReviewArgs(headless=false): prompt returned AND appended positionally (interactive fallback)", () => {
+  const { opts, cleanup } = makeClaudeArgsFixture(false);
+  try {
+    const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-43/2026-04-23T00-00-00-IMPLEMENT.md";
+    const result = buildClaudeReviewArgs(opts, "dangeresque-implement-43", archivePath);
+
+    assert.ok(result.prompt.length > 0);
+    assert.ok(!result.args.includes("-p"));
+
+    assert.equal(result.args[result.args.length - 1], result.prompt);
+
+    const argv = result.args.join(" ");
+    assert.match(argv, /CLAUDE_ISSUE_BODY_MARKER_QWXYZ/);
+    assert.match(argv, /CLAUDE_STAGED_COMMENT_MARKER_LMNOP/);
   } finally {
     cleanup();
   }

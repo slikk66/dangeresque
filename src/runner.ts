@@ -296,7 +296,11 @@ function buildTaskPrompt(opts: RunOptions, archivePath: string): string {
   return prompt;
 }
 
-function buildClaudeWorkerArgs(opts: RunOptions, worktreeName: string, archivePath: string): { args: string[]; workerSessionId: string } {
+export function buildClaudeWorkerArgs(
+  opts: RunOptions,
+  worktreeName: string,
+  archivePath: string
+): { args: string[]; workerSessionId: string; prompt: string } {
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
   const headless = config.headless;
@@ -329,12 +333,21 @@ function buildClaudeWorkerArgs(opts: RunOptions, worktreeName: string, archivePa
   const workerSessionId = randomUUID();
   args.push("--session-id", workerSessionId);
 
-  args.push(buildTaskPrompt(opts, archivePath));
+  const prompt = buildTaskPrompt(opts, archivePath);
 
-  return { args, workerSessionId };
+  // Non-headless (interactive) claude has no way to pre-pipe the user prompt —
+  // stdin is the operator's TTY. Fall back to positional argv (argv leak is
+  // documented; default config is headless so AFK runs use the stdin path).
+  if (!headless) args.push(prompt);
+
+  return { args, workerSessionId, prompt };
 }
 
-function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string, archivePath: string): { args: string[]; reviewSessionId: string } {
+export function buildClaudeReviewArgs(
+  opts: RunOptions,
+  worktreeName: string,
+  archivePath: string
+): { args: string[]; reviewSessionId: string; prompt: string } {
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
   const headless = config.headless;
@@ -384,9 +397,14 @@ function buildClaudeReviewArgs(opts: RunOptions, worktreeName: string, archivePa
     diffStat = "(could not capture diff stat)";
   }
 
-  args.push(buildReviewPrompt(opts, archivePath, diffStat, diffBase));
+  const prompt = buildReviewPrompt(opts, archivePath, diffStat, diffBase);
 
-  return { args, reviewSessionId };
+  // Non-headless (interactive) claude has no way to pre-pipe the user prompt —
+  // stdin is the operator's TTY. Fall back to positional argv (argv leak is
+  // documented; default config is headless so AFK runs use the stdin path).
+  if (!headless) args.push(prompt);
+
+  return { args, reviewSessionId, prompt };
 }
 
 function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: string, diffBase: string): string {
@@ -627,7 +645,8 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
     });
   }
 
-  const { args, workerSessionId } = buildClaudeWorkerArgs(opts, worktreeName, archivePath);
+  const { args, workerSessionId, prompt } = buildClaudeWorkerArgs(opts, worktreeName, archivePath);
+  const useStdin = opts.config.headless;
 
   return new Promise((resolve, reject) => {
     console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
@@ -639,9 +658,14 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
 
     const child = spawn("claude", args, {
       cwd: opts.projectRoot,
-      stdio: "inherit",
+      stdio: useStdin ? ["pipe", "inherit", "inherit"] : "inherit",
       env: { ...process.env },
     });
+
+    if (useStdin) {
+      child.stdin?.on("error", () => { /* tolerate EPIPE if claude exits before reading */ });
+      child.stdin?.end(prompt);
+    }
 
     if (child.pid) {
       setTimeout(() => {
@@ -730,16 +754,22 @@ export function runReview(
     });
   }
 
-  const { args, reviewSessionId } = buildClaudeReviewArgs(opts, worktreeName, archivePath);
+  const { args, reviewSessionId, prompt } = buildClaudeReviewArgs(opts, worktreeName, archivePath);
+  const useStdin = opts.config.headless;
 
   return new Promise((resolve, reject) => {
     console.log(`\n--- Review session starting ---\n`);
 
     const child = spawn("claude", args, {
       cwd: opts.projectRoot,
-      stdio: "inherit",
+      stdio: useStdin ? ["pipe", "inherit", "inherit"] : "inherit",
       env: { ...process.env },
     });
+
+    if (useStdin) {
+      child.stdin?.on("error", () => { /* tolerate EPIPE if claude exits before reading */ });
+      child.stdin?.end(prompt);
+    }
 
     if (child.pid) {
       writePidFile(worktreePath, child.pid, { reviewSessionId, workerSessionId, projectHash: hash, engine: "claude", archivePath });
