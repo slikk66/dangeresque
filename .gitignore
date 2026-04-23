@@ -5,3 +5,4 @@ dist/
 HANDOFF.md
 .dangeresque/sessions/
 .claude/scheduled_tasks.lock
+.claude/worktrees/
