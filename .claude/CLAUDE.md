@@ -20,8 +20,8 @@
 
 - Node 22+, TypeScript, ESM modules (`"type": "module"`).
 - Package manager: **yarn** (not npm).
-- Build: `yarn build` (runs `tsc`). The compiled output lives in `dist/` (gitignored).
-- No test framework is installed yet. Do not add one without an issue authorizing it.
+- Build: `yarn build` (runs `tsc` + test tsconfig). Compiled output lives in `dist/` (gitignored).
+- Tests: `yarn test` runs `node --test 'dist/__tests__/**/*.test.js'`. Unit tests live under `test/unit/*.test.ts`. Use scratch dirs via `mkdtempSync` + real `execSync` for git/fs-heavy code (see `test/unit/runner.test.ts` for the pattern).
 - CLI binary: `./dist/cli.js`. Installed globally via `npm link` — the `dangeresque` command points at it.
 
 ## Code Conventions
