@@ -38,9 +38,9 @@ No code touches your main branch until you explicitly merge. If the worker **fai
 ## Requirements
 
 - Node.js >= 22
-- At least one engine CLI installed and authenticated:
-  - **Claude Code**: install/auth per Anthropic docs
-  - **OpenAI Codex CLI**: `npm install -g @openai/codex` and configure `OPENAI_API_KEY`
+- At least one engine CLI installed and authenticated. Follow each vendor's standard subscription login flow:
+  - **Claude Code**: `npm install -g @anthropic-ai/claude-code`
+  - **OpenAI Codex CLI**: `npm install -g @openai/codex`
 - [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated
 - git
 - jq (for notification hooks)
