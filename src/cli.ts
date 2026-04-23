@@ -3,6 +3,7 @@
 import {
   loadConfig,
   validateSetup,
+  validateEngineRuntime,
   resolveProjectRoot,
   type Engine,
 } from "./config.js";
@@ -255,6 +256,15 @@ async function cmdRun(args: string[]) {
     } else if (args[i] === "--mode" && args[i + 1]) {
       mode = args[++i].toUpperCase();
     }
+  }
+
+  const runtimeValidation = validateEngineRuntime(config.engine);
+  if (!runtimeValidation.valid) {
+    console.error("Setup validation failed:");
+    for (const err of runtimeValidation.errors) {
+      console.error(`  - ${err}`);
+    }
+    process.exit(1);
   }
 
   if (issueNumber !== undefined && issueFixturePath !== undefined) {

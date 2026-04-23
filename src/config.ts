@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { spawnSync } from "node:child_process";
 
 export const CONFIG_DIR = ".dangeresque";
 export const RUNS_DIR = "runs";
@@ -122,6 +123,51 @@ export function validateSetup(projectRoot: string): ValidationResult {
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+export function validateEngineRuntime(
+  engine: Engine,
+  opts: {
+    homedirFn?: () => string;
+    probeMissing?: (engine: Engine) => boolean;
+  } = {},
+): ValidationResult {
+  const errors: string[] = [];
+  const homedirFn = opts.homedirFn ?? homedir;
+  const probeMissing = opts.probeMissing ?? defaultProbeMissing;
+
+  if (probeMissing(engine)) {
+    errors.push(
+      `Engine '${engine}' not found on PATH.\n` +
+        `    Install it and re-run, or switch engine in .dangeresque/config.json.`,
+    );
+    return { valid: false, errors };
+  }
+
+  if (engine === "codex") {
+    const authPath = join(homedirFn(), ".codex", "auth.json");
+    if (!existsSync(authPath)) {
+      errors.push(
+        `Engine 'codex' is on PATH but not authenticated.\n` +
+          `    Run: codex login\n` +
+          `    Then retry.`,
+      );
+    }
+  }
+  // Claude stores creds in macOS Keychain on darwin and ~/.claude/.credentials.json on Linux;
+  // no reliable cross-platform file signal, so rely on post-spawn failure for auth issues.
+
+  return { valid: errors.length === 0, errors };
+}
+
+function defaultProbeMissing(engine: Engine): boolean {
+  const probe = spawnSync(engine, ["--version"], {
+    stdio: "pipe",
+    encoding: "utf-8",
+  });
+  return Boolean(
+    probe.error && (probe.error as NodeJS.ErrnoException).code === "ENOENT",
+  );
 }
 
 export function resolveProjectRoot(): string {
