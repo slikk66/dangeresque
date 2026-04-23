@@ -1,5 +1,12 @@
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+} from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR, RUNS_DIR, PID_FILE } from "./config.js";
 
@@ -13,9 +20,14 @@ import { CONFIG_DIR, RUNS_DIR, PID_FILE } from "./config.js";
  */
 export function resolveDiffBase(projectRoot: string): string {
   try {
-    const ref = execSync("git symbolic-ref --quiet --short refs/remotes/origin/HEAD", {
-      cwd: projectRoot, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
+    const ref = execSync(
+      "git symbolic-ref --quiet --short refs/remotes/origin/HEAD",
+      {
+        cwd: projectRoot,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    ).trim();
     return ref || "main";
   } catch {
     return "main";
@@ -70,10 +82,14 @@ export function listWorktrees(projectRoot: string): WorktreeInfo[] {
       let commitEpoch = 0;
       try {
         const ts = execSync(`git log -1 --format=%ct ${head}`, {
-          cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+          cwd: projectRoot,
+          encoding: "utf-8",
+          stdio: "pipe",
         }).trim();
         commitEpoch = parseInt(ts, 10) || 0;
-      } catch { /* fallback to 0 */ }
+      } catch {
+        /* fallback to 0 */
+      }
 
       // Check PID file for running state
       const { pidInfo, running } = readPidState(path);
@@ -89,27 +105,40 @@ export function listWorktrees(projectRoot: string): WorktreeInfo[] {
  * Detects via `git rev-parse --git-dir` vs `--git-common-dir` — they differ inside a
  * linked worktree, match in the main checkout. Throws with a clear remediation message.
  */
-export function assertInMainCheckout(projectRoot: string, command: string): void {
+export function assertInMainCheckout(
+  projectRoot: string,
+  command: string,
+): void {
   const gitDir = execSync("git rev-parse --path-format=absolute --git-dir", {
-    cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+    cwd: projectRoot,
+    encoding: "utf-8",
+    stdio: "pipe",
   }).trim();
-  const commonDir = execSync("git rev-parse --path-format=absolute --git-common-dir", {
-    cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
-  }).trim();
+  const commonDir = execSync(
+    "git rev-parse --path-format=absolute --git-common-dir",
+    {
+      cwd: projectRoot,
+      encoding: "utf-8",
+      stdio: "pipe",
+    },
+  ).trim();
 
   if (gitDir !== commonDir) {
     const mainCheckout = commonDir.replace(/\/\.git\/?$/, "");
     throw new Error(
       `dangeresque ${command} must run from the main project checkout, not from inside a worktree.\n` +
-      `Currently in: ${projectRoot}\n` +
-      `cd ${mainCheckout} and retry.`
+        `Currently in: ${projectRoot}\n` +
+        `cd ${mainCheckout} and retry.`,
     );
   }
 }
 
 // --- PID file management ---
 
-function readPidState(worktreePath: string): { pidInfo?: PidInfo; running: boolean } {
+function readPidState(worktreePath: string): {
+  pidInfo?: PidInfo;
+  running: boolean;
+} {
   const pidPath = join(worktreePath, PID_FILE);
   if (!existsSync(pidPath)) return { running: false };
 
@@ -127,19 +156,28 @@ function readPidState(worktreePath: string): { pidInfo?: PidInfo; running: boole
   }
 }
 
-export function writePidFile(worktreePath: string, pid: number, extra?: Partial<PidInfo>): void {
+export function writePidFile(
+  worktreePath: string,
+  pid: number,
+  extra?: Partial<PidInfo>,
+): void {
   const pidPath = join(worktreePath, PID_FILE);
   const info: PidInfo = { pid, startedAt: Date.now(), ...extra };
   writeFileSync(pidPath, JSON.stringify(info));
 }
 
-export function updatePidFile(worktreePath: string, partial: Partial<PidInfo>): void {
+export function updatePidFile(
+  worktreePath: string,
+  partial: Partial<PidInfo>,
+): void {
   const pidPath = join(worktreePath, PID_FILE);
   if (!existsSync(pidPath)) return;
   try {
     const existing: PidInfo = JSON.parse(readFileSync(pidPath, "utf-8"));
     writeFileSync(pidPath, JSON.stringify({ ...existing, ...partial }));
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 export function readPidFile(worktreePath: string): PidInfo | undefined {
@@ -147,7 +185,9 @@ export function readPidFile(worktreePath: string): PidInfo | undefined {
   if (!existsSync(pidPath)) return undefined;
   try {
     return JSON.parse(readFileSync(pidPath, "utf-8"));
-  } catch { return undefined; }
+  } catch {
+    return undefined;
+  }
 }
 
 export function removePidFile(worktreePath: string): void {
@@ -180,7 +220,7 @@ export function resolveBranch(projectRoot: string, input: string): string {
   }
 
   throw new Error(
-    `Branch not found. Tried: ${candidates.join(", ")}\nRun 'dangeresque status' to see active worktrees.`
+    `Branch not found. Tried: ${candidates.join(", ")}\nRun 'dangeresque status' to see active worktrees.`,
   );
 }
 
@@ -202,17 +242,29 @@ function getIssueRunsDir(projectRoot: string, issueNumber: number): string {
 /**
  * List run result files for an issue, sorted chronologically (oldest first).
  */
-export function listArchivedRuns(projectRoot: string, issueNumber: number): string[] {
+export function listArchivedRuns(
+  projectRoot: string,
+  issueNumber: number,
+): string[] {
   const issueDir = getIssueRunsDir(projectRoot, issueNumber);
   if (!existsSync(issueDir)) return [];
-  return readdirSync(issueDir).filter((f) => f.endsWith(".md")).sort();
+  return readdirSync(issueDir)
+    .filter((f) => f.endsWith(".md"))
+    .sort();
 }
 
 /**
  * Read a specific run result file for an issue.
  */
-export function readArchivedRun(projectRoot: string, issueNumber: number, filename: string): string {
-  return readFileSync(join(getIssueRunsDir(projectRoot, issueNumber), filename), "utf-8");
+export function readArchivedRun(
+  projectRoot: string,
+  issueNumber: number,
+  filename: string,
+): string {
+  return readFileSync(
+    join(getIssueRunsDir(projectRoot, issueNumber), filename),
+    "utf-8",
+  );
 }
 
 /**
@@ -220,7 +272,9 @@ export function readArchivedRun(projectRoot: string, issueNumber: number, filena
  * Returns the summary lines, or null if no block found.
  */
 export function parseSummaryBlock(content: string): string | null {
-  const match = content.match(/<!-- SUMMARY -->\n([\s\S]*?)\n<!-- \/SUMMARY -->/);
+  const match = content.match(
+    /<!-- SUMMARY -->\n([\s\S]*?)\n<!-- \/SUMMARY -->/,
+  );
   return match ? match[1].trim() : null;
 }
 
@@ -228,7 +282,11 @@ export function parseSummaryBlock(content: string): string | null {
  * Extract a one-line summary from an archived run filename + content.
  * Format: "Run N (MODE): status — files, verdict"
  */
-export function formatRunOneLiner(filename: string, content: string, index: number): string {
+export function formatRunOneLiner(
+  filename: string,
+  content: string,
+  index: number,
+): string {
   // Extract mode from filename: 2026-04-02T14-30-00-IMPLEMENT.md → IMPLEMENT
   const modeMatch = filename.match(/-([A-Z]+)\.md$/);
   const mode = modeMatch ? modeMatch[1] : "UNKNOWN";
@@ -250,15 +308,24 @@ export function formatRunOneLiner(filename: string, content: string, index: numb
 /**
  * Delete archived runs for an issue.
  */
-export function cleanArchivedRuns(projectRoot: string, issueNumber: number): { success: boolean; message: string } {
+export function cleanArchivedRuns(
+  projectRoot: string,
+  issueNumber: number,
+): { success: boolean; message: string } {
   const issueDir = getIssueRunsDir(projectRoot, issueNumber);
   if (!existsSync(issueDir)) {
-    return { success: false, message: `No archived runs found for issue #${issueNumber}` };
+    return {
+      success: false,
+      message: `No archived runs found for issue #${issueNumber}`,
+    };
   }
 
   const files = listArchivedRuns(projectRoot, issueNumber);
   rmSync(issueDir, { recursive: true });
-  return { success: true, message: `Deleted ${files.length} archived run(s) for issue #${issueNumber}` };
+  return {
+    success: true,
+    message: `Deleted ${files.length} archived run(s) for issue #${issueNumber}`,
+  };
 }
 
 // --- Worktree operations ---
@@ -278,7 +345,9 @@ export function extractIssueNumber(branch: string): number | undefined {
  */
 export function extractMode(branch: string): string {
   // Remove worktree- and dangeresque- prefixes, then take the part before the issue number
-  const stripped = branch.replace(/^worktree-/, "").replace(/^dangeresque-/, "");
+  const stripped = branch
+    .replace(/^worktree-/, "")
+    .replace(/^dangeresque-/, "");
   const modeMatch = stripped.match(/^([a-z]+)-\d+$/);
   return modeMatch ? modeMatch[1].toUpperCase() : "UNKNOWN";
 }
@@ -297,12 +366,14 @@ export interface WorktreeOpResult {
 
 export function mergeWorktree(
   projectRoot: string,
-  branch: string
+  branch: string,
 ): WorktreeOpResult {
   let headBefore: string;
   try {
     headBefore = execSync("git rev-parse HEAD", {
-      cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+      cwd: projectRoot,
+      encoding: "utf-8",
+      stdio: "pipe",
     }).trim();
   } catch (err) {
     return {
@@ -334,7 +405,9 @@ export function mergeWorktree(
   let headAfter: string;
   try {
     headAfter = execSync("git rev-parse HEAD", {
-      cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+      cwd: projectRoot,
+      encoding: "utf-8",
+      stdio: "pipe",
     }).trim();
   } catch (err) {
     return {
@@ -356,7 +429,12 @@ export function mergeWorktree(
     };
   }
 
-  const worktreePath = join(projectRoot, ".claude", "worktrees", branch.replace("worktree-", ""));
+  const worktreePath = join(
+    projectRoot,
+    ".claude",
+    "worktrees",
+    branch.replace("worktree-", ""),
+  );
 
   // Phase 2: worktree cleanup
   if (existsSync(worktreePath)) {
@@ -378,7 +456,7 @@ export function mergeWorktree(
           `Worktree cleanup failed: ${err instanceof Error ? err.message : String(err)}. ` +
           `Recovery: (1) inspect ${worktreePath} for uncommitted work, ` +
           `(2) 'git worktree remove --force "${worktreePath}"' if safe, ` +
-          `(3) 'git branch -d ${branch}'.`,
+          `(3) 'git branch -D ${branch}'.`,
       };
     }
   }
@@ -420,7 +498,7 @@ export function mergeWorktree(
 
 export function discardWorktree(
   projectRoot: string,
-  branch: string
+  branch: string,
 ): WorktreeOpResult {
   const worktreeName = branch.replace("worktree-", "");
   const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
@@ -453,7 +531,9 @@ export function discardWorktree(
   let branchExists = true;
   try {
     execSync(`git rev-parse --verify --quiet ${branch}`, {
-      cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+      cwd: projectRoot,
+      encoding: "utf-8",
+      stdio: "pipe",
     });
   } catch {
     branchExists = false;
@@ -467,7 +547,11 @@ export function discardWorktree(
         message: `Nothing to discard: no worktree or branch found for ${branch}`,
       };
     }
-    return { success: true, phase: "cleanup", message: `Discarded ${branch} and cleaned up (branch was already gone)` };
+    return {
+      success: true,
+      phase: "cleanup",
+      message: `Discarded ${branch} and cleaned up (branch was already gone)`,
+    };
   }
 
   try {
@@ -487,12 +571,16 @@ export function discardWorktree(
     };
   }
 
-  return { success: true, phase: "branch-delete", message: `Discarded ${branch} and cleaned up` };
+  return {
+    success: true,
+    phase: "branch-delete",
+    message: `Discarded ${branch} and cleaned up`,
+  };
 }
 
 export function getWorktreeResults(
   projectRoot: string,
-  branch: string
+  branch: string,
 ): string {
   const worktrees = listWorktrees(projectRoot);
 
@@ -501,7 +589,7 @@ export function getWorktreeResults(
   }
 
   const targetWorktree = worktrees.find(
-    (wt) => wt.branch === branch || wt.path.includes(branch)
+    (wt) => wt.branch === branch || wt.path.includes(branch),
   );
   if (!targetWorktree) {
     return `Worktree not found: ${branch}\nActive worktrees: ${worktrees.map((w) => w.branch).join(", ")}`;
@@ -522,7 +610,11 @@ export function getWorktreeResults(
       if (archived.length > 1) {
         lines.push("--- Previous runs ---");
         for (let i = 0; i < archived.length - 1; i++) {
-          const content = readArchivedRun(targetWorktree.path, issueNum, archived[i]);
+          const content = readArchivedRun(
+            targetWorktree.path,
+            issueNum,
+            archived[i],
+          );
           lines.push(formatRunOneLiner(archived[i], content, i));
         }
         lines.push("");
@@ -532,7 +624,9 @@ export function getWorktreeResults(
       lines.push(`--- Latest run: ${latestName} ---`);
       lines.push(latest);
     } else {
-      lines.push(`No run artifacts in ${targetWorktree.path}/.dangeresque/runs/issue-${issueNum}/`);
+      lines.push(
+        `No run artifacts in ${targetWorktree.path}/.dangeresque/runs/issue-${issueNum}/`,
+      );
     }
   } else {
     lines.push("Worktree has no associated issue — no run artifacts tracked.");
@@ -561,7 +655,7 @@ export function getWorktreeResults(
 export function getArchivedResults(
   projectRoot: string,
   issueNumber: number,
-  showAll: boolean
+  showAll: boolean,
 ): string {
   const archived = listArchivedRuns(projectRoot, issueNumber);
   if (archived.length === 0) {
