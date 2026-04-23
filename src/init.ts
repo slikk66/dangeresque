@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONFIG_DIR } from "./config.js";
+import { CONFIG_DIR, POINTER_BLOCK, claudeMdHasPointer } from "./config.js";
+import { BRIEF_MARKDOWN } from "./brief.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -136,7 +137,7 @@ export function initProject(projectRoot: string): void {
   const splitLocal = new Set<string>(SPLIT_BASE_NAMES.map((n) => n.replace(/\.md$/, ".local.md")));
   let configCopied = 0;
   for (const file of readdirSync(templatesDir)) {
-    if (file === "claude-settings.json" || file === "CLAUDE.md.sample") continue; // handled separately
+    if (file === "claude-settings.json") continue; // handled separately
     if (splitLocal.has(file)) continue; // installed by copyWithLocalOverlay alongside its canonical
 
     if (splitBase.has(file)) {
@@ -210,17 +211,43 @@ export function initProject(projectRoot: string): void {
     }
   }
 
-  // 4. Copy CLAUDE.md.sample to .dangeresque/ for reference
-  const claudeMdSample = join(templatesDir, "CLAUDE.md.sample");
-  const claudeMdSampleDest = join(configDir, "CLAUDE.md.sample");
-  if (existsSync(claudeMdSample)) {
-    copyFileSync(claudeMdSample, claudeMdSampleDest);
-  }
-  const hasClaudeMd = existsSync(join(projectRoot, "CLAUDE.md")) ||
-    existsSync(join(projectRoot, ".claude", "CLAUDE.md"));
-  if (!hasClaudeMd) {
-    console.log(`\nNo CLAUDE.md found — see ${CONFIG_DIR}/CLAUDE.md.sample for a recommended starting point`);
-    console.log("  Copy to CLAUDE.md or .claude/CLAUDE.md and customize for your project");
+  // 4. Write canonical DANGERESQUE.md (dangeresque-owned, overwrite every run).
+  //    Plus bootstrap a project-root CLAUDE.md with the pointer block when none exists,
+  //    or warn if one exists but is missing the pointer.
+  const dangeresqueMdPath = join(configDir, "DANGERESQUE.md");
+  writeFileSync(dangeresqueMdPath, BRIEF_MARKDOWN);
+  console.log(`  Wrote    ${CONFIG_DIR}/DANGERESQUE.md`);
+
+  const pointer = claudeMdHasPointer(projectRoot);
+  let claudeMdStatus: "created" | "verified" | "warn-missing";
+  let claudeMdPath: string | null = null;
+  if (pointer.found) {
+    claudeMdStatus = "verified";
+    claudeMdPath = pointer.matchedPath;
+    console.log(`  Verified dangeresque pointer in ${pointer.matchedPath}`);
+  } else {
+    const anyExists = pointer.checkedPaths.some((p) => existsSync(p));
+    if (!anyExists) {
+      const target = join(projectRoot, "CLAUDE.md");
+      writeFileSync(
+        target,
+        `${POINTER_BLOCK}\n# Project Rules\n\n<!-- Add your project's build/test/architecture notes here. -->\n`,
+      );
+      claudeMdStatus = "created";
+      claudeMdPath = target;
+      console.log(`\nCreated CLAUDE.md with dangeresque pointer.`);
+    } else {
+      claudeMdStatus = "warn-missing";
+      const existingPath = pointer.checkedPaths.find((p) => existsSync(p))!;
+      claudeMdPath = existingPath;
+      warnings.push(
+        `⚠️  CLAUDE.md exists but is missing the dangeresque pointer.\n` +
+          `    Workers and interactive Claude Code sessions will not automatically\n` +
+          `    load the dangeresque workflow rules without it.\n\n` +
+          `    Add this block at the TOP of ${existingPath}:\n\n` +
+          POINTER_BLOCK,
+      );
+    }
   }
 
   // 5. Copy skills to .claude/skills/
@@ -245,12 +272,17 @@ export function initProject(projectRoot: string): void {
   }
 
   console.log("\nDone. Next steps:");
-  console.log("  1. Customize CLAUDE.md with your project's rules (workers read this first)");
-  console.log("     Tip: 'dangeresque brief >> CLAUDE.md' — adds a self-contained workflow primer");
-  console.log("  2. Review .dangeresque/ prompts and customize for your project");
+  if (claudeMdStatus === "created") {
+    console.log(`  1. Flesh out ${claudeMdPath} with your project's build/test/architecture rules`);
+  } else if (claudeMdStatus === "verified") {
+    console.log(`  1. Pointer already present in ${claudeMdPath} — no action needed`);
+  } else {
+    console.log(`  1. Add the dangeresque pointer block to ${claudeMdPath} (see warning above)`);
+  }
+  console.log("  2. Review .dangeresque/ prompts (*.local.md files are yours to customize)");
   console.log("  3. Allow the tools your workers need — see https://github.com/slikk66/dangeresque/blob/main/docs/PERMISSIONS.md");
   console.log("     Quick start:  dangeresque allow mcp        (auto-discover MCP servers)");
   console.log('                   dangeresque allow bash "npm install *"');
   console.log("  4. Create a GitHub Issue, then: dangeresque run --issue <number>");
-  console.log("\nRe-run 'dangeresque init' to refresh skills from the latest version.");
+  console.log("\nRe-run 'dangeresque init' to refresh skills and canonical prompts from the latest version.");
 }

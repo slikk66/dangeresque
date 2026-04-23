@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { copyWithLocalOverlay, initProject, SPLIT_BASE_NAMES } from "#dist/init.js";
+import { POINTER_ANCHOR, POINTER_BLOCK } from "#dist/config.js";
+import { BRIEF_MARKDOWN } from "#dist/brief.js";
 
 const SHIPPED_CANONICAL = "CANONICAL CONTENT v2\n";
 const SHIPPED_LOCAL_STUB =
@@ -161,6 +163,132 @@ test("initProject: second invocation is idempotent (canonical refreshed, local p
       userLocalContent,
       "user-edited local must survive a second init",
     );
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: writes DANGERESQUE.md byte-identical to BRIEF_MARKDOWN on every run", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    initProject(scratch);
+    const danger = join(scratch, ".dangeresque", "DANGERESQUE.md");
+    assert.ok(existsSync(danger), "DANGERESQUE.md must be written");
+    assert.equal(readFileSync(danger, "utf-8"), BRIEF_MARKDOWN);
+
+    // Second init — overwrites byte-identical.
+    writeFileSync(danger, "TAMPERED\n");
+    initProject(scratch);
+    assert.equal(
+      readFileSync(danger, "utf-8"),
+      BRIEF_MARKDOWN,
+      "second init must overwrite tampered DANGERESQUE.md back to BRIEF_MARKDOWN",
+    );
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: no CLAUDE.md anywhere — creates minimal project-root CLAUDE.md with pointer block", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    initProject(scratch);
+    const rootClaude = join(scratch, "CLAUDE.md");
+    assert.ok(existsSync(rootClaude), "CLAUDE.md must be auto-created at project root");
+    const content = readFileSync(rootClaude, "utf-8");
+    assert.ok(content.includes(POINTER_ANCHOR), "CLAUDE.md must contain POINTER_ANCHOR");
+    assert.ok(content.includes("# Project Rules"), "CLAUDE.md must contain placeholder heading");
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: root CLAUDE.md with pointer — silent pass, file untouched", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    const rootClaude = join(scratch, "CLAUDE.md");
+    const existing = `${POINTER_BLOCK}\n# My Project\n\nCustom content.\n`;
+    writeFileSync(rootClaude, existing);
+    initProject(scratch);
+    assert.equal(
+      readFileSync(rootClaude, "utf-8"),
+      existing,
+      "existing CLAUDE.md with pointer must not be modified",
+    );
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: pointer in .claude/CLAUDE.md satisfies the check (no root CLAUDE.md created)", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    const claudeDir = join(scratch, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    const nestedClaude = join(claudeDir, "CLAUDE.md");
+    writeFileSync(nestedClaude, POINTER_BLOCK);
+
+    initProject(scratch);
+
+    assert.equal(
+      existsSync(join(scratch, "CLAUDE.md")),
+      false,
+      "root CLAUDE.md must NOT be auto-created when pointer is in .claude/CLAUDE.md",
+    );
+    assert.ok(readFileSync(nestedClaude, "utf-8").includes(POINTER_ANCHOR));
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: CLAUDE.md exists but missing pointer — warns, does not mutate file", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  const origWarn = console.log;
+  console.log = () => {};
+  const rootClaude = join(scratch, "CLAUDE.md");
+  const existing = "# My project\n\nNo pointer here.\n";
+  writeFileSync(rootClaude, existing);
+  try {
+    initProject(scratch);
+    assert.equal(
+      readFileSync(rootClaude, "utf-8"),
+      existing,
+      "existing CLAUDE.md must not be modified by init",
+    );
+  } finally {
+    console.log = origLog;
+    void origWarn;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: second invocation does not duplicate pointer blocks in CLAUDE.md", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    initProject(scratch);
+    const rootClaude = join(scratch, "CLAUDE.md");
+    const firstContent = readFileSync(rootClaude, "utf-8");
+    initProject(scratch);
+    const secondContent = readFileSync(rootClaude, "utf-8");
+    assert.equal(firstContent, secondContent, "second init must leave CLAUDE.md untouched");
+    const occurrences = secondContent.split(POINTER_ANCHOR).length - 1;
+    assert.equal(occurrences, 1, "pointer anchor must appear exactly once");
   } finally {
     console.log = origLog;
     rmSync(scratch, { recursive: true, force: true });

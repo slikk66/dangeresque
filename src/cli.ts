@@ -258,7 +258,7 @@ async function cmdRun(args: string[]) {
     }
   }
 
-  const runtimeValidation = validateEngineRuntime(config.engine);
+  const runtimeValidation = validateEngineRuntime(config.engine, projectRoot);
   if (!runtimeValidation.valid) {
     console.error("Setup validation failed:");
     for (const err of runtimeValidation.errors) {

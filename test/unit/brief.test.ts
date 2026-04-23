@@ -19,7 +19,10 @@ test("BRIEF_MARKDOWN is a non-empty string", () => {
 
 test("BRIEF_MARKDOWN contains all required section headers", () => {
   const requiredSections = [
-    "# Dangeresque Brief",
+    "# Dangeresque Workflow",
+    "## Prime Directives",
+    "### Quality Gates",
+    "### Honest Scoping",
     "## The Loop",
     "## The One Hard Rule",
     "## Creating Issues",
@@ -36,6 +39,23 @@ test("BRIEF_MARKDOWN contains all required section headers", () => {
     assert.ok(
       BRIEF_MARKDOWN.includes(heading),
       `missing section header: ${heading}`,
+    );
+  }
+});
+
+test("BRIEF_MARKDOWN covers the Prime Directives named items", () => {
+  const namedItems = [
+    "VERIFY-BEFORE",
+    "VERIFY-AFTER",
+    "NO-BANDAID",
+    "ONE-PATH",
+    "FILE-IMMEDIATELY",
+    "INVESTIGATE-ALWAYS",
+  ];
+  for (const item of namedItems) {
+    assert.ok(
+      BRIEF_MARKDOWN.includes(item),
+      `missing Prime Directive item: ${item}`,
     );
   }
 });

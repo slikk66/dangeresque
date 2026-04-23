@@ -7,12 +7,18 @@ import {
   loadConfig,
   validateSetup,
   validateEngineRuntime,
+  claudeMdHasPointer,
   projectHash,
   CONFIG_DIR,
+  POINTER_BLOCK,
 } from "#dist/config.js";
 
 function makeTmp(): string {
   return mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+}
+
+function seedPointer(projectRoot: string): void {
+  writeFileSync(join(projectRoot, "CLAUDE.md"), POINTER_BLOCK);
 }
 
 test("loadConfig: no config file → full defaults", () => {
@@ -119,10 +125,11 @@ test("projectHash: rewrites slashes and dots to dashes", () => {
   assert.equal(projectHash("/Users/foo/.bar"), "-Users-foo--bar");
 });
 
-test("validateEngineRuntime: binary missing on PATH returns error, skips auth", () => {
+test("validateEngineRuntime: binary missing on PATH returns error, skips auth + pointer checks", () => {
   const fakeHome = makeTmp();
+  const projectRoot = makeTmp();
   try {
-    const result = validateEngineRuntime("codex", {
+    const result = validateEngineRuntime("codex", projectRoot, {
       homedirFn: () => fakeHome,
       probeMissing: () => true,
     });
@@ -131,13 +138,16 @@ test("validateEngineRuntime: binary missing on PATH returns error, skips auth", 
     assert.match(result.errors[0], /Engine 'codex' not found on PATH/);
   } finally {
     rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
   }
 });
 
 test("validateEngineRuntime: codex missing auth.json returns error", () => {
   const fakeHome = makeTmp();
+  const projectRoot = makeTmp();
   try {
-    const result = validateEngineRuntime("codex", {
+    seedPointer(projectRoot);
+    const result = validateEngineRuntime("codex", projectRoot, {
       homedirFn: () => fakeHome,
       probeMissing: () => false,
     });
@@ -150,15 +160,18 @@ test("validateEngineRuntime: codex missing auth.json returns error", () => {
     assert.match(result.errors[0], /Run: codex login/);
   } finally {
     rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
   }
 });
 
-test("validateEngineRuntime: codex with auth.json present returns valid", () => {
+test("validateEngineRuntime: codex with auth.json + pointer returns valid", () => {
   const fakeHome = makeTmp();
+  const projectRoot = makeTmp();
   try {
     mkdirSync(join(fakeHome, ".codex"), { recursive: true });
     writeFileSync(join(fakeHome, ".codex", "auth.json"), "{}");
-    const result = validateEngineRuntime("codex", {
+    seedPointer(projectRoot);
+    const result = validateEngineRuntime("codex", projectRoot, {
       homedirFn: () => fakeHome,
       probeMissing: () => false,
     });
@@ -166,13 +179,16 @@ test("validateEngineRuntime: codex with auth.json present returns valid", () => 
     assert.deepEqual(result.errors, []);
   } finally {
     rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
   }
 });
 
-test("validateEngineRuntime: claude never reports auth error", () => {
+test("validateEngineRuntime: claude with pointer present returns valid", () => {
   const fakeHome = makeTmp();
+  const projectRoot = makeTmp();
   try {
-    const result = validateEngineRuntime("claude", {
+    seedPointer(projectRoot);
+    const result = validateEngineRuntime("claude", projectRoot, {
       homedirFn: () => fakeHome,
       probeMissing: () => false,
     });
@@ -180,5 +196,79 @@ test("validateEngineRuntime: claude never reports auth error", () => {
     assert.deepEqual(result.errors, []);
   } finally {
     rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("validateEngineRuntime: pointer missing from both CLAUDE.md locations returns error", () => {
+  const fakeHome = makeTmp();
+  const projectRoot = makeTmp();
+  try {
+    const result = validateEngineRuntime("claude", projectRoot, {
+      homedirFn: () => fakeHome,
+      probeMissing: () => false,
+    });
+    assert.equal(result.valid, false);
+    assert.equal(result.errors.length, 1);
+    assert.match(
+      result.errors[0],
+      /dangeresque pointer missing from CLAUDE\.md and \.claude\/CLAUDE\.md/,
+    );
+    assert.match(result.errors[0], /<!-- DANGERESQUE-START -->/);
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("validateEngineRuntime: CLAUDE.md exists but missing pointer returns error", () => {
+  const fakeHome = makeTmp();
+  const projectRoot = makeTmp();
+  try {
+    writeFileSync(join(projectRoot, "CLAUDE.md"), "# Project\n\nNo pointer here.\n");
+    const result = validateEngineRuntime("claude", projectRoot, {
+      homedirFn: () => fakeHome,
+      probeMissing: () => false,
+    });
+    assert.equal(result.valid, false);
+    assert.match(
+      result.errors[0],
+      /dangeresque pointer missing from CLAUDE\.md and \.claude\/CLAUDE\.md/,
+    );
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("validateEngineRuntime: pointer in .claude/CLAUDE.md (not root) is accepted", () => {
+  const fakeHome = makeTmp();
+  const projectRoot = makeTmp();
+  try {
+    mkdirSync(join(projectRoot, ".claude"), { recursive: true });
+    writeFileSync(join(projectRoot, ".claude", "CLAUDE.md"), POINTER_BLOCK);
+    const result = validateEngineRuntime("claude", projectRoot, {
+      homedirFn: () => fakeHome,
+      probeMissing: () => false,
+    });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("claudeMdHasPointer: returns found=false with both candidate paths when neither file exists", () => {
+  const projectRoot = makeTmp();
+  try {
+    const result = claudeMdHasPointer(projectRoot);
+    assert.equal(result.found, false);
+    assert.equal(result.matchedPath, null);
+    assert.equal(result.checkedPaths.length, 2);
+    assert.ok(result.checkedPaths[0].endsWith("CLAUDE.md"));
+    assert.ok(result.checkedPaths[1].endsWith(join(".claude", "CLAUDE.md")));
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
   }
 });

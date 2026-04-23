@@ -8,6 +8,30 @@ export const RUNS_DIR = "runs";
 export const PID_FILE = ".dangeresque.pid";
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
+export const POINTER_ANCHOR = "<!-- DANGERESQUE-START -->";
+export const POINTER_BLOCK = `<!-- DANGERESQUE-START -->
+**The user needs you to read \`.dangeresque/DANGERESQUE.md\` before doing anything else.** It defines this project's workflow rules. Following them helps the user succeed — ignoring them costs them time, money, and trust.
+<!-- DANGERESQUE-END -->
+`;
+
+export function claudeMdCandidates(projectRoot: string): string[] {
+  return [join(projectRoot, "CLAUDE.md"), join(projectRoot, ".claude", "CLAUDE.md")];
+}
+
+export function claudeMdHasPointer(
+  projectRoot: string,
+): { found: boolean; matchedPath: string | null; checkedPaths: string[] } {
+  const checkedPaths = claudeMdCandidates(projectRoot);
+  for (const p of checkedPaths) {
+    if (!existsSync(p)) continue;
+    const content = readFileSync(p, "utf-8");
+    if (content.includes(POINTER_ANCHOR)) {
+      return { found: true, matchedPath: p, checkedPaths };
+    }
+  }
+  return { found: false, matchedPath: null, checkedPaths };
+}
+
 export type Engine = "claude" | "codex";
 
 /** Convert absolute path to claude project hash (e.g. /Users/foo/.bar → -Users-foo--bar) */
@@ -127,6 +151,7 @@ export function validateSetup(projectRoot: string): ValidationResult {
 
 export function validateEngineRuntime(
   engine: Engine,
+  projectRoot: string,
   opts: {
     homedirFn?: () => string;
     probeMissing?: (engine: Engine) => boolean;
@@ -156,6 +181,15 @@ export function validateEngineRuntime(
   }
   // Claude stores creds in macOS Keychain on darwin and ~/.claude/.credentials.json on Linux;
   // no reliable cross-platform file signal, so rely on post-spawn failure for auth issues.
+
+  const pointer = claudeMdHasPointer(projectRoot);
+  if (!pointer.found) {
+    errors.push(
+      `dangeresque pointer missing from CLAUDE.md and .claude/CLAUDE.md.\n` +
+        `    Run 'dangeresque init' to create one, or add this block at the top of your CLAUDE.md:\n\n` +
+        POINTER_BLOCK,
+    );
+  }
 
   return { valid: errors.length === 0, errors };
 }

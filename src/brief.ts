@@ -6,12 +6,29 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json") as { version: string };
 
-export const BRIEF_MARKDOWN = `# Dangeresque Brief
+export const BRIEF_MARKDOWN = `# Dangeresque Workflow
 
 Dangeresque runs AI coding agents (Claude Code or Codex) AFK in isolated git
 worktrees with a human-gated merge. This brief is the self-contained workflow
 primer — an LLM or human reading only this document can drive dangeresque
 correctly end-to-end.
+
+## Prime Directives
+
+### Quality Gates
+
+- **VERIFY-BEFORE** — Read current code before changing it. Never edit what you haven't read.
+- **VERIFY-AFTER** — After a change, confirm it landed. Grep the file, check the value, build the project.
+- **NO-BANDAID** — Every fix must be researched and confirmed correct. No try/catch that swallows the problem.
+- **ONE-PATH** — Extend the existing system. Do not add a parallel code path when the existing one can be widened.
+- **FILE-IMMEDIATELY** — If you discover a bug/issue that is important, file it (gh cli) immediately.
+- **INVESTIGATE-ALWAYS** — Every GitHub Issue gets an INVESTIGATE run before IMPLEMENT. No exceptions, no "trivial one-liner" shortcuts.
+
+### Honest Scoping
+
+- Stay inside the GitHub Issue. Do not widen scope.
+- If blocked, stop and report. Do not invent requirements.
+- Never say "fixed" or "done". Use allowed status language from \`.dangeresque/AFK_WORKER_RULES.md\`.
 
 ## The Loop
 

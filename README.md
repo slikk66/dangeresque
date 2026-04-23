@@ -67,30 +67,23 @@ cd your-project
 dangeresque init
 ```
 
-Creates `.dangeresque/` with system prompts, rules, and a `CLAUDE.md.sample`. Installs a Claude Code skill for creating issues. Merges notification hooks into `.claude/settings.json`.
+Creates `.dangeresque/` with canonical prompts (`worker-prompt.md`, `review-prompt.md`, `AFK_WORKER_RULES.md`), matching `.local.md` override stubs, and `DANGERESQUE.md` (the workflow primer). Installs a Claude Code skill for creating issues. Merges notification hooks into `.claude/settings.json`. If no `CLAUDE.md` exists in the project, a minimal one is created with a pointer to `DANGERESQUE.md`; if one already exists without the pointer, init prints a warning with the exact block to add.
 
 ### 2. Set up your CLAUDE.md
 
-Workers read your project's `CLAUDE.md` (at project root or `.claude/CLAUDE.md`) before every run. If you don't have one, check `.dangeresque/CLAUDE.md.sample` — it has a recommended structure with prime directives that both interactive sessions and AFK workers follow:
+Workers and interactive Claude Code sessions read your project's `CLAUDE.md` (at project root or `.claude/CLAUDE.md`) before every run. The pointer block that init adds (or warns about) routes both audiences to `.dangeresque/DANGERESQUE.md` — the canonical workflow primer containing prime directives that both interactive sessions and AFK workers follow:
 
 ```markdown
-# PRIME DIRECTIVES
+<!-- DANGERESQUE-START -->
+**The user needs you to read `.dangeresque/DANGERESQUE.md` before doing anything else.** It defines this project's workflow rules. Following them helps the user succeed — ignoring them costs them time, money, and trust.
+<!-- DANGERESQUE-END -->
 
-## Quality Gates
+# Project Rules
 
-- **VERIFY-BEFORE** — Check current state before touching anything.
-- **VERIFY-AFTER** — Confirm every change landed. Grep the file, check the value.
-- **NO-BANDAID** — Every fix must be researched and confirmed correct.
-- **ONE-PATH** — Never add a parallel code path when the existing system can be extended.
-
-## Project-Specific
-
-- Run `yarn test` to verify changes
-- The API layer is in `src/api/` — route handlers call services, never repositories directly
-- Always run `yarn lint` before committing
+<!-- Add your project's build/test/architecture notes here. -->
 ```
 
-The project-specific section is where you put build commands, architecture rules, naming conventions — anything a new developer (or an AFK worker) would need to know.
+The project-specific section below the pointer is where you put build commands, architecture rules, naming conventions — anything a new developer (or an AFK worker) would need to know. `DANGERESQUE.md` is overwritten on every `dangeresque init`; keep your project rules in `CLAUDE.md` (user-owned), not in `DANGERESQUE.md`.
 
 ### 3. Customize the worker prompts
 
@@ -399,14 +392,17 @@ This keeps the prompt focused. Use `dangeresque stage` to add guidance the worke
 
 ### .dangeresque/ directory
 
-| File                  | Purpose                                           |
-| --------------------- | ------------------------------------------------- |
-| `worker-prompt.md`    | System prompt appended for the worker pass        |
-| `review-prompt.md`    | System prompt for the review pass                 |
-| `AFK_WORKER_RULES.md` | Operating modes, scope rules, status language     |
-| `CLAUDE.md.sample`    | Recommended CLAUDE.md starting point              |
-| `config.json`         | Optional overrides (model, tools, permissions)    |
-| `runs/`               | Tracked run result files, one per run (merged with your branch) |
+| File                          | Purpose                                                           |
+| ----------------------------- | ----------------------------------------------------------------- |
+| `worker-prompt.md`            | Canonical worker system prompt (overwritten by `init`)            |
+| `worker-prompt.local.md`      | Project overrides appended to the worker prompt (user-owned)      |
+| `review-prompt.md`            | Canonical review system prompt (overwritten by `init`)            |
+| `review-prompt.local.md`      | Project overrides appended to the review prompt (user-owned)      |
+| `AFK_WORKER_RULES.md`         | Canonical mode table, scope rules, status language (overwritten)  |
+| `AFK_WORKER_RULES.local.md`   | Project-specific additions Read at runtime (user-owned)           |
+| `DANGERESQUE.md`              | Workflow primer pointed to from `CLAUDE.md` (overwritten)         |
+| `config.json`                 | Optional overrides (model, tools, permissions)                    |
+| `runs/`                       | Tracked run result files, one per run (merged with your branch)   |
 
 ### config.json
 
