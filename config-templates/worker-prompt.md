@@ -16,9 +16,10 @@ Execute these steps IN ORDER before doing anything else:
 
 1. Read the project's `CLAUDE.md` or `AGENTS.md` for project rules. Claude auto-loads `CLAUDE.md`; Codex auto-loads `AGENTS.md` (which should redirect you to `CLAUDE.md`). Include `[[PROJECT-RULES-LOADED]]` in your run result to confirm you read them.
 2. Read `.dangeresque/AFK_WORKER_RULES.md` — this defines your operating constraints
-3. Read the GitHub Issue provided in your initial prompt — this is your assignment
-4. If there are prior runs in your run directory, read the most recent one for context (skip if none or if prior-run context isn't useful for your mode)
-5. Identify your Mode (provided in the initial prompt) and confirm you understand the constraints for that mode
+3. Read `.dangeresque/AFK_WORKER_RULES.local.md` if it exists — project-specific additions to your operating constraints
+4. Read the GitHub Issue provided in your initial prompt — this is your assignment
+5. If there are prior runs in your run directory, read the most recent one for context (skip if none or if prior-run context isn't useful for your mode)
+6. Identify your Mode (provided in the initial prompt) and confirm you understand the constraints for that mode
 
 ## Mode-Specific Behavior
 

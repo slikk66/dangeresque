@@ -42,6 +42,72 @@ function copyDirRecursive(src: string, dest: string, warnings: string[]): number
   return copied;
 }
 
+/** Files that ship as a canonical/.local.md pair. */
+export const SPLIT_BASE_NAMES = [
+  "worker-prompt.md",
+  "review-prompt.md",
+  "AFK_WORKER_RULES.md",
+] as const;
+
+export type CopyAction = "created" | "upgraded" | "initialized-local" | "customized-warn";
+
+/**
+ * Install or upgrade a canonical/`.local.md` pair under `configDir`.
+ *
+ * Four cases:
+ *  - canonical missing                          → copy both from templates              ("created")
+ *  - canonical present, local present           → overwrite canonical, leave local      ("upgraded")
+ *  - canonical present matches shipped, no local → copy local stub, no-op canonical     ("initialized-local")
+ *  - canonical diverges from shipped, no local  → push warning, do NOT touch either    ("customized-warn")
+ */
+export function copyWithLocalOverlay(
+  templatesDir: string,
+  configDir: string,
+  baseName: string,
+  warnings: string[],
+): CopyAction {
+  const canonicalSrc = join(templatesDir, baseName);
+  const canonicalDest = join(configDir, baseName);
+  const localName = baseName.replace(/\.md$/, ".local.md");
+  const localSrc = join(templatesDir, localName);
+  const localDest = join(configDir, localName);
+
+  if (!existsSync(canonicalDest)) {
+    copyFileSync(canonicalSrc, canonicalDest);
+    copyFileSync(localSrc, localDest);
+    console.log(`  Created  ${CONFIG_DIR}/${baseName}`);
+    console.log(`  Created  ${CONFIG_DIR}/${localName} (empty — add project overrides here)`);
+    return "created";
+  }
+
+  if (existsSync(localDest)) {
+    copyFileSync(canonicalSrc, canonicalDest);
+    console.log(`  Upgraded ${CONFIG_DIR}/${baseName} (canonical refreshed; ${localName} preserved)`);
+    return "upgraded";
+  }
+
+  const existingBytes = readFileSync(canonicalDest, "utf-8");
+  const shippedBytes = readFileSync(canonicalSrc, "utf-8");
+  if (existingBytes === shippedBytes) {
+    copyFileSync(localSrc, localDest);
+    console.log(`  Created  ${CONFIG_DIR}/${localName} (empty — add project overrides here)`);
+    return "initialized-local";
+  }
+
+  warnings.push(
+    `⚠️  ${CONFIG_DIR}/${baseName} has been customized and does not match the shipped canonical.\n` +
+      `    Your changes will not be lost — they're preserved in-place.\n` +
+      `    To pick up upstream improvements:\n` +
+      `      1. Move your customizations out of ${baseName} into ${localName}\n` +
+      `      2. Re-run dangeresque init to install fresh canonical ${baseName}\n` +
+      `    Or keep the current file as-is; upgrades will continue to skip it.\n\n` +
+      `    Shipped canonical: ${canonicalSrc}\n` +
+      `    Your file:         ${canonicalDest}`,
+  );
+  console.log(`  Skipped  ${CONFIG_DIR}/${baseName} (customized — see warning below)`);
+  return "customized-warn";
+}
+
 export function initProject(projectRoot: string): void {
   const packageRoot = getPackageRoot();
   const warnings: string[] = [];
@@ -63,17 +129,29 @@ export function initProject(projectRoot: string): void {
     console.log(`Created ${CONFIG_DIR}/`);
   }
 
-  // Copy config templates (only if file doesn't exist — don't overwrite config)
+  // Copy config templates. The three SPLIT_BASE_NAMES files use the canonical/.local.md
+  // overlay for upgrades; everything else stays on the legacy skip-if-exists path.
+  // .local.md sources are consumed by their canonical pair, never copied directly.
+  const splitBase = new Set<string>(SPLIT_BASE_NAMES);
+  const splitLocal = new Set<string>(SPLIT_BASE_NAMES.map((n) => n.replace(/\.md$/, ".local.md")));
   let configCopied = 0;
   for (const file of readdirSync(templatesDir)) {
     if (file === "claude-settings.json" || file === "CLAUDE.md.sample") continue; // handled separately
+    if (splitLocal.has(file)) continue; // installed by copyWithLocalOverlay alongside its canonical
+
+    if (splitBase.has(file)) {
+      const action = copyWithLocalOverlay(templatesDir, configDir, file, warnings);
+      if (action === "created" || action === "initialized-local") configCopied++;
+      continue;
+    }
+
     const destPath = join(configDir, file);
     if (!existsSync(destPath)) {
       copyFileSync(join(templatesDir, file), destPath);
-      console.log(`  Created ${CONFIG_DIR}/${file}`);
+      console.log(`  Created  ${CONFIG_DIR}/${file}`);
       configCopied++;
     } else {
-      console.log(`  Exists  ${CONFIG_DIR}/${file} (skipped)`);
+      console.log(`  Exists   ${CONFIG_DIR}/${file} (skipped)`);
     }
   }
 
