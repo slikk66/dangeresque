@@ -143,7 +143,7 @@ dangeresque status                         # list active worktrees
 ## Pointers (details live elsewhere in your project tree)
 
 - \`.dangeresque/AFK_WORKER_RULES.md\` — full mode table, scope rules, status language
-- \`.dangeresque/PERMISSIONS.md\` — \`acceptEdits\`, \`allowedTools\`, \`dangeresque allow\`
+- Permissions reference — https://github.com/slikk66/dangeresque/blob/main/docs/PERMISSIONS.md (\`acceptEdits\`, \`allowedTools\`, \`dangeresque allow\`)
 - \`dangeresque --help\` — full command surface
 - \`dangeresque stats --glossary\` — result / verdict vocabulary
 

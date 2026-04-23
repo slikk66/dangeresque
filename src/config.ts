@@ -54,7 +54,7 @@ const DEFAULT_CONFIG: DangeresqueConfig = {
   headless: true,
   // MCP allow rules must name the server (mcp__<server> or mcp__<server>__*);
   // bare `mcp__*` is not honored by claude-code. Run `dangeresque allow mcp`
-  // to add per-server entries — see config-templates/PERMISSIONS.md.
+  // to add per-server entries — see docs/PERMISSIONS.md.
   allowedTools: [
     "Read",
     "Edit",

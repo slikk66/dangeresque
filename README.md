@@ -404,7 +404,6 @@ This keeps the prompt focused. Use `dangeresque stage` to add guidance the worke
 | `worker-prompt.md`    | System prompt appended for the worker pass        |
 | `review-prompt.md`    | System prompt for the review pass                 |
 | `AFK_WORKER_RULES.md` | Operating modes, scope rules, status language     |
-| `PERMISSIONS.md`      | How to grant tool permissions; matcher rule shapes |
 | `CLAUDE.md.sample`    | Recommended CLAUDE.md starting point              |
 | `config.json`         | Optional overrides (model, tools, permissions)    |
 | `runs/`               | Tracked run result files, one per run (merged with your branch) |
@@ -438,7 +437,7 @@ This keeps the prompt focused. Use `dangeresque stage` to add guidance the worke
 
 Both engines enforce these at the tool layer: claude via `--disallowed-tools`, codex via a generated `<worktree>/.codex/rules/dangeresque.rules` file (Starlark `prefix_rule(..., decision="forbidden")` entries translated from the same config) that codex picks up through its project-layer rules scan.
 
-**Granting more permissions.** MCP and arbitrary `Bash(...)` patterns are NOT auto-approved by `acceptEdits`. To enable an MCP server, run `dangeresque allow mcp` (reads `./.mcp.json` `mcpServers` keys) or `dangeresque allow mcp <server>` for user-scope / plugin-scope servers not in `.mcp.json`. To allow a bash command pattern, `dangeresque allow bash "<pattern>"` — e.g. `dangeresque allow bash "npm install *"`. The matcher form `mcp__<server>` / `mcp__<server>__*` is per [Anthropic's permissions docs](https://code.claude.com/docs/en/permissions); bare `mcp__*` is not honored. See `.dangeresque/PERMISSIONS.md` (created by `dangeresque init`) for the full reference.
+**Granting more permissions.** MCP and arbitrary `Bash(...)` patterns are NOT auto-approved by `acceptEdits`. To enable an MCP server, run `dangeresque allow mcp` (reads `./.mcp.json` `mcpServers` keys) or `dangeresque allow mcp <server>` for user-scope / plugin-scope servers not in `.mcp.json`. To allow a bash command pattern, `dangeresque allow bash "<pattern>"` — e.g. `dangeresque allow bash "npm install *"`. The matcher form `mcp__<server>` / `mcp__<server>__*` is per [Anthropic's permissions docs](https://code.claude.com/docs/en/permissions); bare `mcp__*` is not honored. See [`docs/PERMISSIONS.md`](docs/PERMISSIONS.md) for the full reference.
 
 ## Why Host-Native Instead of Containerized
 

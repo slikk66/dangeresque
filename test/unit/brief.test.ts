@@ -65,7 +65,7 @@ test("BRIEF_MARKDOWN covers the core command surface", () => {
 
 test("BRIEF_MARKDOWN references the project-local AFK_WORKER_RULES and PERMISSIONS docs", () => {
   assert.ok(BRIEF_MARKDOWN.includes(".dangeresque/AFK_WORKER_RULES.md"));
-  assert.ok(BRIEF_MARKDOWN.includes(".dangeresque/PERMISSIONS.md"));
+  assert.ok(BRIEF_MARKDOWN.includes("docs/PERMISSIONS.md"));
 });
 
 test("printBrief writes BRIEF_MARKDOWN to stdout without side effects", () => {
