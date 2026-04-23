@@ -129,7 +129,7 @@ dangeresque status                         # list active worktrees
 
 - **Do not \`git push\` from inside a worktree.** Pushing is hard-blocked at the
   tool layer; the human pushes \`main\` after \`dangeresque merge\`.
-- **Do not close GitHub Issues from a worker run.** Humans close issues.
+- **Do not close GitHub Issues from a worker run.** The orchestrator closes them after \`dangeresque merge\` + push.
 - **Do not dispatch a second run on the same issue before merging + pushing**
   the previous one. You will start from a stale base.
 - **Do not widen scope beyond the Goal stated in the issue.** Workers that
