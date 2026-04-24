@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR, RUNS_DIR, PID_FILE } from "./config.js";
+import { jsonPathForArchive, type RunArtifact } from "./artifact.js";
 
 /**
  * Resolve the ref reviewers should diff against. Worktrees branch from
@@ -317,6 +318,42 @@ export function formatRunOneLiner(
 }
 
 /**
+ * Render a skim-friendly header block from a run's JSON artifact: summary line,
+ * verdict, scope violations, failure categories. Returns null when the JSON is
+ * missing or unparseable so callers can fall back to the pre-header layout.
+ */
+export function formatRunHeader(jsonPath: string): string | null {
+  if (!existsSync(jsonPath)) return null;
+  let artifact: Partial<RunArtifact>;
+  try {
+    artifact = JSON.parse(readFileSync(jsonPath, "utf-8"));
+  } catch {
+    return null;
+  }
+
+  const summary = typeof artifact.summary === "string" ? artifact.summary : null;
+  const verdict =
+    typeof artifact.reviewer_verdict === "string"
+      ? artifact.reviewer_verdict
+      : null;
+  if (!summary || !verdict) return null;
+
+  const scope = Array.isArray(artifact.scope_violations)
+    ? artifact.scope_violations
+    : [];
+  const fails = Array.isArray(artifact.failure_categories)
+    ? artifact.failure_categories
+    : [];
+
+  return [
+    `=== ${summary} ===`,
+    `Verdict: ${verdict}`,
+    `Scope violations: ${scope.length > 0 ? scope.join(", ") : "none"}`,
+    `Failure categories: ${fails.length > 0 ? fails.join(", ") : "none"}`,
+  ].join("\n");
+}
+
+/**
  * Delete archived runs for an issue.
  */
 export function cleanArchivedRuns(
@@ -613,10 +650,44 @@ export function getWorktreeResults(
   lines.push("");
 
   const issueNum = extractIssueNumber(targetWorktree.branch);
+  // Read artifacts from the worktree, not the project root — they only land
+  // at the project root after `dangeresque merge`.
+  const archived = issueNum
+    ? listArchivedRuns(targetWorktree.path, issueNum)
+    : [];
+  const latestName =
+    archived.length > 0 ? archived[archived.length - 1] : null;
+
+  if (latestName && issueNum) {
+    const latestMdPath = join(
+      targetWorktree.path,
+      CONFIG_DIR,
+      RUNS_DIR,
+      `issue-${issueNum}`,
+      latestName,
+    );
+    const header = formatRunHeader(jsonPathForArchive(latestMdPath));
+    if (header) {
+      lines.push(header);
+      lines.push("");
+    }
+  }
+
+  const diffBase = resolveDiffBase(projectRoot);
+  lines.push(`--- Diff Summary (vs ${diffBase}) ---`);
+  try {
+    const diff = execSync(`git diff ${diffBase} --stat`, {
+      cwd: targetWorktree.path,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    lines.push(diff.trim() || "No changes.");
+  } catch {
+    lines.push("Could not generate diff summary.");
+  }
+  lines.push("");
+
   if (issueNum) {
-    // Read artifacts from the worktree, not the project root — they only land
-    // at the project root after `dangeresque merge`.
-    const archived = listArchivedRuns(targetWorktree.path, issueNum);
     if (archived.length > 0) {
       if (archived.length > 1) {
         lines.push("--- Previous runs ---");
@@ -630,8 +701,11 @@ export function getWorktreeResults(
         }
         lines.push("");
       }
-      const latestName = archived[archived.length - 1];
-      const latest = readArchivedRun(targetWorktree.path, issueNum, latestName);
+      const latest = readArchivedRun(
+        targetWorktree.path,
+        issueNum,
+        latestName!,
+      );
       lines.push(`--- Latest run: ${latestName} ---`);
       lines.push(latest);
     } else {
@@ -641,20 +715,6 @@ export function getWorktreeResults(
     }
   } else {
     lines.push("Worktree has no associated issue — no run artifacts tracked.");
-  }
-
-  lines.push("");
-  const diffBase = resolveDiffBase(projectRoot);
-  lines.push(`--- Diff Summary (vs ${diffBase}) ---`);
-  try {
-    const diff = execSync(`git diff ${diffBase} --stat`, {
-      cwd: targetWorktree.path,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    lines.push(diff.trim() || "No changes.");
-  } catch {
-    lines.push("Could not generate diff summary.");
   }
 
   return lines.join("\n");
@@ -690,6 +750,17 @@ export function getArchivedResults(
     }
     if (archived.length > 1) lines.push("");
     const latestName = archived[archived.length - 1];
+
+    const latestMdPath = join(
+      getIssueRunsDir(projectRoot, issueNumber),
+      latestName,
+    );
+    const header = formatRunHeader(jsonPathForArchive(latestMdPath));
+    if (header) {
+      lines.push(header);
+      lines.push("");
+    }
+
     const latest = readArchivedRun(projectRoot, issueNumber, latestName);
     lines.push(`--- Latest: Run ${archived.length} (${latestName}) ---`);
     lines.push(latest);

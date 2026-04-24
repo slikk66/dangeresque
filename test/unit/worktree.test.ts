@@ -9,6 +9,8 @@ import {
   extractMode,
   parseSummaryBlock,
   formatRunOneLiner,
+  formatRunHeader,
+  getWorktreeResults,
   mergeWorktree,
   discardWorktree,
   filterWorktrees,
@@ -366,6 +368,235 @@ test("discardWorktree: nothing to discard (no worktree, no branch) → existing 
     assert.equal(result.success, false);
     assert.match(result.message, /Nothing to discard/i);
     assert.match(result.message, /worktree-india/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- formatRunHeader ---
+
+function writeJsonArtifact(
+  path: string,
+  overrides: Record<string, unknown> = {},
+): void {
+  const base = {
+    schema_version: "2",
+    summary: "IMPLEMENT success | verdict=accept | file=run.md",
+    reviewer_verdict: "accept",
+    scope_violations: [] as string[],
+    failure_categories: [] as string[],
+  };
+  writeFileSync(path, JSON.stringify({ ...base, ...overrides }));
+}
+
+test("formatRunHeader: returns null when JSON file is missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-header-"));
+  try {
+    assert.equal(formatRunHeader(join(dir, "nope.json")), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("formatRunHeader: returns null when JSON is unparseable", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-header-"));
+  try {
+    const p = join(dir, "bad.json");
+    writeFileSync(p, "{not json");
+    assert.equal(formatRunHeader(p), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("formatRunHeader: renders summary, verdict, and 'none' for empty arrays", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-header-"));
+  try {
+    const p = join(dir, "ok.json");
+    writeJsonArtifact(p);
+    const header = formatRunHeader(p);
+    assert.ok(header);
+    assert.match(header!, /^=== IMPLEMENT success \| verdict=accept \| file=run\.md ===$/m);
+    assert.match(header!, /^Verdict: accept$/m);
+    assert.match(header!, /^Scope violations: none$/m);
+    assert.match(header!, /^Failure categories: none$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("formatRunHeader: surfaces scope violation files when populated", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-header-"));
+  try {
+    const p = join(dir, "scoped.json");
+    writeJsonArtifact(p, {
+      scope_violations: ["src/off-scope.ts", "README.md"],
+    });
+    const header = formatRunHeader(p);
+    assert.ok(header);
+    assert.match(header!, /Scope violations: src\/off-scope\.ts, README\.md/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("formatRunHeader: surfaces failure categories when populated", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-header-"));
+  try {
+    const p = join(dir, "failed.json");
+    writeJsonArtifact(p, {
+      reviewer_verdict: "reject",
+      failure_categories: ["reviewer_rejected", "scope_violation"],
+    });
+    const header = formatRunHeader(p);
+    assert.ok(header);
+    assert.match(header!, /Verdict: reject/);
+    assert.match(header!, /Failure categories: reviewer_rejected, scope_violation/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("formatRunHeader: returns null when required fields are missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-header-"));
+  try {
+    const p = join(dir, "partial.json");
+    writeFileSync(p, JSON.stringify({ schema_version: "2" }));
+    assert.equal(formatRunHeader(p), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- getWorktreeResults ---
+
+function writeRunArtifacts(
+  worktreePath: string,
+  issueNumber: number,
+  stamp: string,
+  mode: string,
+  opts: { jsonOverrides?: Record<string, unknown>; skipJson?: boolean } = {},
+): { mdPath: string; jsonPath: string } {
+  const issueDir = join(
+    worktreePath,
+    ".dangeresque",
+    "runs",
+    `issue-${issueNumber}`,
+  );
+  mkdirSync(issueDir, { recursive: true });
+  const base = `${stamp}-${mode}`;
+  const mdPath = join(issueDir, `${base}.md`);
+  const jsonPath = join(issueDir, `${base}.json`);
+  writeFileSync(
+    mdPath,
+    [
+      "<!-- SUMMARY -->",
+      `Mode: ${mode} | Status: verified`,
+      "Files: 1 changed (foo.ts)",
+      "<!-- /SUMMARY -->",
+      "",
+      "body",
+    ].join("\n"),
+  );
+  if (!opts.skipJson) {
+    const baseJson = {
+      schema_version: "2",
+      summary: `${mode} success | verdict=accept | file=${base}.md`,
+      reviewer_verdict: "accept",
+      scope_violations: [] as string[],
+      failure_categories: [] as string[],
+    };
+    writeFileSync(
+      jsonPath,
+      JSON.stringify({ ...baseJson, ...(opts.jsonOverrides ?? {}) }),
+    );
+  }
+  return { mdPath, jsonPath };
+}
+
+test("getWorktreeResults: structured header precedes diff summary when JSON present", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-777",
+      "worktree-dangeresque-implement-777",
+    );
+    writeRunArtifacts(
+      worktreePath,
+      777,
+      "2026-04-24T00-00-00",
+      "IMPLEMENT",
+    );
+
+    const out = getWorktreeResults(dir, "worktree-dangeresque-implement-777");
+    const headerIdx = out.indexOf("=== IMPLEMENT success | verdict=accept");
+    const diffIdx = out.indexOf("--- Diff Summary");
+    const latestIdx = out.indexOf("--- Latest run:");
+
+    assert.notEqual(headerIdx, -1, "structured header missing");
+    assert.notEqual(diffIdx, -1, "diff summary missing");
+    assert.notEqual(latestIdx, -1, "latest run block missing");
+    assert.ok(headerIdx < diffIdx, "header must appear before diff summary");
+    assert.ok(diffIdx < latestIdx, "diff summary must appear before latest run");
+    assert.match(out, /Verdict: accept/);
+    assert.match(out, /Scope violations: none/);
+    assert.match(out, /Failure categories: none/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("getWorktreeResults: header omitted when JSON artifact missing", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-778",
+      "worktree-dangeresque-implement-778",
+    );
+    writeRunArtifacts(
+      worktreePath,
+      778,
+      "2026-04-24T00-00-00",
+      "IMPLEMENT",
+      { skipJson: true },
+    );
+
+    const out = getWorktreeResults(dir, "worktree-dangeresque-implement-778");
+    assert.equal(out.includes("Verdict:"), false);
+    assert.equal(out.includes("==="), false);
+    assert.match(out, /--- Diff Summary/);
+    assert.match(out, /--- Latest run:/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("getWorktreeResults: header surfaces scope_violations when populated", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-779",
+      "worktree-dangeresque-implement-779",
+    );
+    writeRunArtifacts(
+      worktreePath,
+      779,
+      "2026-04-24T00-00-00",
+      "IMPLEMENT",
+      {
+        jsonOverrides: {
+          scope_violations: ["src/unrelated.ts"],
+          failure_categories: ["scope_violation"],
+        },
+      },
+    );
+
+    const out = getWorktreeResults(dir, "worktree-dangeresque-implement-779");
+    assert.match(out, /Scope violations: src\/unrelated\.ts/);
+    assert.match(out, /Failure categories: scope_violation/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

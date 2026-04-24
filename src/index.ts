@@ -23,6 +23,7 @@ export {
   mergeWorktree,
   discardWorktree,
   getWorktreeResults,
+  formatRunHeader,
   type WorktreeInfo,
   type WorktreeOpResult,
   type WorktreePhase,

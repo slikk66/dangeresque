@@ -25,6 +25,7 @@ import {
   readPidFile,
   assertInMainCheckout,
   filterWorktrees,
+  formatRunHeader,
   type WorktreeInfo,
   type WorktreeFilter,
 } from "./worktree.js";
@@ -539,6 +540,13 @@ async function cmdRun(args: string[]) {
     console.log(`  Eval:     ${artifact.artifact_paths.json}`);
     console.log(`  Result:   ${artifact.result} (verdict=${artifact.reviewer_verdict})`);
   }
+
+  const header = formatRunHeader(jsonPathForArchive(workerResult.archivePath));
+  if (header) {
+    console.log("");
+    console.log(header);
+  }
+
   console.log(`\nNext steps:`);
   console.log(`  Review:  dangeresque results ${workerResult.branch}`);
   console.log(`  Merge:   dangeresque merge ${workerResult.branch}`);
