@@ -88,6 +88,17 @@ test("BRIEF_MARKDOWN references the project-local AFK_WORKER_RULES and PERMISSIO
   assert.ok(BRIEF_MARKDOWN.includes("docs/PERMISSIONS.md"));
 });
 
+test("BRIEF_MARKDOWN documents the canonical/.local.md overlay and DANGERESQUE.md ownership", () => {
+  assert.ok(
+    BRIEF_MARKDOWN.includes(".local.md"),
+    "expected BRIEF_MARKDOWN to mention the .local.md companion pattern",
+  );
+  assert.ok(
+    BRIEF_MARKDOWN.includes("Do not edit `.dangeresque/DANGERESQUE.md`"),
+    "expected BRIEF_MARKDOWN to warn against editing DANGERESQUE.md directly",
+  );
+});
+
 test("printBrief writes BRIEF_MARKDOWN to stdout without side effects", () => {
   const chunks: Buffer[] = [];
   const originalWrite = process.stdout.write.bind(process.stdout);

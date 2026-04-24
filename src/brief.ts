@@ -152,6 +152,14 @@ dangeresque status                         # list active worktrees
   widen scope cause review rejections.
 - **Do not edit \`.dangeresque/*.md\` or \`.gitignore\` from inside a worker run.**
   Those are human-managed on main.
+- **Do not edit canonical \`.dangeresque/*.md\` files directly on main.** The
+  canonical \`worker-prompt.md\` / \`review-prompt.md\` / \`AFK_WORKER_RULES.md\`
+  are overwritten on \`dangeresque init\`. Project-specific overrides belong
+  in the \`.local.md\` companion (e.g. \`worker-prompt.local.md\`), which is
+  never overwritten.
+- **Do not edit \`.dangeresque/DANGERESQUE.md\`.** It's regenerated from
+  dangeresque's built-in brief on every \`init\`. Project-specific rules
+  belong in your \`CLAUDE.md\`.
 - **Do not re-use a worktree name.** Worktree creation hard-fails if the path
   exists.
 - **Do not read every prior run.** Read only the newest file under
