@@ -135,7 +135,7 @@ worker's claimed file list doesn't match
 primary defense against a worker concealing changes.
 
 Review is skipped for modes that by definition produce no code changes:
-INVESTIGATE and VERIFY (see `src/cli.ts:408-409`). Spending Claude calls
+INVESTIGATE and VERIFY (see `SKIP_REVIEW_MODES` in `src/cli.ts`). Spending Claude calls
 reviewing an empty diff is waste, and a skipped review is recorded in the
 run artifact with a reason so it's visible downstream.
 
