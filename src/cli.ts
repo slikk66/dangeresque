@@ -580,6 +580,7 @@ async function cmdLogs(args: string[]) {
   const review = args.includes("--review");
   const followFlag = args.includes("-f") || args.includes("--follow");
   const positional = args.find((a) => !a.startsWith("-"));
+  const usedPicker = !positional;
 
   const chosen = await resolvePositionalOrPick(
     positional,
@@ -621,7 +622,7 @@ async function cmdLogs(args: string[]) {
     `Branch: ${target.branch}  Phase: ${phase}  ${target.running ? "RUNNING" : "IDLE"}`,
   );
 
-  const follow = followFlag;
+  const follow = followFlag || (usedPicker && target.running);
   await tailLog({
     sessionPath,
     follow,
@@ -629,7 +630,7 @@ async function cmdLogs(args: string[]) {
     pid: target.running ? pidInfo.pid : undefined,
   });
 
-  if (target.running && !followFlag) {
+  if (target.running && !follow) {
     console.error(
       "\nworker is RUNNING — pass -f/--follow to tail live output",
     );
