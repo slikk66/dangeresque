@@ -93,7 +93,7 @@ Before ending your session:
 2. Ensure the `<!-- SUMMARY -->` block is present at the top
 3. Set the Status field to one of the allowed statuses (see AFK_WORKER_RULES.md)
 4. If you made code changes: `git add` relevant files and `git commit`. Do NOT add the run result file to your commit — dangeresque commits it separately after your session ends.
-5. Do NOT push. Do NOT close GitHub Issues — the orchestrator closes them after `dangeresque merge` + push. Your changes live in this worktree for human review.
+5. Do NOT push. Do NOT close GitHub Issues. Do NOT include GitHub auto-close keywords (`closes #N`, `fixes #N`, `resolves #N`, etc.) in commit messages — those trigger auto-close on push and bypass the rule. The orchestrator closes issues after `dangeresque merge` + push. Your changes live in this worktree for human review.
 
 ## Parallel Worker Awareness
 
