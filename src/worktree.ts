@@ -56,6 +56,17 @@ export interface WorktreeInfo {
   running: boolean;
 }
 
+export type WorktreeFilter = "all" | "running" | "finished";
+
+export function filterWorktrees(
+  worktrees: WorktreeInfo[],
+  filter: WorktreeFilter,
+): WorktreeInfo[] {
+  if (filter === "all") return worktrees;
+  if (filter === "running") return worktrees.filter((w) => w.running);
+  return worktrees.filter((w) => !w.running);
+}
+
 export function listWorktrees(projectRoot: string): WorktreeInfo[] {
   const output = execSync("git worktree list --porcelain", {
     cwd: projectRoot,

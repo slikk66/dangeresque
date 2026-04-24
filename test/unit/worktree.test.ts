@@ -11,6 +11,8 @@ import {
   formatRunOneLiner,
   mergeWorktree,
   discardWorktree,
+  filterWorktrees,
+  type WorktreeInfo,
 } from "#dist/worktree.js";
 
 test("extractIssueNumber: dangeresque-prefixed branch → number", () => {
@@ -73,6 +75,29 @@ test("formatRunOneLiner: no SUMMARY block falls back to filename", () => {
   );
   assert.match(oneLiner, /^Run 3 \(TEST\):/);
   assert.match(oneLiner, /2026-01-01T00-00-00-TEST\.md/);
+});
+
+// --- filterWorktrees ---
+
+function mkWt(branch: string, running: boolean): WorktreeInfo {
+  return { path: `/tmp/${branch}`, branch, head: "abc", commitEpoch: 0, running };
+}
+
+test("filterWorktrees: all returns full list", () => {
+  const list = [mkWt("a", true), mkWt("b", false), mkWt("c", true)];
+  assert.deepEqual(filterWorktrees(list, "all"), list);
+});
+
+test("filterWorktrees: running returns only running entries", () => {
+  const list = [mkWt("a", true), mkWt("b", false), mkWt("c", true)];
+  const got = filterWorktrees(list, "running");
+  assert.deepEqual(got.map((w) => w.branch), ["a", "c"]);
+});
+
+test("filterWorktrees: finished returns only non-running entries", () => {
+  const list = [mkWt("a", true), mkWt("b", false), mkWt("c", true)];
+  const got = filterWorktrees(list, "finished");
+  assert.deepEqual(got.map((w) => w.branch), ["b"]);
 });
 
 // --- mergeWorktree / discardWorktree phased-error coverage ---

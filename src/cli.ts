@@ -24,8 +24,11 @@ import {
   cleanArchivedRuns,
   readPidFile,
   assertInMainCheckout,
+  filterWorktrees,
   type WorktreeInfo,
+  type WorktreeFilter,
 } from "./worktree.js";
+import { pickWorktree } from "./picker.js";
 import { initProject } from "./init.js";
 import { printBrief } from "./brief.js";
 import { allowMcp, allowBash, type AllowResult } from "./allow.js";
@@ -158,7 +161,7 @@ async function main() {
       await cmdLogs(args.slice(1));
       break;
     case "results":
-      cmdResults(args.slice(1));
+      await cmdResults(args.slice(1));
       break;
     case "stage":
       cmdStage(args.slice(1));
@@ -167,10 +170,10 @@ async function main() {
       cmdStatus();
       break;
     case "merge":
-      cmdMerge(args[1]);
+      await cmdMerge(args.slice(1));
       break;
     case "discard":
-      cmdDiscard(args[1]);
+      await cmdDiscard(args.slice(1));
       break;
     case "clean":
       cmdClean(args.slice(1));
@@ -578,12 +581,18 @@ async function cmdLogs(args: string[]) {
   const followFlag = args.includes("-f") || args.includes("--follow");
   const positional = args.find((a) => !a.startsWith("-"));
 
-  if (!positional) {
+  const chosen = await resolvePositionalOrPick(
+    positional,
+    worktrees,
+    "all",
+    "Select a worktree to view logs for",
+  );
+  if (!chosen) {
     console.error(formatMissingTargetError("logs", "<branch>", worktrees));
     process.exit(1);
   }
 
-  const branch = resolveBranch(projectRoot, positional);
+  const branch = resolveBranch(projectRoot, chosen);
   const target = worktrees.find((wt) => wt.branch === branch);
   if (!target) {
     console.error(`Worktree not found for branch: ${branch}`);
@@ -640,6 +649,19 @@ function shortBranch(branch: string): string {
   return branch.replace(/^worktree-dangeresque-/, "");
 }
 
+async function resolvePositionalOrPick(
+  positional: string | undefined,
+  worktrees: WorktreeInfo[],
+  filter: WorktreeFilter,
+  label: string,
+): Promise<string | undefined> {
+  if (positional) return positional;
+  const picked = await pickWorktree(filterWorktrees(worktrees, filter), {
+    label,
+  });
+  return picked?.branch;
+}
+
 function formatMissingTargetError(
   cmd: string,
   argName: string,
@@ -692,17 +714,26 @@ function cmdStatus() {
   }
 }
 
-function cmdMerge(branch: string | undefined) {
-  if (!branch) {
+async function cmdMerge(args: string[]) {
+  const projectRoot = resolveProjectRoot();
+  const positional = args.find((a) => !a.startsWith("-"));
+  const worktrees = listWorktrees(projectRoot);
+
+  const chosen = await resolvePositionalOrPick(
+    positional,
+    worktrees,
+    "finished",
+    "Select a worktree to merge",
+  );
+  if (!chosen) {
     console.error("Usage: dangeresque merge <branch>");
     console.error("Run 'dangeresque status' to see active worktrees");
     process.exit(1);
   }
 
-  const projectRoot = resolveProjectRoot();
   try {
     assertInMainCheckout(projectRoot, "merge");
-    const resolved = resolveBranch(projectRoot, branch);
+    const resolved = resolveBranch(projectRoot, chosen);
     const result = mergeWorktree(projectRoot, resolved);
 
     if (result.success) {
@@ -717,17 +748,26 @@ function cmdMerge(branch: string | undefined) {
   }
 }
 
-function cmdDiscard(branch: string | undefined) {
-  if (!branch) {
+async function cmdDiscard(args: string[]) {
+  const projectRoot = resolveProjectRoot();
+  const positional = args.find((a) => !a.startsWith("-"));
+  const worktrees = listWorktrees(projectRoot);
+
+  const chosen = await resolvePositionalOrPick(
+    positional,
+    worktrees,
+    "finished",
+    "Select a worktree to discard",
+  );
+  if (!chosen) {
     console.error("Usage: dangeresque discard <branch>");
     console.error("Run 'dangeresque status' to see active worktrees");
     process.exit(1);
   }
 
-  const projectRoot = resolveProjectRoot();
   try {
     assertInMainCheckout(projectRoot, "discard");
-    const resolved = resolveBranch(projectRoot, branch);
+    const resolved = resolveBranch(projectRoot, chosen);
     const result = discardWorktree(projectRoot, resolved);
 
     if (result.success) {
@@ -742,7 +782,7 @@ function cmdDiscard(branch: string | undefined) {
   }
 }
 
-function cmdResults(args: string[]) {
+async function cmdResults(args: string[]) {
   const projectRoot = resolveProjectRoot();
 
   // Check for --issue flag (show archived results)
@@ -766,18 +806,24 @@ function cmdResults(args: string[]) {
     process.exit(1);
   }
 
-  const target = args.find((a) => !a.startsWith("-"));
-  if (!target) {
-    const worktrees = listWorktrees(projectRoot);
+  const positional = args.find((a) => !a.startsWith("-"));
+  const worktrees = listWorktrees(projectRoot);
+  const chosen = await resolvePositionalOrPick(
+    positional,
+    worktrees,
+    "all",
+    "Select a worktree to show results for",
+  );
+  if (!chosen) {
     console.error(formatMissingTargetError("results", "<branch>", worktrees));
     process.exit(1);
   }
 
   let branch: string;
   try {
-    branch = resolveBranch(projectRoot, target);
+    branch = resolveBranch(projectRoot, chosen);
   } catch {
-    branch = target; // Fall through to getWorktreeResults which has its own error message
+    branch = chosen; // Fall through to getWorktreeResults which has its own error message
   }
 
   const output = getWorktreeResults(projectRoot, branch);
