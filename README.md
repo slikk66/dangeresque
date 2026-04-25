@@ -2,6 +2,8 @@
 
 Run Claude Code or OpenAI Codex AFK in isolated git worktrees with automatic review and human merge control.
 
+![image info](./docs/image.png)
+
 **Contents**
 
 - [The Problem](#the-problem)
@@ -80,7 +82,9 @@ Creates `.dangeresque/` with canonical prompts (`worker-prompt.md`, `review-prom
 
 ```markdown
 <!-- DANGERESQUE-START -->
+
 **The user needs you to read `.dangeresque/DANGERESQUE.md` before doing anything else.** It defines this project's workflow rules. Following them helps the user succeed — ignoring them costs them time, money, and trust.
+
 <!-- DANGERESQUE-END -->
 ```
 
@@ -201,20 +205,20 @@ dangeresque merge implement-63
 
 Run `dangeresque <cmd> --help` for flag-level detail.
 
-| Command               | Purpose                                                                                                                                                                                                                              |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `dangeresque run`     | Dispatch a worker + review pass. Flags: `--issue`, `--mode`, `--name`, `--no-review`, `--interactive`, `--model`, `--effort`                                                                                                         |
-| `dangeresque status`  | List active worktrees with branch names and HEAD commits                                                                                                                                                                             |
-| `dangeresque logs`    | Pretty-print engine transcripts (snapshot, or `-f` to tail; `--review` for review pass; `--raw` for JSONL)                                                                                                                           |
-| `dangeresque results` | Show run results from active worktrees or archived history (`--issue <N>`, `--all`)                                                                                                                                                  |
-| `dangeresque stage`   | Post a structured `[staged]` context comment on a GitHub Issue before a run                                                                                                                                                          |
-| `dangeresque merge`   | Merge a worktree branch into the current branch; remove worktree + branch                                                                                                                                                            |
-| `dangeresque discard` | Force-remove worktree and branch without merging; drops the run artifact                                                                                                                                                             |
-| `dangeresque clean`   | Delete tracked run result files for an issue (e.g. after closing)                                                                                                                                                                    |
-| `dangeresque stats`   | Aggregate run evaluation artifacts (`--issue`, `--engine`, `--mode`, `--glossary`)                                                                                                                                                   |
+| Command               | Purpose                                                                                                                                                                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dangeresque run`     | Dispatch a worker + review pass. Flags: `--issue`, `--mode`, `--name`, `--no-review`, `--interactive`, `--model`, `--effort`                                                                                                          |
+| `dangeresque status`  | List active worktrees with branch names and HEAD commits                                                                                                                                                                              |
+| `dangeresque logs`    | Pretty-print engine transcripts (snapshot, or `-f` to tail; `--review` for review pass; `--raw` for JSONL)                                                                                                                            |
+| `dangeresque results` | Show run results from active worktrees or archived history (`--issue <N>`, `--all`)                                                                                                                                                   |
+| `dangeresque stage`   | Post a structured `[staged]` context comment on a GitHub Issue before a run                                                                                                                                                           |
+| `dangeresque merge`   | Merge a worktree branch into the current branch; remove worktree + branch                                                                                                                                                             |
+| `dangeresque discard` | Force-remove worktree and branch without merging; drops the run artifact                                                                                                                                                              |
+| `dangeresque clean`   | Delete tracked run result files for an issue (e.g. after closing)                                                                                                                                                                     |
+| `dangeresque stats`   | Aggregate run evaluation artifacts (`--issue`, `--engine`, `--mode`, `--glossary`)                                                                                                                                                    |
 | `dangeresque init`    | Scaffold `.dangeresque/`, copy skills, merge hooks. Refreshes canonical prompts; `.local.md` overrides and divergent canonical prompts are preserved (with a warning). Creates `CLAUDE.md` with the DANGERESQUE.md pointer if missing |
-| `dangeresque brief`   | Print the self-contained workflow primer to stdout (same content as `.dangeresque/DANGERESQUE.md`, version-stamped). Useful for a quick read or piping into a new project before running init                                        |
-| `dangeresque allow`   | Extend `allowedTools`: `mcp` reads `.mcp.json` and adds each server; `bash "<pattern>"` adds a bash pattern                                                                                                                          |
+| `dangeresque brief`   | Print the self-contained workflow primer to stdout (same content as `.dangeresque/DANGERESQUE.md`, version-stamped). Useful for a quick read or piping into a new project before running init                                         |
+| `dangeresque allow`   | Extend `allowedTools`: `mcp` reads `.mcp.json` and adds each server; `bash "<pattern>"` adds a bash pattern                                                                                                                           |
 
 ### Monitoring a running session
 
