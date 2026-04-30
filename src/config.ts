@@ -111,7 +111,26 @@ export function loadConfig(projectRoot: string): DangeresqueConfig {
     return { ...DEFAULT_CONFIG };
   }
   const raw = JSON.parse(readFileSync(configPath, "utf-8"));
-  return { ...DEFAULT_CONFIG, ...raw };
+  const merged: DangeresqueConfig = { ...DEFAULT_CONFIG, ...raw };
+  // Tool lists extend defaults rather than replace them: the user's config.json
+  // is purely additions. Empty/missing user array leaves defaults untouched.
+  merged.allowedTools = mergeStringList(DEFAULT_CONFIG.allowedTools, raw.allowedTools);
+  merged.disallowedTools = mergeStringList(DEFAULT_CONFIG.disallowedTools, raw.disallowedTools);
+  return merged;
+}
+
+function mergeStringList(defaults: string[], userValue: unknown): string[] {
+  if (!Array.isArray(userValue) || userValue.length === 0) {
+    return [...defaults];
+  }
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const v of [...defaults, ...userValue]) {
+    if (typeof v !== "string" || seen.has(v)) continue;
+    seen.add(v);
+    merged.push(v);
+  }
+  return merged;
 }
 
 export interface ValidationResult {

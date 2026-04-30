@@ -54,6 +54,107 @@ test("loadConfig: partial config merges with defaults", () => {
   }
 });
 
+test("loadConfig: allowedTools extends defaults preserving order", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({ allowedTools: ["Bash(aws *)"] }),
+    );
+    const cfg = loadConfig(tmp);
+    const baseline = loadConfig(makeTmp());
+    assert.equal(cfg.allowedTools.length, baseline.allowedTools.length + 1);
+    assert.deepEqual(
+      cfg.allowedTools.slice(0, baseline.allowedTools.length),
+      baseline.allowedTools,
+    );
+    assert.equal(cfg.allowedTools.at(-1), "Bash(aws *)");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: allowedTools dedupes overlap with defaults", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({ allowedTools: ["Read", "Bash(aws *)"] }),
+    );
+    const cfg = loadConfig(tmp);
+    const baseline = loadConfig(makeTmp());
+    assert.equal(cfg.allowedTools.length, baseline.allowedTools.length + 1);
+    assert.equal(
+      cfg.allowedTools.filter((t) => t === "Read").length,
+      1,
+      "Read must not be duplicated",
+    );
+    assert.ok(cfg.allowedTools.includes("Bash(aws *)"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: disallowedTools extends + dedupes the same way", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({
+        disallowedTools: ["Bash(git push *)", "Bash(curl evil.com *)"],
+      }),
+    );
+    const cfg = loadConfig(tmp);
+    const baseline = loadConfig(makeTmp());
+    assert.equal(cfg.disallowedTools.length, baseline.disallowedTools.length + 1);
+    assert.equal(
+      cfg.disallowedTools.filter((t) => t === "Bash(git push *)").length,
+      1,
+    );
+    assert.ok(cfg.disallowedTools.includes("Bash(curl evil.com *)"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: scalar override (model) still last-wins", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({ model: "claude-sonnet-4-6" }),
+    );
+    const cfg = loadConfig(tmp);
+    const baseline = loadConfig(makeTmp());
+    assert.equal(cfg.model, "claude-sonnet-4-6");
+    assert.deepEqual(cfg.allowedTools, baseline.allowedTools);
+    assert.deepEqual(cfg.disallowedTools, baseline.disallowedTools);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: empty arrays in user config leave defaults intact", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({ allowedTools: [], disallowedTools: [] }),
+    );
+    const cfg = loadConfig(tmp);
+    const baseline = loadConfig(makeTmp());
+    assert.deepEqual(cfg.allowedTools, baseline.allowedTools);
+    assert.deepEqual(cfg.disallowedTools, baseline.disallowedTools);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("loadConfig: malformed JSON throws", () => {
   const tmp = makeTmp();
   try {
