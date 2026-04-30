@@ -11,7 +11,7 @@ correctly end-to-end.
 
 - **VERIFY-BEFORE** — Read current code before changing it. Never edit what you haven't read.
 - **VERIFY-AFTER** — After a change, confirm it landed. Grep the file, check the value, build the project.
-- **NO-BANDAID** — Every fix must be researched and confirmed correct. No try/catch that swallows the problem.
+- **NO-BANDAID** — We don't want the "simplest" or "fastest" fix. We are building professional software. We are not trying to skim by with the least amount of work.
 - **ONE-PATH** — Extend the existing system. Do not add a parallel code path when the existing one can be widened.
 - **FILE-IMMEDIATELY** — If you discover a bug/issue that is important, file it (gh cli) immediately.
 - **INVESTIGATE-ALWAYS** — Every GitHub Issue gets an INVESTIGATE run before IMPLEMENT. No exceptions, no "trivial one-liner" shortcuts.
@@ -48,23 +48,29 @@ Use this template (the `dangeresque-create-issue` skill produces the same shape)
 
 ```markdown
 ## Mode
+
 <INVESTIGATE | IMPLEMENT | VERIFY | REFACTOR | TEST | custom>
 
 ## Goal
+
 <what the worker should accomplish — one or two sentences>
 
 ## Hypothesis
+
 <root cause guess, or "None — open investigation">
 
 ## Likely Files
+
 - `path/to/file.ts` — reason
 - `path/to/other.ts` — reason
 
 ## Verification Criteria
+
 - [ ] criterion 1
 - [ ] criterion 2
 
 ## Severity
+
 <blocking | degraded | cosmetic>
 ```
 
@@ -125,13 +131,13 @@ dangeresque status                         # list active worktrees
 
 ## Modes (one-liners; full semantics in `.dangeresque/AFK_WORKER_RULES.md`)
 
-| Mode        | Purpose                               |
-|-------------|---------------------------------------|
+| Mode        | Purpose                                      |
+| ----------- | -------------------------------------------- |
 | INVESTIGATE | Find root cause, trace flow; no code changes |
-| IMPLEMENT   | Bounded code change + tests           |
-| VERIFY      | Prove an existing change works        |
-| REFACTOR    | Restructure without behavior change   |
-| TEST        | Write tests for existing behavior     |
+| IMPLEMENT   | Bounded code change + tests                  |
+| VERIFY      | Prove an existing change works               |
+| REFACTOR    | Restructure without behavior change          |
+| TEST        | Write tests for existing behavior            |
 
 ## What NOT to Do
 
