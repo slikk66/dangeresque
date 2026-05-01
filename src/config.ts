@@ -102,6 +102,13 @@ const DEFAULT_CONFIG: DangeresqueConfig = {
     "Bash(git add *)",
     "Bash(git commit *)",
     "Bash(git branch *)",
+    "Bash(ls *)",
+    "Bash(cat *)",
+    "Bash(head *)",
+    "Bash(tail *)",
+    "Bash(grep *)",
+    "Bash(find *)",
+    "Bash(wc *)",
   ],
   disallowedTools: [
     "Bash(git push *)",
