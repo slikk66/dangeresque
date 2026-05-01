@@ -44,7 +44,7 @@
 - Every run happens in an isolated worktree under `.claude/worktrees/dangeresque-<name>/`.
 - Branch naming: `worktree-dangeresque-<name>` (e.g. `worktree-dangeresque-implement-63`).
 - Worktrees are never reused — creation hard-fails if the path exists.
-- Run artifacts (both `.md` and `.json`) are committed inside the worktree and flow through normal `git merge`.
+- Run artifacts (both `.md` and `.json`) live in `.dangeresque/runs/` (gitignored) and are mirrored across worktree boundaries by `mirrorIssueRuns` in `src/worktree.ts` — projectRoot → worktree at dispatch, worktree → projectRoot at merge. They never enter git history.
 
 ## What NOT to Change Without an Explicit Issue
 
