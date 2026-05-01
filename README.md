@@ -27,25 +27,35 @@ Dangeresque runs Claude Code directly on the host in a git worktree. You get ful
 ## How It Works
 
 ```
-  Your repo          Worker pass             Review pass
-  (main)     --->    (worktree)       --->   (same worktree)
-                         |                         |
-                  Reads GitHub Issue,         Reads git diff,
-                  executes task,              audits worker claims,
-                  writes run result to        appends verdict to the
-                  .dangeresque/runs/          same run file
-                                                   |
-                                                   v
-                                          You review diff,
-                                          merge or discard
+  Your repo          Worker pass             Verify hook       Review pass
+  (main)     --->    (worktree)       --->   (worktree) --->   (same worktree)
+                         |                       |                   |
+                  Reads GitHub Issue,       Compile/test/lint,  Reads git diff,
+                  executes task,            block-on-failure    audits worker claims,
+                  writes run result to      writes results      appends verdict to
+                  gitignored                into SUMMARY +      the same run file
+                  .dangeresque/runs/        ## Verification           |
+                                                                      v
+                                                            On merge: artifact
+                                                            mirrored to main
+                                                            checkout; SUMMARY +
+                                                            path posted to issue
+                                                                      |
+                                                                      v
+                                                            You review diff,
+                                                            merge or discard
 ```
 
-1. **Worker** runs Claude Code headlessly in an isolated worktree with your system prompt + GitHub Issue context, writing a run result to `.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md`.
-2. **Reviewer** runs a second session in the same worktree with an adversarial review prompt, checking the actual `git diff` against the worker's claims and appending its verdict.
-3. Dangeresque commits the run file to the worktree branch so it flows through normal merge; the full run is posted as a comment on the GitHub Issue; a macOS notification fires when complete.
-4. **You** inspect the diff, discuss with Claude, then `dangeresque merge` or `dangeresque discard`.
+1. **Worker** runs Claude Code headlessly in an isolated worktree with your system prompt + GitHub Issue context, writing a run result to `.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md`. The runs directory is **gitignored** — artifacts never enter git history.
+2. **Verify hook** (optional, configured per project) runs compile/test/lint commands in the worktree post-rebase, pre-review. Block-style failures skip the review pass and fail the run; results land in the artifact's `<!-- SUMMARY -->` block (`Verify:` line) and a `## Verification` body section.
+3. **Reviewer** runs a second session in the same worktree with an adversarial review prompt, checking the actual `git diff` against the worker's claims and appending its verdict to the run file.
+4. **Comment on the issue** carries only the artifact's `<!-- SUMMARY -->` block plus the local path — never the full body. The artifact stays on disk so collaborators read it via `dangeresque results --issue <N>` or directly at `.dangeresque/runs/issue-<N>/`.
+5. **On `dangeresque merge`**, the gitignored artifact is mirrored from the worktree back to the project root before the worktree is torn down. On the next dispatch for the same issue, prior artifacts are mirrored *into* the new worktree so the worker can read them.
+6. **You** inspect the diff, discuss with Claude, then `dangeresque merge` or `dangeresque discard`.
 
 No code touches main until you explicitly merge. If the worker fails (non-zero exit), dangeresque prints a loud FAILURE banner, posts a FAIL comment on the issue, and exits non-zero — no stale success artifacts.
+
+> **Migrating from an older dangeresque (artifacts tracked in git)?** Run once per repo: `git rm --cached -r .dangeresque/runs/`, commit, push. Files stay on disk; subsequent runs use the mirror flow above. `dangeresque init` adds `.dangeresque/runs/` to your `.gitignore` automatically.
 
 ## Quick Start
 
@@ -173,7 +183,7 @@ The `[staged]` comment becomes part of the next worker's prompt context. This is
 dangeresque merge investigate-63
 ```
 
-Merges the worktree into main, cleaning up the branch. The run result file at `.dangeresque/runs/issue-63/` is part of the merge — future runs see it automatically because it's tracked history. Since INVESTIGATE runs don't change code, the merge just brings in the run file.
+Merges the worktree into main and cleans up the branch. The run result file at `.dangeresque/runs/issue-63/` is **gitignored** — it does not flow through `git merge`. Instead, dangeresque mirrors it from the worktree to the project root just before tearing the worktree down, and mirrors prior artifacts back into the next worktree on dispatch. Since INVESTIGATE runs don't change code, `git merge` is a no-op (HEAD unchanged) and only the artifact mirror runs.
 
 ### 6. Dispatch the implementation
 
@@ -207,14 +217,14 @@ Run `dangeresque <cmd> --help` for flag-level detail.
 
 | Command               | Purpose                                                                                                                                                                                                                               |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dangeresque run`     | Dispatch a worker + review pass. Flags: `--issue`, `--mode`, `--name`, `--no-review`, `--interactive`, `--model`, `--effort`                                                                                                          |
+| `dangeresque run`     | Dispatch a worker + review pass. Flags: `--issue`, `--mode`, `--name`, `--no-review`, `--no-verify`, `--interactive`, `--model`, `--effort`                                                                                          |
 | `dangeresque status`  | List active worktrees with branch names and HEAD commits                                                                                                                                                                              |
 | `dangeresque logs`    | Pretty-print engine transcripts (snapshot, or `-f` to tail; `--review` for review pass; `--raw` for JSONL)                                                                                                                            |
 | `dangeresque results` | Show run results from active worktrees or archived history (`--issue <N>`, `--all`)                                                                                                                                                   |
 | `dangeresque stage`   | Post a structured `[staged]` context comment on a GitHub Issue before a run                                                                                                                                                           |
 | `dangeresque merge`   | Merge a worktree branch into the current branch; remove worktree + branch                                                                                                                                                             |
 | `dangeresque discard` | Force-remove worktree and branch without merging; drops the run artifact                                                                                                                                                              |
-| `dangeresque clean`   | Delete tracked run result files for an issue (e.g. after closing)                                                                                                                                                                     |
+| `dangeresque clean`   | Delete on-disk run result files for an issue (e.g. after closing). Files are gitignored — clean is a local-disk operation, not a git operation                                                                                       |
 | `dangeresque stats`   | Aggregate run evaluation artifacts (`--issue`, `--engine`, `--mode`, `--glossary`)                                                                                                                                                    |
 | `dangeresque init`    | Scaffold `.dangeresque/`, copy skills, merge hooks. Refreshes canonical prompts; `.local.md` overrides and divergent canonical prompts are preserved (with a warning). Creates `CLAUDE.md` with the DANGERESQUE.md pointer if missing |
 | `dangeresque brief`   | Print the self-contained workflow primer to stdout (same content as `.dangeresque/DANGERESQUE.md`, version-stamped). Useful for a quick read or piping into a new project before running init                                         |
@@ -243,7 +253,7 @@ dangeresque logs investigate-63 --raw | jq '.message.content[]?.text'  # Raw JSO
 | `AFK_WORKER_RULES.local.md` | Project-specific additions read at runtime (user-owned)          |
 | `DANGERESQUE.md`            | Workflow primer pointed to from `CLAUDE.md` (overwritten)        |
 | `config.json`               | Optional overrides (model, tools, permissions)                   |
-| `runs/`                     | Tracked run result files, one per run (merged with your branch)  |
+| `runs/`                     | Run result files (one per run). **Gitignored** — mirrored across worktrees by the CLI, not carried by `git merge` |
 
 ### config.json
 
@@ -259,6 +269,7 @@ dangeresque logs investigate-63 --raw | jq '.message.content[]?.text'  # Raw JSO
 | `workerPrompt`    | string   | `"worker-prompt.md"` | Worker system prompt filename                   |
 | `reviewPrompt`    | string   | `"review-prompt.md"` | Review system prompt filename                   |
 | `notifications`   | boolean  | `true`               | Enable macOS notification hooks                 |
+| `verify`          | object   | _(empty commands)_   | Pre-review verification hook — see the [Verification](#verification-pre-review-hook) section below |
 
 ### Engines (claude vs codex)
 
@@ -289,13 +300,55 @@ Default `allowedTools` (auto-approved): `Read`, `Edit`, `Write`, `Grep`, `Glob`,
 When building the worker prompt, dangeresque filters issue comments:
 
 - **Included:** issue body + all `[staged]` comments + last 3 untagged human comments
-- **Skipped:** old `[dangeresque]` run result comments (duplicated by the tracked run files in `.dangeresque/runs/`)
+- **Skipped:** prior `[dangeresque]` run-summary comments (the worker reads the local artifacts from `.dangeresque/runs/issue-<N>/` instead — they hold the full body, the comment carries only the SUMMARY block)
 
 Use `dangeresque stage` to add guidance the worker will always see.
 
+### GitHub issue comments
+
+After each run, dangeresque posts a single comment on the issue containing only the artifact's `<!-- SUMMARY -->` block, the local artifact path, and a pointer to `dangeresque results --issue <N>`. The full run-result body never leaves the local machine — it lives at `.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md` (gitignored) on the host that ran the worker. Pull it onto another machine via `git`-based mirroring of your choice, or run dangeresque on the same host where the artifacts already live.
+
+### Verification (pre-review hook)
+
+Dangeresque can run compile/test/lint commands in the worktree between the worker exit (post-rebase, post-file-count-normalize) and the review pass. This catches drift between worker prose claims ("yarn build passes") and code reality. The reviewer (text-only) treats verification exit codes as ground truth and overrides any contradicting worker claim.
+
+Configure under `verify` in `.dangeresque/config.json`. See [`config-templates/config.example.json`](config-templates/config.example.json) for the full shape and ecosystem-specific examples (Cargo, Go, TypeScript-only). Minimal example:
+
+```json
+{
+  "verify": {
+    "enabled": true,
+    "modes": ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
+    "commands": [
+      { "name": "compile", "cmd": "yarn build", "on_failure": "block", "timeout_ms": 300000 },
+      { "name": "test",    "cmd": "yarn test",  "on_failure": "block", "timeout_ms": 600000 },
+      { "name": "lint",    "cmd": "yarn lint",  "on_failure": "warn",  "timeout_ms": 120000 }
+    ]
+  }
+}
+```
+
+Per-command policy:
+- `on_failure: "block"` — first failure short-circuits the run, skips the review pass, marks `result: "failure"` with `failure_categories: ["verification_failed"]`.
+- `on_failure: "warn"` — failure is recorded but the review still runs.
+
+The CLI runs verification commands directly — `allowedTools` does not constrain them, since the engine never sees them.
+
+Where output lands:
+- **Artifact JSON** (`<timestamp>-<MODE>.json`) — `verification: VerificationResult[]` with name, cmd, exit code, duration, stdout/stderr excerpts, `timed_out`, and `truncated` flags.
+- **Artifact Markdown** — a `Verify: …` line in the `<!-- SUMMARY -->` block, plus a `## Verification (pre-review, captured automatically)` body section with a one-line PASS/FAIL/TIMEOUT per command and the trailing stderr excerpt for any non-zero exit.
+- **Console** — per-command pass/warn/block lines while the hook runs.
+
+Operator escape hatches:
+- `dangeresque run --issue <N> --no-verify` — skip for one run.
+- `verify.enabled: false` in config — disable globally.
+- Drop the offending command from `commands`.
+
+Empty `commands` array (the default) means no-op; opt in by listing commands.
+
 ## Evaluation
 
-Every run writes a markdown run result file plus a structured JSON evaluation artifact. Terms derived from worker exit code, review phase, run artifact presence, scope violations, and parsed reviewer verdicts: `success`, `partial_success`, `failure`, `scope_violation`, and `reviewer_verdict` ∈ {`accept`, `reject`, `needs_human_review`, `skipped`, `unknown`}. Review is automatically skipped for `INVESTIGATE` and `VERIFY`, and manually skipped by `--no-review`.
+Every run writes a markdown run result file plus a structured JSON evaluation artifact. Terms derived from worker exit code, review phase, run artifact presence, scope violations, verification outcomes, and parsed reviewer verdicts: `success`, `partial_success`, `failure`, `scope_violation`, `verification_failed`, and `reviewer_verdict` ∈ {`accept`, `reject`, `needs_human_review`, `skipped`, `unknown`}. Review is automatically skipped for `INVESTIGATE`/`VERIFY`, when verification blocks (a `block`-policy command failed), and manually skipped by `--no-review`.
 
 For full definitions, run `dangeresque stats --glossary`. For design rationale, see [`docs/DESIGN.md` §4 Observability & Evaluation](docs/DESIGN.md#4-observability--evaluation).
 

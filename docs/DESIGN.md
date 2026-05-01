@@ -86,7 +86,9 @@ and because every worktree lives under
 ## 3. Safety Model
 
 Host execution removes the container sandbox, so the safety model has to
-carry more weight. It does, in five layers (plus pre-flight validation).
+carry more weight. It does, in six layers (plus pre-flight validation):
+worktree isolation, permission allowlist, pre-review verification,
+adversarial reviewer, rebase before review, and the human merge gate.
 
 ### Layer 0 — Pre-flight validation
 
@@ -134,27 +136,79 @@ example, this repo adds `Bash(yarn build)` and
 `Bash(yarn install --immutable)` so TypeScript workers can verify their code
 compiles without being allowed to mutate `package.json`.
 
-### Layer 3 — Adversarial Reviewer
+### Layer 3 — Pre-review Verification (CLI hook)
 
-After the worker finishes (and the worktree is rebased onto the latest
+Between the worker exit and the reviewer, dangeresque runs a configurable
+list of verification commands inside the worktree (post-rebase, post
+file-count normalization). The hook is the bridge between worker prose
+claims ("yarn build passes", "all tests green") and code reality. The
+reviewer is text-only; without verification it has no independent way to
+confirm those claims, and a worker that breaks the build but writes a
+plausible run result can otherwise sneak through to ACCEPT.
+
+Configuration lives in `.dangeresque/config.json` under `verify` (see
+`config-templates/config.example.json` for the canonical shape and
+`src/verify.ts:VerifyConfig` for the type). Each command names itself,
+specifies a shell string, an `on_failure` policy
+(`"block"` short-circuits the run; `"warn"` records and continues), and a
+timeout. Empty `commands` (the default) is a no-op — verification is
+opt-in. The CLI runs the commands directly (see
+`src/verify.ts:runVerification`); `allowedTools` does not gate them, since
+the engine never sees them.
+
+When a `block`-policy command fails, the run is finalized with
+`result: "failure"` and `failure_categories` includes `verification_failed`
+(see `src/artifact.ts:deriveFailureCategories` and
+`src/artifact.ts:isVerificationBlocked`). The review pass is skipped — the
+review's value is auditing diffs against an issue, and there is nothing
+worth auditing if the code does not compile or tests do not pass.
+
+The hook also writes back into the artifact so the reviewer (when it does
+run, on warn-only failures) has ground-truth signal:
+
+- A `Verify: …` line is inserted into the `<!-- SUMMARY -->` block
+  alongside `Files:` (see `src/verify.ts:appendVerifySummaryLine`).
+- A `## Verification (pre-review, captured automatically)` body section
+  is appended at the end of the artifact .md, with one PASS/FAIL/TIMEOUT
+  line per command and a trailing stderr excerpt for any non-zero exit
+  (see `src/verify.ts:appendVerifyBodySection`).
+- The structured `VerificationResult[]` lands in the artifact JSON under
+  `verification` (see `src/artifact.ts:RunArtifact.verification`).
+
+The reviewer prompt (`config-templates/review-prompt.md`) instructs the
+reviewer to treat this section as ground truth: any command shown as
+`FAIL` overrides any worker claim of "tests pass" or "build clean," and
+the contradiction is grounds for REJECT. The reviewer is told NOT to
+re-run verification commands — they already ran in the worktree.
+
+Operator escape hatches: `--no-verify` on the run command skips the hook
+for one run; `verify.enabled: false` in config disables it globally; or
+drop the offending command from `commands`.
+
+### Layer 4 — Adversarial Reviewer
+
+After verification (and the worktree being rebased onto the latest
 `origin/main`, see below), a second Claude or Codex session runs with
 `config-templates/review-prompt.md` as its system prompt. The reviewer's job
 is not to rubber-stamp the worker; the prompt explicitly instructs it to
 "verify the worker's actual code changes, not rubber-stamp its narrative."
-It runs `git diff main` as ground truth, reads the worker's run result as a
-*claims document*, and appends a verdict (`ACCEPT`, `REJECT`, or
-`NEEDS_HUMAN_REVIEW`) that dangeresque later extracts with a regex (see
+It runs `git diff origin/main` as ground truth, reads the worker's run
+result as a *claims document*, and appends a verdict (`ACCEPT`, `REJECT`,
+or `NEEDS_HUMAN_REVIEW`) that dangeresque later extracts with a regex (see
 `src/artifact.ts:VERDICT_REGEX`). The reviewer's file-count integrity check
 is an **automatic FAIL** if the worker's claimed file list doesn't match
-`git diff main --name-only` (minus auto-committed artifacts). This is the
-primary defense against a worker concealing changes.
+`git diff origin/main --name-only` (minus the gitignored
+`.dangeresque/runs/` directory, which never appears in the diff). This is
+the primary defense against a worker concealing changes.
 
 Review is skipped for modes that by definition produce no code changes:
-INVESTIGATE and VERIFY (see `SKIP_REVIEW_MODES` in `src/cli.ts`). Spending Claude calls
-reviewing an empty diff is waste, and a skipped review is recorded in the
-run artifact with a reason so it's visible downstream.
+INVESTIGATE and VERIFY (see `SKIP_REVIEW_MODES` in `src/cli.ts`). Review
+is also skipped when verification blocks (Layer 3) — there is no point
+running an adversarial review against un-compiling code. Spending Claude
+calls reviewing an empty diff is waste, and a skipped review is recorded
+in the run artifact with a reason so it's visible downstream.
 
-### Layer 4 — Rebase Before Review
+### Layer 5 — Rebase Before Review
 
 Between worker and reviewer, the worktree is rebased onto `origin/main` (see
 the "Rebase worktree onto latest origin/main" section in `src/cli.ts`).
@@ -190,48 +244,82 @@ run artifact included — that's the whole point of discard.
 ## 4. Observability & Evaluation
 
 For the concise user-facing definitions of evaluation terms, see
-`README.md` section "Evaluation Vocabulary." This section keeps the longer
-design rationale and implementation tradeoffs.
+`README.md` section "Evaluation." This section keeps the longer design
+rationale and implementation tradeoffs.
 
-Each run writes two companion artifacts inside the worktree, both committed
-on the worker's branch so they flow through normal merge:
+Each run writes two companion artifacts inside the worktree at
+`.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.{md,json}`. The directory
+is **gitignored** (`init.ts` adds `.dangeresque/runs/` to `.gitignore` on
+first run); artifacts never enter git history. Instead, dangeresque
+mirrors them across worktree boundaries by file copy:
+`mirrorIssueRuns(srcRoot, destRoot, issueNumber)` (see
+`src/worktree.ts:mirrorIssueRuns`) runs project-root → new worktree at
+dispatch (so the worker can read prior runs for the same issue) and
+worktree → project-root just before worktree teardown on
+`dangeresque merge` (so the merged history persists locally). A no-op
+`git merge` is therefore the expected success path for INVESTIGATE/VERIFY
+runs that produce no code changes — `mergeWorktree` allows
+`headBefore == headAfter` and falls through to the mirror step (see
+`src/worktree.ts:mergeWorktree` and the `noopMerge` branch).
 
-- **The run result file**
-  (`.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md`) — the worker's
+Why gitignored, not tracked? Run-internal reasoning (worker thought
+process, retry logs, tool output excerpts) doesn't belong in
+production-branch history; it's debugging signal that lives a different
+lifecycle from code. The mirror flow keeps it locally durable across
+worktree teardowns without coupling it to merge commits. Cross-machine
+sync, if needed, is the user's responsibility (rsync, a separate notes
+repo, etc.) — same as build caches or editor configs.
+
+- **The run result file** (`<timestamp>-<MODE>.md`) — the worker's
   narrative output, required to start with a machine-parseable
   `<!-- SUMMARY -->` block and include the `[[PROJECT-RULES-LOADED]]`
   compliance marker (see `config-templates/worker-prompt.md`). The
-  reviewer appends its verdict to the same file. Dangeresque commits it
-  automatically; the worker should not stage or commit it.
-- **The evaluation JSON**
-  (`.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.json`) — a structured
-  `RunArtifact` (see `src/artifact.ts:RunArtifact`) capturing engine,
-  model, worktree name, branch, worker and review phase timings,
+  reviewer appends its verdict to the same file. Verification (Layer 3)
+  appends a `Verify:` line inside the SUMMARY block and a
+  `## Verification (pre-review, captured automatically)` body section.
+  The worker must NOT `git add` or `git commit` it — `.gitignore` would
+  block the stage anyway, and dangeresque does not need it staged because
+  the mirror step is what carries it across boundaries.
+- **The evaluation JSON** (`<timestamp>-<MODE>.json`) — a structured
+  `RunArtifact` (see `src/artifact.ts:RunArtifact`) at
+  `ARTIFACT_SCHEMA_VERSION = "4"` (bumped from 3 when
+  `verification: VerificationResult[] | null` was added; see
+  `src/artifact.ts:ARTIFACT_SCHEMA_VERSION`). It captures engine, model,
+  worktree name, branch, worker and review phase timings,
   `ResultClassification` (`success`/`partial_success`/`failure`),
-  `ReviewerVerdict`, `FailureCategory[]`, scope violations, a one-line
-  summary, and a lifecycle event stream. The verdict is extracted from the
-  run result markdown with `VERDICT_REGEX` (see
+  `ReviewerVerdict`, `FailureCategory[]` (now including
+  `verification_failed`), scope violations, the verification result
+  array, a one-line summary, and a lifecycle event stream including
+  `verify_command_started` / `verify_command_completed` /
+  `verification_completed` / `verification_skipped` events. The verdict
+  is extracted from the run result markdown with `VERDICT_REGEX` (see
   `src/artifact.ts:VERDICT_REGEX`) so the JSON reflects the same reviewer
   decision a human reads.
+
+The GitHub-issue comment posted after each run carries only the
+artifact's `<!-- SUMMARY -->` block plus the local artifact path (see
+`src/runner.ts:postRunComment`). The full body never leaves the host —
+this is deliberate: the body can include excerpted stderr, tool output,
+or other run-internal context that should not be replicated to a
+public/team-visible issue thread by default.
 
 Two deliberate disciplines live in the artifact layer:
 
 - **Schema versioning.** `ARTIFACT_SCHEMA_VERSION` (see
   `src/artifact.ts:ARTIFACT_SCHEMA_VERSION`) is stamped on every artifact.
   The project rule is that additive schema changes must bump this constant
-  so downstream consumers can branch on it. Committing the evaluation JSON
-  into the branch alongside the run result makes cross-run aggregation
-  tractable for any future stats tool — it can read past JSON files
-  directly from git history and reject or migrate older schema versions
-  instead of silently coercing fields whose meanings changed.
+  so downstream consumers can branch on it. The shipping value is `"4"`;
+  earlier versions on disk (predating `verification`) remain readable —
+  `dangeresque stats` either reads forward-compatible fields or rejects
+  unknown shapes rather than silently coercing.
 - **Derivation, not duplication.** `result`, `reviewer_verdict`,
   `failure_categories`, and the summary line are all *derived* from worker
-  exit code + review phase + archive existence + scope violations + parsed
-  verdict (see `src/artifact.ts:classifyResult`,
-  `src/artifact.ts:deriveReviewerVerdict`, and
-  `src/artifact.ts:deriveFailureCategories`). The same inputs always yield
-  the same outputs, and the derivation functions are unit-testable in
-  isolation.
+  exit code + review phase + archive existence + scope violations +
+  verification outcomes + parsed verdict (see
+  `src/artifact.ts:deriveResult`, `src/artifact.ts:deriveReviewerVerdict`,
+  and `src/artifact.ts:deriveFailureCategories`). The same inputs always
+  yield the same outputs, and the derivation functions are unit-testable
+  in isolation.
 
 ## 5. Engine Abstraction
 
@@ -334,13 +422,16 @@ footnotes on an otherwise-working system.
   was skipped (e.g. `--no-review`) do scope violations still mark the run
   `partial_success`. `scope_violations[]` stays on the artifact as
   diagnostic signal for humans triaging borderline runs.
-- **AFK allowlist friction for build commands.** The default `allowedTools`
-  (see `src/config.ts:DEFAULT_CONFIG.allowedTools`) doesn't include any
-  build commands. For a TypeScript project where workers want to run
-  `yarn build` to verify their changes compile, the allowlist must be
-  extended in `.dangeresque/config.json`. This repo does so explicitly
-  with `Bash(yarn build)` and `Bash(yarn install --immutable)`. Projects
-  in other ecosystems (Go, Rust, Python) face the same ergonomic gap.
+- **AFK allowlist friction for in-worker build commands.** The default
+  `allowedTools` (see `src/config.ts:DEFAULT_CONFIG.allowedTools`) doesn't
+  include any build commands. If a project wants the worker itself (not
+  just the post-worker verification hook) to run `yarn build`, the
+  allowlist has to be extended in `.dangeresque/config.json`. This repo
+  does so explicitly with `Bash(yarn build)` and
+  `Bash(yarn install --immutable)`. Projects in other ecosystems (Go, Rust,
+  Python) face the same ergonomic gap. The verification hook (Layer 3 in
+  §3) sidesteps this for the common "did it compile / do tests pass" case
+  — it runs CLI-side and is not gated by `allowedTools`.
 - **No runtime dependencies.** `package.json` has zero runtime
   dependencies — everything is stdlib plus `child_process` calls to `git`,
   `gh`, `claude`, and `codex`. This is a feature for audit clarity but a
@@ -375,11 +466,13 @@ default, not a gate.
 `dangeresque stage <N> --comment "..." --mode MODE` posts a `**[staged`
 comment on the issue, which the prompt builder (see
 `src/runner.ts:formatIssueComments`) always includes in the worker's
-context alongside the issue body. Old `**[dangeresque` run-result comments
-are filtered out (they duplicate the tracked artifact files). Untagged
-human comments are trimmed to the last three. **The tradeoff** is ceding
-some comment-filter visibility to the CLI, in exchange for a structured
-way to steer the next run without editing the issue body.
+context alongside the issue body. Old `**[dangeresque` run-summary
+comments are filtered out: those carry only the SUMMARY block, and the
+worker reads the full prior-run body from the locally-mirrored
+`.dangeresque/runs/issue-<N>/` directory instead. Untagged human comments
+are trimmed to the last three. **The tradeoff** is ceding some
+comment-filter visibility to the CLI, in exchange for a structured way to
+steer the next run without editing the issue body.
 
 **Canonical/`.local.md` overlay for prompts.** `.dangeresque/*.md` canonical
 files (`worker-prompt.md`, `review-prompt.md`, `AFK_WORKER_RULES.md`) are

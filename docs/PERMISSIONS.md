@@ -95,3 +95,11 @@ Some patterns are in `disallowedTools` by default and cannot be allow-listed wit
 - `Bash(git reset --hard *)` — destructive.
 - `Bash(rm -rf *)` — destructive.
 - `Bash(git branch -D *)` — destructive.
+
+## Pre-review verification commands are NOT gated by `allowedTools`
+
+The `verify.commands` block in `.dangeresque/config.json` (compile/test/lint commands run between worker exit and review pass) is executed by the dangeresque CLI process directly, not by the engine. The engine never sees those commands, so adding them to `allowedTools` is unnecessary and `disallowedTools` does not block them.
+
+If you want the **worker itself** to run a build command (e.g. so it can self-correct before declaring done), that's a separate decision and does need an `allowedTools` entry — for example, this repo allows `Bash(yarn build)` and `Bash(yarn install --immutable)` for the worker, in addition to the verify hook re-running the same commands post-rebase as ground truth for the reviewer.
+
+The verification hook is configured under `verify` in `config.json`. See [`config-templates/config.example.json`](../config-templates/config.example.json) for the full shape and per-ecosystem examples (Cargo, Go, TypeScript-only). Skip for one run with `dangeresque run --no-verify`; disable globally with `verify.enabled: false`.

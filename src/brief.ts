@@ -73,11 +73,22 @@ Create with \`gh issue create --label dangeresque --title "…" --body "…"\`.
 \`\`\`bash
 dangeresque run --issue <N>                    # default mode: INVESTIGATE
 dangeresque run --issue <N> --mode IMPLEMENT
+dangeresque run --issue <N> --no-verify        # skip pre-review compile/test/lint
 \`\`\`
 
-Worker + review run automatically. Review is skipped for INVESTIGATE and
-VERIFY (no code changes). A macOS notification fires when complete. Nothing
-touches main until you run \`dangeresque merge\`.
+Worker + (optional) verification + review run automatically. The verification
+hook (configured per project under \`verify\` in \`.dangeresque/config.json\`)
+runs compile/test/lint commands in the worktree post-rebase, pre-review;
+block-style failures skip the review pass and mark the run \`failure\` with
+category \`verification_failed\`. Review is also skipped for INVESTIGATE and
+VERIFY (no code changes) and by \`--no-review\`. A macOS notification fires
+when complete. Nothing touches main until you run \`dangeresque merge\`.
+
+After each run, dangeresque posts ONE comment on the GitHub Issue containing
+only the artifact's \`<!-- SUMMARY -->\` block plus the local artifact path.
+The full body never leaves the host — read it via
+\`dangeresque results --issue <N>\` or directly at
+\`.dangeresque/runs/issue-<N>/\`.
 
 ## Reading Results
 
@@ -111,8 +122,12 @@ dangeresque merge <short-branch>       # merge worktree into main, clean up
 dangeresque discard <short-branch>     # drop worktree + branch, no merge
 \`\`\`
 
-Merge brings the run result file (and any code changes) into main. Then push
-main to origin before your next dispatch — see The One Hard Rule.
+Merge brings any code changes into main via \`git merge\`. The run result
+file is gitignored — it does NOT flow through \`git merge\`. Dangeresque
+mirrors it from the worktree to the project root just before tearing the
+worktree down, and mirrors prior artifacts into the next worktree on
+dispatch. Then push main to origin before your next dispatch — see
+The One Hard Rule.
 
 ## Monitoring a Run
 
