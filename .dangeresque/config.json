@@ -3,11 +3,31 @@
   "codexModel": "gpt-5.4",
   "verify": {
     "enabled": true,
-    "modes": ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
+    "modes": [
+      "IMPLEMENT",
+      "REFACTOR",
+      "TEST",
+      "VERIFY"
+    ],
     "commands": [
-      { "name": "install", "cmd": "yarn install --immutable", "on_failure": "block", "timeout_ms": 300000 },
-      { "name": "compile", "cmd": "yarn build",               "on_failure": "block", "timeout_ms": 300000 },
-      { "name": "test",    "cmd": "yarn test",                "on_failure": "block", "timeout_ms": 600000 }
+      {
+        "name": "install",
+        "cmd": "yarn install --immutable",
+        "on_failure": "block",
+        "timeout_ms": 300000
+      },
+      {
+        "name": "compile",
+        "cmd": "yarn build",
+        "on_failure": "block",
+        "timeout_ms": 300000
+      },
+      {
+        "name": "test",
+        "cmd": "yarn test",
+        "on_failure": "block",
+        "timeout_ms": 600000
+      }
     ]
   },
   "allowedTools": [
@@ -30,6 +50,7 @@
     "Bash(gh label list *)",
     "Bash(yarn build)",
     "Bash(yarn install --immutable)",
-    "Bash(yarn test)"
+    "Bash(yarn test)",
+    "Bash(node *)"
   ]
 }
