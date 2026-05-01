@@ -3,12 +3,7 @@
   "codexModel": "gpt-5.4",
   "verify": {
     "enabled": true,
-    "modes": [
-      "IMPLEMENT",
-      "REFACTOR",
-      "TEST",
-      "VERIFY"
-    ],
+    "modes": ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
     "commands": [
       {
         "name": "install",
@@ -44,13 +39,9 @@
     "Bash(git add *)",
     "Bash(git commit *)",
     "Bash(git branch *)",
-    "Bash(gh issue create *)",
-    "Bash(gh issue view *)",
-    "Bash(gh issue list *)",
-    "Bash(gh label list *)",
-    "Bash(yarn build)",
-    "Bash(yarn install --immutable)",
-    "Bash(yarn test)",
+    "Bash(gh issue *)",
+    "Bash(gh label *)",
+    "Bash(yarn *)",
     "Bash(node *)"
   ]
 }
