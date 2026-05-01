@@ -1,6 +1,15 @@
 {
   "model": "claude-opus-4-7[1m]",
   "codexModel": "gpt-5.4",
+  "verify": {
+    "enabled": true,
+    "modes": ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
+    "commands": [
+      { "name": "install", "cmd": "yarn install --immutable", "on_failure": "block", "timeout_ms": 300000 },
+      { "name": "compile", "cmd": "yarn build",               "on_failure": "block", "timeout_ms": 300000 },
+      { "name": "test",    "cmd": "yarn test",                "on_failure": "block", "timeout_ms": 600000 }
+    ]
+  },
   "allowedTools": [
     "Read",
     "Edit",
