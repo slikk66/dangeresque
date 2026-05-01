@@ -1,5 +1,5 @@
 {
-  "schema_version": "2",
+  "schema_version": "3",
   "run_id": "85a23518-850e-461d-a899-09280ab91e99",
   "issue_number": 38,
   "issue_url": "https://github.com/slikk66/dangeresque/issues/38",
@@ -73,5 +73,6 @@
         "reviewer_verdict": "skipped"
       }
     }
-  ]
+  ],
+  "files_changed_count": 0
 }

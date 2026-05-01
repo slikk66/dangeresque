@@ -14,6 +14,7 @@ import {
   commitArtifactJson,
   jsonPathForArchive,
 } from "./artifact.js";
+import { normalizeSummaryFileCount } from "./summary.js";
 import {
   listWorktrees,
   mergeWorktree,
@@ -526,6 +527,23 @@ async function cmdRun(args: string[]) {
       );
       builder.recordEvent("rebase_failed");
     }
+  }
+
+  // Canonical SUMMARY file count: rewrite the worker's `Files: ...` line in
+  // the run-artifact .md from a hand-typed summary to a CLI-derived count.
+  // Runs post-rebase so the canonical count is computed from the same tree
+  // the reviewer's diff query sees — they cannot mismatch by construction.
+  // Warn-and-degrades on any failure; never blocks the run.
+  {
+    const { resolveDiffBase } = await import("./worktree.js");
+    const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
+    const diffBase = resolveDiffBase(projectRoot);
+    normalizeSummaryFileCount({
+      worktreePath,
+      archivePath: workerResult.archivePath,
+      diffBase,
+      builder,
+    });
   }
 
   // Review pass — skip for modes that don't produce code changes

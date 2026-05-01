@@ -4,7 +4,7 @@ import { relative, basename, join } from "node:path";
 import { execSync } from "node:child_process";
 import type { Engine } from "./config.js";
 
-export const ARTIFACT_SCHEMA_VERSION = "2";
+export const ARTIFACT_SCHEMA_VERSION = "3";
 
 export type ResultClassification = "success" | "partial_success" | "failure";
 
@@ -64,6 +64,7 @@ export interface RunArtifact {
   reviewer_verdict: ReviewerVerdict;
   failure_categories: FailureCategory[];
   scope_violations: string[];
+  files_changed_count: number;
   summary: string;
   artifact_paths: {
     md: string;
@@ -98,6 +99,7 @@ export class ArtifactBuilder {
   private worker?: PhaseTiming;
   private review?: ReviewPhase;
   private scopeViolations: string[] = [];
+  private filesChangedCount = 0;
   private reviewSkipped = false;
   private reviewSkipReason?: string;
 
@@ -134,6 +136,10 @@ export class ArtifactBuilder {
 
   setScopeViolations(files: string[]): void {
     this.scopeViolations = [...files];
+  }
+
+  setFilesChangedCount(n: number): void {
+    this.filesChangedCount = n;
   }
 
   build(): RunArtifact {
@@ -229,6 +235,7 @@ export class ArtifactBuilder {
       reviewer_verdict: reviewerVerdict,
       failure_categories: failureCategories,
       scope_violations: [...this.scopeViolations],
+      files_changed_count: this.filesChangedCount,
       summary,
       artifact_paths: {
         md: relative(this.init.projectRoot, archivePath),

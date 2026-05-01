@@ -37,6 +37,7 @@ function mkArtifact(overrides: Partial<RunArtifact> = {}): RunArtifact {
     reviewer_verdict: "accept",
     failure_categories: [],
     scope_violations: [],
+    files_changed_count: 0,
     summary: "",
     artifact_paths: { md: "", json: "" },
     lifecycle_events: [],
@@ -505,7 +506,7 @@ test("gatherArtifacts: parses valid json, skips bad, rejects unsupported version
     assert.equal(r.artifacts.length, 1);
     assert.equal(r.parseErrorPaths.length, 1);
     assert.equal(r.unsupportedVersions["99"], 1);
-    assert.equal(r.schemaVersions["2"], 1);
+    assert.equal(r.schemaVersions[ARTIFACT_SCHEMA_VERSION], 1);
     assert.equal(r.schemaVersions["99"], 1);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
