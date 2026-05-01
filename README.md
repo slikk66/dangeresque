@@ -50,7 +50,7 @@ Dangeresque runs Claude Code directly on the host in a git worktree. You get ful
 2. **Verify hook** (optional, configured per project) runs compile/test/lint commands in the worktree post-rebase, pre-review. Block-style failures skip the review pass and fail the run; results land in the artifact's `<!-- SUMMARY -->` block (`Verify:` line) and a `## Verification` body section.
 3. **Reviewer** runs a second session in the same worktree with an adversarial review prompt, checking the actual `git diff` against the worker's claims and appending its verdict to the run file.
 4. **Comment on the issue** carries only the artifact's `<!-- SUMMARY -->` block plus the local path — never the full body. The artifact stays on disk so collaborators read it via `dangeresque results --issue <N>` or directly at `.dangeresque/runs/issue-<N>/`.
-5. **On `dangeresque merge`**, the gitignored artifact is mirrored from the worktree back to the project root before the worktree is torn down. On the next dispatch for the same issue, prior artifacts are mirrored *into* the new worktree so the worker can read them.
+5. **On `dangeresque merge`**, the gitignored artifact is mirrored from the worktree back to the project root before the worktree is torn down. On the next dispatch for the same issue, prior artifacts are mirrored _into_ the new worktree so the worker can read them.
 6. **You** inspect the diff, discuss with Claude, then `dangeresque merge` or `dangeresque discard`.
 
 No code touches main until you explicitly merge. If the worker fails (non-zero exit), dangeresque prints a loud FAILURE banner, posts a FAIL comment on the issue, and exits non-zero — no stale success artifacts.
@@ -217,14 +217,14 @@ Run `dangeresque <cmd> --help` for flag-level detail.
 
 | Command               | Purpose                                                                                                                                                                                                                               |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dangeresque run`     | Dispatch a worker + review pass. Flags: `--issue`, `--mode`, `--name`, `--no-review`, `--no-verify`, `--interactive`, `--model`, `--effort`                                                                                          |
+| `dangeresque run`     | Dispatch a worker + review pass. Flags: `--issue`, `--mode`, `--name`, `--no-review`, `--no-verify`, `--interactive`, `--model`, `--effort`                                                                                           |
 | `dangeresque status`  | List active worktrees with branch names and HEAD commits                                                                                                                                                                              |
 | `dangeresque logs`    | Pretty-print engine transcripts (snapshot, or `-f` to tail; `--review` for review pass; `--raw` for JSONL)                                                                                                                            |
 | `dangeresque results` | Show run results from active worktrees or archived history (`--issue <N>`, `--all`)                                                                                                                                                   |
 | `dangeresque stage`   | Post a structured `[staged]` context comment on a GitHub Issue before a run                                                                                                                                                           |
 | `dangeresque merge`   | Merge a worktree branch into the current branch; remove worktree + branch                                                                                                                                                             |
 | `dangeresque discard` | Force-remove worktree and branch without merging; drops the run artifact                                                                                                                                                              |
-| `dangeresque clean`   | Delete on-disk run result files for an issue (e.g. after closing). Files are gitignored — clean is a local-disk operation, not a git operation                                                                                       |
+| `dangeresque clean`   | Delete on-disk run result files for an issue (e.g. after closing). Files are gitignored — clean is a local-disk operation, not a git operation                                                                                        |
 | `dangeresque stats`   | Aggregate run evaluation artifacts (`--issue`, `--engine`, `--mode`, `--glossary`)                                                                                                                                                    |
 | `dangeresque init`    | Scaffold `.dangeresque/`, copy skills, merge hooks. Refreshes canonical prompts; `.local.md` overrides and divergent canonical prompts are preserved (with a warning). Creates `CLAUDE.md` with the DANGERESQUE.md pointer if missing |
 | `dangeresque brief`   | Print the self-contained workflow primer to stdout (same content as `.dangeresque/DANGERESQUE.md`, version-stamped). Useful for a quick read or piping into a new project before running init                                         |
@@ -243,32 +243,32 @@ dangeresque logs investigate-63 --raw | jq '.message.content[]?.text'  # Raw JSO
 
 ### .dangeresque/ directory
 
-| File                        | Purpose                                                          |
-| --------------------------- | ---------------------------------------------------------------- |
-| `worker-prompt.md`          | Canonical worker system prompt (overwritten by `init`)           |
-| `worker-prompt.local.md`    | Project overrides appended to the worker prompt (user-owned)     |
-| `review-prompt.md`          | Canonical review system prompt (overwritten by `init`)           |
-| `review-prompt.local.md`    | Project overrides appended to the review prompt (user-owned)     |
-| `AFK_WORKER_RULES.md`       | Canonical mode table, scope rules, status language (overwritten) |
-| `AFK_WORKER_RULES.local.md` | Project-specific additions read at runtime (user-owned)          |
-| `DANGERESQUE.md`            | Workflow primer pointed to from `CLAUDE.md` (overwritten)        |
-| `config.json`               | Optional overrides (model, tools, permissions)                   |
+| File                        | Purpose                                                                                                           |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `worker-prompt.md`          | Canonical worker system prompt (overwritten by `init`)                                                            |
+| `worker-prompt.local.md`    | Project overrides appended to the worker prompt (user-owned)                                                      |
+| `review-prompt.md`          | Canonical review system prompt (overwritten by `init`)                                                            |
+| `review-prompt.local.md`    | Project overrides appended to the review prompt (user-owned)                                                      |
+| `AFK_WORKER_RULES.md`       | Canonical mode table, scope rules, status language (overwritten)                                                  |
+| `AFK_WORKER_RULES.local.md` | Project-specific additions read at runtime (user-owned)                                                           |
+| `DANGERESQUE.md`            | Workflow primer pointed to from `CLAUDE.md` (overwritten)                                                         |
+| `config.json`               | Optional overrides (model, tools, permissions)                                                                    |
 | `runs/`                     | Run result files (one per run). **Gitignored** — mirrored across worktrees by the CLI, not carried by `git merge` |
 
 ### config.json
 
-| Key               | Type     | Default              | Description                                     |
-| ----------------- | -------- | -------------------- | ----------------------------------------------- |
-| `engine`          | string   | `"claude"`           | Execution engine (`claude` or `codex`)          |
-| `model`           | string   | `"claude-opus-4-7"`  | Model ID passed to the selected engine          |
-| `permissionMode`  | string   | `"acceptEdits"`      | Sandbox/permission mode for the selected engine |
-| `effort`          | string   | `"max"`              | Effort level: low, medium, high, xhigh, max     |
-| `headless`        | boolean  | `true`               | Run with `-p` flag (set false for interactive)  |
-| `allowedTools`    | string[] | _(see below)_        | Tools auto-approved without prompting           |
-| `disallowedTools` | string[] | _(see below)_        | Tools hard-blocked from use                     |
-| `workerPrompt`    | string   | `"worker-prompt.md"` | Worker system prompt filename                   |
-| `reviewPrompt`    | string   | `"review-prompt.md"` | Review system prompt filename                   |
-| `notifications`   | boolean  | `true`               | Enable macOS notification hooks                 |
+| Key               | Type     | Default              | Description                                                                                        |
+| ----------------- | -------- | -------------------- | -------------------------------------------------------------------------------------------------- |
+| `engine`          | string   | `"claude"`           | Execution engine (`claude` or `codex`)                                                             |
+| `model`           | string   | `"claude-opus-4-7"`  | Model ID passed to the selected engine                                                             |
+| `permissionMode`  | string   | `"acceptEdits"`      | Sandbox/permission mode for the selected engine                                                    |
+| `effort`          | string   | `"max"`              | Effort level: low, medium, high, xhigh, max                                                        |
+| `headless`        | boolean  | `true`               | Run with `-p` flag (set false for interactive)                                                     |
+| `allowedTools`    | string[] | _(see below)_        | Tools auto-approved without prompting                                                              |
+| `disallowedTools` | string[] | _(see below)_        | Tools hard-blocked from use                                                                        |
+| `workerPrompt`    | string   | `"worker-prompt.md"` | Worker system prompt filename                                                                      |
+| `reviewPrompt`    | string   | `"review-prompt.md"` | Review system prompt filename                                                                      |
+| `notifications`   | boolean  | `true`               | Enable macOS notification hooks                                                                    |
 | `verify`          | object   | _(empty commands)_   | Pre-review verification hook — see the [Verification](#verification-pre-review-hook) section below |
 
 ### Engines (claude vs codex)
@@ -320,26 +320,44 @@ Configure under `verify` in `.dangeresque/config.json`. See [`config-templates/c
     "enabled": true,
     "modes": ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
     "commands": [
-      { "name": "compile", "cmd": "yarn build", "on_failure": "block", "timeout_ms": 300000 },
-      { "name": "test",    "cmd": "yarn test",  "on_failure": "block", "timeout_ms": 600000 },
-      { "name": "lint",    "cmd": "yarn lint",  "on_failure": "warn",  "timeout_ms": 120000 }
+      {
+        "name": "compile",
+        "cmd": "yarn build",
+        "on_failure": "block",
+        "timeout_ms": 300000
+      },
+      {
+        "name": "test",
+        "cmd": "yarn test",
+        "on_failure": "block",
+        "timeout_ms": 600000
+      },
+      {
+        "name": "lint",
+        "cmd": "yarn lint",
+        "on_failure": "warn",
+        "timeout_ms": 120000
+      }
     ]
   }
 }
 ```
 
 Per-command policy:
+
 - `on_failure: "block"` — first failure short-circuits the run, skips the review pass, marks `result: "failure"` with `failure_categories: ["verification_failed"]`.
 - `on_failure: "warn"` — failure is recorded but the review still runs.
 
 The CLI runs verification commands directly — `allowedTools` does not constrain them, since the engine never sees them.
 
 Where output lands:
+
 - **Artifact JSON** (`<timestamp>-<MODE>.json`) — `verification: VerificationResult[]` with name, cmd, exit code, duration, stdout/stderr excerpts, `timed_out`, and `truncated` flags.
 - **Artifact Markdown** — a `Verify: …` line in the `<!-- SUMMARY -->` block, plus a `## Verification (pre-review, captured automatically)` body section with a one-line PASS/FAIL/TIMEOUT per command and the trailing stderr excerpt for any non-zero exit.
 - **Console** — per-command pass/warn/block lines while the hook runs.
 
 Operator escape hatches:
+
 - `dangeresque run --issue <N> --no-verify` — skip for one run.
 - `verify.enabled: false` in config — disable globally.
 - Drop the offending command from `commands`.
