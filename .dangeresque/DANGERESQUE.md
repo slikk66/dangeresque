@@ -5,19 +5,13 @@ worktrees with a human-gated merge. This brief is the self-contained workflow
 primer — an LLM or human reading only this document can drive dangeresque
 correctly end-to-end.
 
-## Prime Directives
-
-### Quality Gates
-
-- **INVESTIGATE-ALWAYS** — Every GitHub Issue gets an INVESTIGATE run before IMPLEMENT. No exceptions, no "trivial one-liner" shortcuts.
-
 ### Honest Scoping
 
 - Stay inside the GitHub Issue. Do not widen scope.
 - If blocked, stop and report. Do not invent requirements.
 - Never say "fixed" or "done". Use allowed status language from `.dangeresque/AFK_WORKER_RULES.md`.
 
-## The Loop
+## The Standard Loop
 
 ```
 INVESTIGATE → read → discuss → stage → merge → push →
@@ -25,9 +19,10 @@ IMPLEMENT   → read → discuss → merge → push → (VERIFY)
 ```
 
 **Every issue starts with INVESTIGATE.** Even a "trivial one-liner"
-gets an INVESTIGATE first (unless you specifically get sign-off from the user for edge cases) — it independently verifies the hypothesis, surfaces
+gets an INVESTIGATE first — it independently verifies the hypothesis, surfaces
 side-effects you missed, and lands a research artifact that the IMPLEMENT can
-cite. Skipping INVESTIGATE is the most common way a run goes wrong.
+cite. Skipping INVESTIGATE is the most common way a run goes wrong. You may only skip INVESTIGATE
+after getting sign-off by the user for an edge case.
 
 ## The One Hard Rule
 
@@ -43,29 +38,23 @@ Use this template (the `dangeresque-create-issue` skill produces the same shape)
 
 ```markdown
 ## Mode
-
 <INVESTIGATE | IMPLEMENT | VERIFY | REFACTOR | TEST | custom>
 
 ## Goal
-
 <what the worker should accomplish — one or two sentences>
 
 ## Hypothesis
-
 <root cause guess, or "None — open investigation">
 
 ## Likely Files
-
 - `path/to/file.ts` — reason
 - `path/to/other.ts` — reason
 
 ## Verification Criteria
-
 - [ ] criterion 1
 - [ ] criterion 2
 
 ## Severity
-
 <blocking | degraded | cosmetic>
 ```
 
@@ -126,13 +115,13 @@ dangeresque status                         # list active worktrees
 
 ## Modes (one-liners; full semantics in `.dangeresque/AFK_WORKER_RULES.md`)
 
-| Mode        | Purpose                                      |
-| ----------- | -------------------------------------------- |
+| Mode        | Purpose                               |
+|-------------|---------------------------------------|
 | INVESTIGATE | Find root cause, trace flow; no code changes |
-| IMPLEMENT   | Bounded code change + tests                  |
-| VERIFY      | Prove an existing change works               |
-| REFACTOR    | Restructure without behavior change          |
-| TEST        | Write tests for existing behavior            |
+| IMPLEMENT   | Bounded code change + tests           |
+| VERIFY      | Prove an existing change works        |
+| REFACTOR    | Restructure without behavior change   |
+| TEST        | Write tests for existing behavior     |
 
 ## What NOT to Do
 
@@ -145,6 +134,14 @@ dangeresque status                         # list active worktrees
   widen scope cause review rejections.
 - **Do not edit `.dangeresque/*.md` or `.gitignore` from inside a worker run.**
   Those are human-managed on main.
+- **Do not edit canonical `.dangeresque/*.md` files directly on main.** The
+  canonical `worker-prompt.md` / `review-prompt.md` / `AFK_WORKER_RULES.md`
+  are overwritten on `dangeresque init`. Project-specific overrides belong
+  in the `.local.md` companion (e.g. `worker-prompt.local.md`), which is
+  never overwritten.
+- **Do not edit `.dangeresque/DANGERESQUE.md`.** It's regenerated from
+  dangeresque's built-in brief on every `init`. Project-specific rules
+  belong in your `CLAUDE.md`.
 - **Do not re-use a worktree name.** Worktree creation hard-fails if the path
   exists.
 - **Do not read every prior run.** Read only the newest file under

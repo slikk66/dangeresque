@@ -10,7 +10,7 @@ export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
 export const POINTER_ANCHOR = "<!-- DANGERESQUE-START -->";
 export const POINTER_BLOCK = `<!-- DANGERESQUE-START -->
-**The user needs you to read \`.dangeresque/DANGERESQUE.md\` before doing anything else.** It defines this project's workflow rules. Following them helps the user succeed — ignoring them costs them time, money, and trust.
+**\`.dangeresque/DANGERESQUE.md\`** is the primer for the \`dangeresque\` CLI — AFK AI workers in isolated worktrees, human-gated merges. Phases: INVESTIGATE → stage → IMPLEMENT, with \`dangeresque merge\` + push to origin between each. **One Hard Rule:** push \`main\` to origin after every merge, before the next dispatch — workers branch from \`origin/main\`, so a stale origin causes phantom regressions. Read it before running \`dangeresque\` commands or dispatching workers.
 <!-- DANGERESQUE-END -->
 `;
 
