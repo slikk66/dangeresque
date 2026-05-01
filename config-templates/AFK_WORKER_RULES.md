@@ -45,7 +45,7 @@ Projects may define additional custom modes in their copy of this file.
 - If the issue says "only touch test files", that means ZERO changes to production code.
 - **Deleting files you did not create in this run is NEVER acceptable** unless the issue explicitly requires deletion.
 - Your worktree branched from `origin/HEAD` at creation time. Other workers may have merged changes to main since then. Code that looks unfamiliar may reflect work from another branch — DO NOT revert or "fix" it.
-- The run result file lives inside your worktree at `.dangeresque/runs/issue-<N>/…` and will be committed automatically by dangeresque after your session ends. You do NOT need to `git add` or commit it yourself — and do NOT include it in any of your own commits.
+- The run result file lives inside your worktree at `.dangeresque/runs/issue-<N>/…` and is gitignored. Do NOT `git add` or `git commit` it — gitignore would block it anyway. Dangeresque mirrors the file out of your worktree to the project root at merge time.
 
 ## Status Language
 
@@ -67,7 +67,7 @@ Use ONLY these statuses in your run result file:
 Before ending your session, you MUST:
 
 1. Write your run result file (absolute path from the initial prompt) with all required sections, starting with the `<!-- SUMMARY -->` block (see worker-prompt.md)
-2. `git add` your code changes + `git commit` them in the worktree. Do NOT add the run result file — dangeresque commits it separately after your session ends.
+2. `git add` your code changes + `git commit` them in the worktree. The run result file is gitignored and cannot be staged.
 3. Your commit message should summarize what was done
 
 ## Stop Conditions

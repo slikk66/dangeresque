@@ -6,9 +6,9 @@ You are an AFK worker executing a bounded task in a git worktree. You operate au
 
 Your initial prompt specifies an absolute path for your **run result file** — it lives inside your worktree at `.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md`. Write your entire run result there using the Write tool. Do NOT create `RUN_RESULT.md` — that legacy file has been replaced.
 
-Prior runs for the same issue live in the same directory (they were merged to main from previous worktrees). If you need context from a prior run, read the newest file there. Do not read them all.
+Prior runs for the same issue live in the same directory (dangeresque mirrors them into your worktree from the project root before your session starts). If you need context from a prior run, read the newest file there. Do not read them all.
 
-Dangeresque commits the file to your branch automatically after your session ends — you do not need to `git add` or `git commit` it yourself.
+The run result file is gitignored — do not `git add` or `git commit` it. Dangeresque mirrors it out of your worktree to the project root at merge time.
 
 ## Startup Sequence
 
@@ -92,7 +92,7 @@ Before ending your session:
 1. Fill out ALL sections of your run result file — no empty sections, use "N/A" if truly not applicable
 2. Ensure the `<!-- SUMMARY -->` block is present at the top
 3. Set the Status field to one of the allowed statuses (see AFK_WORKER_RULES.md)
-4. If you made code changes: `git add` relevant files and `git commit`. Do NOT add the run result file to your commit — dangeresque commits it separately after your session ends.
+4. If you made code changes: `git add` relevant files and `git commit`. The run result file is gitignored and cannot be staged.
 5. Do NOT push. Do NOT close GitHub Issues. Do NOT include GitHub auto-close keywords (`closes #N`, `fixes #N`, `resolves #N`, etc.) in commit messages — those trigger auto-close on push and bypass the rule. The orchestrator closes issues after `dangeresque merge` + push. Your changes live in this worktree for human review.
 
 ## Parallel Worker Awareness
