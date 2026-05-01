@@ -49,6 +49,7 @@
 ## What NOT to Change Without an Explicit Issue
 
 - `.dangeresque/` prompt templates in `config-templates/` (they're user-facing defaults).
+- `.dangeresque/*.md` in this repo are install artifacts. Sources: `src/brief.ts` (BRIEF_MARKDOWN) → `DANGERESQUE.md`; `config-templates/*.md` → the rest. Edit sources, not installed copies.
 - The artifact JSON schema (`src/artifact.ts` `RunArtifact` interface) — additive changes require bumping `ARTIFACT_SCHEMA_VERSION`.
 - The CLI command surface or flag names (breaking change to users).
 - `package.json` `bin` / `main` / `types` entries.
