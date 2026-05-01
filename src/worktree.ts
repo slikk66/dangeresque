@@ -1053,8 +1053,12 @@ export function runPreflightChecks(
   );
   for (const wt of sameIssue) {
     failures.push(`issue ${issueNumber} already has a worktree: ${wt.branch}`);
-    remediations.push(`  dangeresque merge ${wt.branch}`);
-    remediations.push(`  dangeresque discard ${wt.branch}`);
+    remediations.push(
+      `  dangeresque merge ${wt.branch}     (keeps the run report in .dangeresque/runs/)`,
+    );
+    remediations.push(
+      `  dangeresque discard ${wt.branch}   (deletes the run report along with the worktree)`,
+    );
   }
 
   // Gate 2: local default branch ahead of origin/HEAD. Mirrors the
