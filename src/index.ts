@@ -60,3 +60,18 @@ export {
   type StatsSummary,
   type FormatExtras,
 } from "./stats.js";
+
+export {
+  runVerification,
+  shouldRunVerify,
+  appendVerifySummaryLine,
+  appendVerifyBodySection,
+  buildVerifySummaryLine,
+  buildVerifyBodySection,
+  type VerifyConfig,
+  type VerifyCommand,
+  type VerifyFailurePolicy,
+  type VerificationResult,
+  type VerificationOutcome,
+  type RunVerificationOptions,
+} from "./verify.js";

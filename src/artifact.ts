@@ -3,8 +3,9 @@ import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { relative, basename, join } from "node:path";
 import { execSync } from "node:child_process";
 import type { Engine } from "./config.js";
+import type { VerificationResult } from "./verify.js";
 
-export const ARTIFACT_SCHEMA_VERSION = "3";
+export const ARTIFACT_SCHEMA_VERSION = "4";
 
 export type ResultClassification = "success" | "partial_success" | "failure";
 
@@ -22,6 +23,7 @@ export type FailureCategory =
   | "rebase_conflict"
   | "scope_violation"
   | "reviewer_rejected"
+  | "verification_failed"
   | "unknown";
 
 export interface LifecycleEvent {
@@ -65,6 +67,7 @@ export interface RunArtifact {
   failure_categories: FailureCategory[];
   scope_violations: string[];
   files_changed_count: number;
+  verification: VerificationResult[] | null;
   summary: string;
   artifact_paths: {
     md: string;
@@ -102,6 +105,7 @@ export class ArtifactBuilder {
   private filesChangedCount = 0;
   private reviewSkipped = false;
   private reviewSkipReason?: string;
+  private verification: VerificationResult[] | null = null;
 
   constructor(init: BuilderInit) {
     this.init = init;
@@ -142,6 +146,10 @@ export class ArtifactBuilder {
     this.filesChangedCount = n;
   }
 
+  setVerification(results: VerificationResult[] | null): void {
+    this.verification = results === null ? null : [...results];
+  }
+
   build(): RunArtifact {
     const endedAtMs = Date.now();
     const archivePath = this.init.archivePath;
@@ -174,6 +182,8 @@ export class ArtifactBuilder {
       workerExitCode: worker.exit_code,
     });
 
+    const verificationBlocked = isVerificationBlocked(this.verification);
+
     const failureCategories = deriveFailureCategories({
       workerExitCode: worker.exit_code,
       reviewExitCode: review && !review.skipped ? review.exit_code : undefined,
@@ -181,6 +191,7 @@ export class ArtifactBuilder {
       scopeViolations: this.scopeViolations,
       reviewerVerdict,
       events: this.events,
+      verificationBlocked,
     });
 
     const result = deriveResult({
@@ -189,6 +200,7 @@ export class ArtifactBuilder {
       archiveExists: existsSync(archivePath),
       reviewerVerdict,
       scopeViolations: this.scopeViolations,
+      verificationBlocked,
     });
 
     const summary = buildSummaryLine({
@@ -236,6 +248,7 @@ export class ArtifactBuilder {
       failure_categories: failureCategories,
       scope_violations: [...this.scopeViolations],
       files_changed_count: this.filesChangedCount,
+      verification: this.verification === null ? null : [...this.verification],
       summary,
       artifact_paths: {
         md: relative(this.init.projectRoot, archivePath),
@@ -295,6 +308,7 @@ function deriveFailureCategories(opts: {
   scopeViolations: string[];
   reviewerVerdict: ReviewerVerdict;
   events: LifecycleEvent[];
+  verificationBlocked: boolean;
 }): FailureCategory[] {
   const categories: FailureCategory[] = [];
   if (opts.workerExitCode !== 0) categories.push("worker_nonzero_exit");
@@ -302,6 +316,7 @@ function deriveFailureCategories(opts: {
     categories.push("review_nonzero_exit");
   }
   if (!opts.archiveExists) categories.push("no_run_artifact");
+  if (opts.verificationBlocked) categories.push("verification_failed");
   // scope_violation only contributes when scope_violations actually caused a downgrade:
   // worker succeeded, archive exists, reviewer did NOT run, and scope was flagged.
   // When the reviewer ran, its verdict is the authority on scope (issue #27).
@@ -318,15 +333,22 @@ function deriveFailureCategories(opts: {
   return categories;
 }
 
+function isVerificationBlocked(results: VerificationResult[] | null): boolean {
+  if (results === null) return false;
+  return results.some((r) => r.exit_code !== 0 && r.on_failure === "block");
+}
+
 function deriveResult(opts: {
   workerExitCode: number;
   review: ReviewPhase | null;
   archiveExists: boolean;
   reviewerVerdict: ReviewerVerdict;
   scopeViolations: string[];
+  verificationBlocked: boolean;
 }): ResultClassification {
   if (opts.workerExitCode !== 0) return "failure";
   if (!opts.archiveExists) return "failure";
+  if (opts.verificationBlocked) return "failure";
 
   const reviewRan = opts.review !== null && !opts.review.skipped;
 

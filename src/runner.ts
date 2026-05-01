@@ -10,6 +10,7 @@ import {
   projectHash,
 } from "./config.js";
 import { writePidFile, removePidFile, readPidFile, resolveDiffBase, mirrorIssueRuns, parseSummaryBlock } from "./worktree.js";
+import type { VerificationOutcome } from "./verify.js";
 
 // --- engine-process tracking ---
 //
@@ -406,7 +407,8 @@ export function buildClaudeWorkerArgs(
 export function buildClaudeReviewArgs(
   opts: RunOptions,
   worktreeName: string,
-  archivePath: string
+  archivePath: string,
+  verification?: VerificationOutcome | null,
 ): { args: string[]; reviewSessionId: string; prompt: string } {
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
@@ -456,7 +458,7 @@ export function buildClaudeReviewArgs(
     diffStat = "(could not capture diff stat)";
   }
 
-  const prompt = buildReviewPrompt(opts, archivePath, diffStat, diffBase);
+  const prompt = buildReviewPrompt(opts, archivePath, diffStat, diffBase, verification);
 
   // Non-headless (interactive) claude has no way to pre-pipe the user prompt —
   // stdin is the operator's TTY. Fall back to positional argv (argv leak is
@@ -466,7 +468,13 @@ export function buildClaudeReviewArgs(
   return { args, reviewSessionId, prompt };
 }
 
-function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: string, diffBase: string): string {
+function buildReviewPrompt(
+  opts: RunOptions,
+  archivePath: string,
+  diffStat: string,
+  diffBase: string,
+  verification?: VerificationOutcome | null,
+): string {
   const { issueData } = opts;
   const header =
     `You are an adversarial reviewer of an AFK worker run.\n` +
@@ -478,6 +486,7 @@ function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: stri
   return (
     `${header}\n\n` +
     `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
+    formatVerificationSection(verification) +
     `## Run Artifact\n\n` +
     `The worker's run result lives in the worktree at: ${archivePath}\n` +
     `(Run artifacts are stored locally and gitignored — they are NOT in the diff.) ` +
@@ -488,6 +497,39 @@ function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: stri
     `Any file-count discrepancy is an automatic FAIL.\n\n` +
     `Follow review-prompt.md.`
   );
+}
+
+function formatVerificationSection(verification: VerificationOutcome | null | undefined): string {
+  if (verification === undefined) {
+    return "## Verification (pre-review, captured automatically)\n\nVerification not run this session.\n\n";
+  }
+  if (verification === null || verification.results.length === 0) {
+    return "## Verification (pre-review, captured automatically)\n\nVerification not run this session.\n\n";
+  }
+
+  const lines: string[] = ["## Verification (pre-review, captured automatically)", "", "The CLI ran the project's configured verification commands in the worktree before dispatching review:", "", "```"];
+  for (const r of verification.results) {
+    const status = r.exit_code === 0 ? "PASS" : r.timed_out ? "TIMEOUT" : "FAIL";
+    const dur = r.duration_ms < 1000 ? `${r.duration_ms}ms` : `${(r.duration_ms / 1000).toFixed(1)}s`;
+    const policy = r.on_failure === "block" ? "[block]" : "[warn]";
+    lines.push(`  ${r.name.padEnd(12)} ${policy} ${r.cmd.padEnd(40)} ${status} (exit=${r.exit_code}, ${dur})`);
+  }
+  lines.push("```", "");
+  lines.push(
+    "You do NOT need to re-run these commands. Treat these results as ground truth: " +
+      "if the worker's claims contradict them (e.g. claims \"tests pass\" but verification " +
+      "shows test=FAIL), that is grounds for REJECT. The artifact's own `## Verification` " +
+      "section has full stderr excerpts for any failure.",
+  );
+  if (verification.blocked) {
+    lines.push("");
+    lines.push(
+      "**Note:** A `block`-policy command failed; the run is already classified as failure. " +
+        "Your review is still useful for diagnosing scope/regression issues, but ACCEPT is not appropriate.",
+    );
+  }
+  lines.push("");
+  return lines.join("\n") + "\n";
 }
 
 export function buildCodexWorkerArgs(
@@ -519,7 +561,8 @@ export function buildCodexWorkerArgs(
 export function buildCodexReviewArgs(
   opts: RunOptions,
   worktreeName: string,
-  archivePath: string
+  archivePath: string,
+  verification?: VerificationOutcome | null,
 ): { args: string[]; prompt: string } {
   const diffBase = resolveDiffBase(opts.projectRoot);
   let diffStat = "";
@@ -544,7 +587,7 @@ export function buildCodexReviewArgs(
   const prompt =
     reviewPromptContent +
     `\n\n` +
-    buildReviewPrompt(opts, archivePath, diffStat, diffBase) +
+    buildReviewPrompt(opts, archivePath, diffStat, diffBase, verification) +
     `\n\nEffort preference: ${reviewEffort} (map this to response depth and planning thoroughness).`;
 
   const args = [
@@ -783,14 +826,15 @@ export function runReview(
   opts: RunOptions,
   worktreeName: string,
   archivePath: string,
-  workerSessionId?: string
+  workerSessionId?: string,
+  verification?: VerificationOutcome | null,
 ): Promise<RunResult> {
   const branch = `worktree-${worktreeName}`;
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
   const hash = projectHash(worktreePath);
 
   if (opts.config.engine === "codex") {
-    const { args, prompt } = buildCodexReviewArgs(opts, worktreeName, archivePath);
+    const { args, prompt } = buildCodexReviewArgs(opts, worktreeName, archivePath, verification);
     const logPath = createCodexLogPath(opts.projectRoot, worktreeName, "review");
 
     return new Promise((resolve, reject) => {
@@ -844,7 +888,7 @@ export function runReview(
     });
   }
 
-  const { args, reviewSessionId, prompt } = buildClaudeReviewArgs(opts, worktreeName, archivePath);
+  const { args, reviewSessionId, prompt } = buildClaudeReviewArgs(opts, worktreeName, archivePath, verification);
   const useStdin = opts.config.headless;
 
   return new Promise((resolve, reject) => {

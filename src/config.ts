@@ -2,6 +2,13 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
+import {
+  DEFAULT_VERIFY_TIMEOUT_MS,
+  DEFAULT_VERIFY_MODES,
+  type VerifyConfig,
+  type VerifyCommand,
+  type VerifyFailurePolicy,
+} from "./verify.js";
 
 export const CONFIG_DIR = ".dangeresque";
 export const RUNS_DIR = "runs";
@@ -68,6 +75,8 @@ export interface DangeresqueConfig {
   codexModel?: string;
   /** Review-pass model when engine is codex (falls back to `codexModel`, then `reviewModel`, then `model`) */
   codexReviewModel?: string;
+  /** Pre-review verification commands (compile/test/lint) run in the worktree. */
+  verify?: VerifyConfig;
 }
 
 const DEFAULT_CONFIG: DangeresqueConfig = {
@@ -105,10 +114,16 @@ const DEFAULT_CONFIG: DangeresqueConfig = {
   notifications: true,
 };
 
+export const DEFAULT_VERIFY_CONFIG: VerifyConfig = {
+  enabled: true,
+  modes: [...DEFAULT_VERIFY_MODES],
+  commands: [],
+};
+
 export function loadConfig(projectRoot: string): DangeresqueConfig {
   const configPath = join(projectRoot, CONFIG_DIR, "config.json");
   if (!existsSync(configPath)) {
-    return { ...DEFAULT_CONFIG };
+    return { ...DEFAULT_CONFIG, verify: { ...DEFAULT_VERIFY_CONFIG } };
   }
   const raw = JSON.parse(readFileSync(configPath, "utf-8"));
   const merged: DangeresqueConfig = { ...DEFAULT_CONFIG, ...raw };
@@ -116,7 +131,39 @@ export function loadConfig(projectRoot: string): DangeresqueConfig {
   // is purely additions. Empty/missing user array leaves defaults untouched.
   merged.allowedTools = mergeStringList(DEFAULT_CONFIG.allowedTools, raw.allowedTools);
   merged.disallowedTools = mergeStringList(DEFAULT_CONFIG.disallowedTools, raw.disallowedTools);
+  merged.verify = normalizeVerifyConfig(raw.verify);
   return merged;
+}
+
+function normalizeVerifyConfig(raw: unknown): VerifyConfig {
+  if (!raw || typeof raw !== "object") {
+    return { ...DEFAULT_VERIFY_CONFIG };
+  }
+  const obj = raw as Record<string, unknown>;
+  const enabled = typeof obj.enabled === "boolean" ? obj.enabled : DEFAULT_VERIFY_CONFIG.enabled;
+  const modes = Array.isArray(obj.modes) && obj.modes.every((m) => typeof m === "string")
+    ? (obj.modes as string[]).map((m) => m.toUpperCase())
+    : [...DEFAULT_VERIFY_CONFIG.modes];
+  const commandsRaw = Array.isArray(obj.commands) ? obj.commands : [];
+  const commands: VerifyCommand[] = [];
+  for (const c of commandsRaw) {
+    if (!c || typeof c !== "object") continue;
+    const cObj = c as Record<string, unknown>;
+    if (typeof cObj.name !== "string" || typeof cObj.cmd !== "string") continue;
+    const policy: VerifyFailurePolicy =
+      cObj.on_failure === "warn" ? "warn" : "block";
+    const timeout =
+      typeof cObj.timeout_ms === "number" && cObj.timeout_ms > 0
+        ? cObj.timeout_ms
+        : DEFAULT_VERIFY_TIMEOUT_MS;
+    commands.push({
+      name: cObj.name,
+      cmd: cObj.cmd,
+      on_failure: policy,
+      timeout_ms: timeout,
+    });
+  }
+  return { enabled, modes, commands };
 }
 
 function mergeStringList(defaults: string[], userValue: unknown): string[] {

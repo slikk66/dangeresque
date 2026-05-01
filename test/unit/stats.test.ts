@@ -38,6 +38,7 @@ function mkArtifact(overrides: Partial<RunArtifact> = {}): RunArtifact {
     failure_categories: [],
     scope_violations: [],
     files_changed_count: 0,
+    verification: null,
     summary: "",
     artifact_paths: { md: "", json: "" },
     lifecycle_events: [],
@@ -676,23 +677,50 @@ test("cli stats: empty runs dir → 'No run artifacts found', exit 0", () => {
 });
 
 test("cli stats: real repo prints non-zero counts and all sections", () => {
-  const cliPath = resolve("dist", "cli.js");
-  const out = execFileSync(process.execPath, [cliPath, "stats"], {
-    encoding: "utf-8",
-  });
-  assert.match(out, /Run Evaluation Stats/);
-  assert.match(out, /Results:/);
-  assert.match(out, /Reviewer verdicts:/);
-  assert.match(out, /By engine:/);
-  assert.match(out, /By mode \(success rate\):/);
-  assert.match(out, /By model:/);
-  assert.match(out, /Failure categories:/);
-  assert.match(out, /Durations \(ms\):/);
-  const totalMatch = out.match(/Total artifacts: (\d+)/);
-  assert.ok(totalMatch, "missing Total artifacts line");
-  assert.ok(parseInt(totalMatch![1], 10) > 0, "expected non-zero artifact count");
-  for (const line of out.split("\n")) {
-    assert.ok(line.length <= 80, `line over 80 cols: "${line}" (${line.length})`);
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-stats-"));
+  try {
+    const issueDir = join(tmp, ".dangeresque", "runs", "issue-1");
+    mkdirSync(issueDir, { recursive: true });
+    writeFileSync(
+      join(issueDir, "a.json"),
+      JSON.stringify(
+        mkArtifact({ issue_number: 1, mode: "INVESTIGATE", result: "success", reviewer_verdict: "skipped" }),
+      ),
+    );
+    writeFileSync(
+      join(issueDir, "b.json"),
+      JSON.stringify(
+        mkArtifact({
+          issue_number: 1,
+          mode: "IMPLEMENT",
+          result: "failure",
+          reviewer_verdict: "reject",
+          failure_categories: ["reviewer_rejected"],
+        }),
+      ),
+    );
+
+    const cliPath = resolve("dist", "cli.js");
+    const out = execFileSync(process.execPath, [cliPath, "stats"], {
+      cwd: tmp,
+      encoding: "utf-8",
+    });
+    assert.match(out, /Run Evaluation Stats/);
+    assert.match(out, /Results:/);
+    assert.match(out, /Reviewer verdicts:/);
+    assert.match(out, /By engine:/);
+    assert.match(out, /By mode \(success rate\):/);
+    assert.match(out, /By model:/);
+    assert.match(out, /Failure categories:/);
+    assert.match(out, /Durations \(ms\):/);
+    const totalMatch = out.match(/Total artifacts: (\d+)/);
+    assert.ok(totalMatch, "missing Total artifacts line");
+    assert.ok(parseInt(totalMatch![1], 10) > 0, "expected non-zero artifact count");
+    for (const line of out.split("\n")) {
+      assert.ok(line.length <= 80, `line over 80 cols: "${line}" (${line.length})`);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
 
@@ -709,20 +737,41 @@ test("cli stats: --engine codex filter is accepted and renders all sections", ()
 });
 
 test("cli stats: --issue + --mode compose and shrink the result set", () => {
-  const cliPath = resolve("dist", "cli.js");
-  const full = execFileSync(process.execPath, [cliPath, "stats"], {
-    encoding: "utf-8",
-  });
-  const filtered = execFileSync(
-    process.execPath,
-    [cliPath, "stats", "--mode", "INVESTIGATE"],
-    { encoding: "utf-8" },
-  );
-  assert.match(filtered, /Filters: --mode INVESTIGATE/);
-  const fullTotal = parseInt(full.match(/Total artifacts: (\d+)/)![1], 10);
-  const filtTotal = parseInt(filtered.match(/Total artifacts: (\d+)/)![1], 10);
-  assert.ok(filtTotal > 0, "expected at least one INVESTIGATE artifact");
-  assert.ok(filtTotal < fullTotal, "expected filtered total < unfiltered");
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-stats-"));
+  try {
+    const issueDir = join(tmp, ".dangeresque", "runs", "issue-1");
+    mkdirSync(issueDir, { recursive: true });
+    writeFileSync(
+      join(issueDir, "a.json"),
+      JSON.stringify(mkArtifact({ issue_number: 1, mode: "INVESTIGATE" })),
+    );
+    writeFileSync(
+      join(issueDir, "b.json"),
+      JSON.stringify(mkArtifact({ issue_number: 1, mode: "IMPLEMENT" })),
+    );
+    writeFileSync(
+      join(issueDir, "c.json"),
+      JSON.stringify(mkArtifact({ issue_number: 1, mode: "VERIFY" })),
+    );
+
+    const cliPath = resolve("dist", "cli.js");
+    const full = execFileSync(process.execPath, [cliPath, "stats"], {
+      cwd: tmp,
+      encoding: "utf-8",
+    });
+    const filtered = execFileSync(
+      process.execPath,
+      [cliPath, "stats", "--mode", "INVESTIGATE"],
+      { cwd: tmp, encoding: "utf-8" },
+    );
+    assert.match(filtered, /Filters: --mode INVESTIGATE/);
+    const fullTotal = parseInt(full.match(/Total artifacts: (\d+)/)![1], 10);
+    const filtTotal = parseInt(filtered.match(/Total artifacts: (\d+)/)![1], 10);
+    assert.ok(filtTotal > 0, "expected at least one INVESTIGATE artifact");
+    assert.ok(filtTotal < fullTotal, "expected filtered total < unfiltered");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("cli stats: --issue with no match shows zero-counter shape + note", () => {

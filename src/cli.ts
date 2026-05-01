@@ -14,6 +14,7 @@ import {
   jsonPathForArchive,
 } from "./artifact.js";
 import { normalizeSummaryFileCount } from "./summary.js";
+import { runVerification, shouldRunVerify, type VerificationOutcome } from "./verify.js";
 import {
   listWorktrees,
   mergeWorktree,
@@ -85,6 +86,7 @@ Run options:
                     [INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, or custom]
   --name <name>     Custom worktree name (default: dangeresque-<timestamp>)
   --no-review       Skip the review pass
+  --no-verify       Skip pre-review verification commands (compile/test/lint)
   --interactive     Run interactively (default: headless with -p)
   --force           Bypass pre-flight gates (same-issue worktree, stale main)
   --model <model>   Override model (default: ${engine === "codex" ? "gpt-5.4" : "claude-opus-4-7"})
@@ -131,6 +133,8 @@ Results:
 Failure categories:
   scope_violation
     Changed files were outside the issue body or selected issue comments, excluding .dangeresque/runs/. This category is emitted only when those scope violations caused a downgrade because review did not run; when review ran, the reviewer verdict controls the result.
+  verification_failed
+    A pre-review verification command configured with on_failure="block" exited non-zero (or timed out). The review pass is skipped when this happens because reviewing un-compiling or test-failing code wastes effort. Inspect the run artifact's "## Verification" section for the failing command and its captured stderr.
 
 Reviewer verdicts:
   accept
@@ -229,6 +233,7 @@ async function cmdRun(args: string[]) {
   // Parse CLI overrides
   let name: string | undefined;
   let review = true;
+  let verifyEnabled = true;
   let issueNumber: number | undefined;
   let issueFixturePath: string | undefined;
   let mode: string | undefined;
@@ -240,6 +245,8 @@ async function cmdRun(args: string[]) {
       name = args[++i];
     } else if (args[i] === "--no-review") {
       review = false;
+    } else if (args[i] === "--no-verify") {
+      verifyEnabled = false;
     } else if (args[i] === "--interactive" || args[i] === "--no-tmux") {
       config.headless = false;
     } else if (args[i] === "--force") {
@@ -545,10 +552,51 @@ async function cmdRun(args: string[]) {
     });
   }
 
+  // Pre-review verification: run configured compile/test/lint commands in the
+  // worktree so the reviewer (text-only) gets a ground-truth signal for "build
+  // passes" / "tests pass" claims. Block-style failures skip the review pass
+  // entirely — reviewing un-compiling code wastes effort. Warn-style failures
+  // record into the artifact and are surfaced to the reviewer's prompt.
+  let verificationOutcome: VerificationOutcome | null = null;
+  if (verifyEnabled && config.verify && shouldRunVerify(effectiveMode, config.verify)) {
+    const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
+    console.log(`\nRunning ${config.verify.commands.length} verification command(s)…`);
+    verificationOutcome = runVerification({
+      worktreePath,
+      archivePath: workerResult.archivePath,
+      config: config.verify,
+      builder,
+    });
+    builder.setVerification(verificationOutcome.results);
+  } else if (!verifyEnabled) {
+    console.log(`\nSkipping verification (--no-verify)`);
+    builder.recordEvent("verification_skipped", { reason: "--no-verify" });
+  } else if (config.verify && config.verify.commands.length === 0) {
+    builder.recordEvent("verification_skipped", { reason: "no_commands_configured" });
+  } else if (config.verify && !config.verify.enabled) {
+    builder.recordEvent("verification_skipped", { reason: "disabled_in_config" });
+  } else if (config.verify && !config.verify.modes.includes(effectiveMode)) {
+    builder.recordEvent("verification_skipped", { reason: `mode_not_in_list:${effectiveMode}` });
+  }
+
   // Review pass — skip for modes that don't produce code changes
   const SKIP_REVIEW_MODES = new Set(["INVESTIGATE", "VERIFY"]);
   let reviewExitCode: number | undefined;
-  if (review && SKIP_REVIEW_MODES.has(effectiveMode)) {
+  if (verificationOutcome?.blocked) {
+    const blockedBy = verificationOutcome.blockedBy ?? "unknown";
+    const banner = "!".repeat(60);
+    console.error(`\n${banner}`);
+    console.error(`!!  DANGERESQUE RUN FAILED — verification blocked`);
+    console.error(`!!  Failing command: ${blockedBy}`);
+    console.error(`!!  Worktree: .claude/worktrees/${workerResult.worktreeName}/`);
+    console.error(`!!  Branch:   ${workerResult.branch}`);
+    console.error(`!!  Artifact: ${workerResult.archivePath}`);
+    console.error(`!!`);
+    console.error(`!!  Inspect: dangeresque results ${workerResult.branch}`);
+    console.error(`!!  Cleanup: dangeresque discard ${workerResult.branch}`);
+    console.error(`${banner}\n`);
+    builder.markReviewSkipped(`verification_failed:${blockedBy}`);
+  } else if (review && SKIP_REVIEW_MODES.has(effectiveMode)) {
     console.log(`\nSkipping review (no code changes in ${effectiveMode} mode)`);
     builder.markReviewSkipped(`mode=${effectiveMode}`);
   } else if (review) {
@@ -558,6 +606,7 @@ async function cmdRun(args: string[]) {
       workerResult.worktreeName,
       workerResult.archivePath,
       workerResult.workerSessionId,
+      verificationOutcome,
     );
     const reviewEndedAtMs = Date.now();
     reviewExitCode = reviewResult.exitCode;
@@ -616,6 +665,10 @@ async function cmdRun(args: string[]) {
   console.log(`  Merge:   dangeresque merge ${workerResult.branch}`);
   console.log(`  Discard: dangeresque discard ${workerResult.branch}`);
   console.log("=".repeat(60));
+
+  if (verificationOutcome?.blocked) {
+    process.exit(1);
+  }
 }
 
 function finalizeArtifact(builder: ArtifactBuilder, projectRoot: string) {

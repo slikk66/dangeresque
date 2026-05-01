@@ -1,0 +1,28 @@
+{
+  "_doc": "Example .dangeresque/config.json — copy to config.json and edit. All fields are optional; sensible defaults apply when omitted.",
+
+  "engine": "claude",
+  "model": "claude-opus-4-7",
+  "effort": "max",
+
+  "_doc_verify": "Pre-review verification: dangeresque runs each command in the worktree between the worker exit (post-rebase, post-file-count-normalize) and the review pass. Catches drift between worker prose claims (\"yarn build passes\") and code reality. Empty `commands` array (default) means no-op; opt in by listing commands. The CLI runs them, NOT the engine — `allowedTools` does not constrain them.",
+  "verify": {
+    "enabled": true,
+    "_doc_modes": "Modes that trigger verification. INVESTIGATE is excluded by default since it produces no code changes.",
+    "modes": ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
+    "_doc_commands": "Per-command policy: name (unique id used in artifact + SUMMARY), cmd (shell string), on_failure ('block' skips review and fails the run; 'warn' continues), timeout_ms (defaults to 300000 = 5min).",
+    "commands": [
+      { "name": "install", "cmd": "yarn install --immutable", "on_failure": "block", "timeout_ms": 300000 },
+      { "name": "compile", "cmd": "yarn build",               "on_failure": "block", "timeout_ms": 300000 },
+      { "name": "test",    "cmd": "yarn test",                "on_failure": "block", "timeout_ms": 600000 },
+      { "name": "lint",    "cmd": "yarn lint",                "on_failure": "warn",  "timeout_ms": 120000 }
+    ]
+  },
+
+  "_doc_other_examples": [
+    "Cargo project: { name: 'compile', cmd: 'cargo build', on_failure: 'block' }, { name: 'test', cmd: 'cargo test', on_failure: 'block' }",
+    "Go project:    { name: 'vet', cmd: 'go vet ./...', on_failure: 'block' }, { name: 'test', cmd: 'go test ./...', on_failure: 'block' }",
+    "TypeScript-only type check: { name: 'typecheck', cmd: 'tsc --noEmit', on_failure: 'block' }",
+    "Operator escape hatch: pass --no-verify to skip for one run; or set verify.enabled=false in config; or drop the offending command from `commands`."
+  ]
+}

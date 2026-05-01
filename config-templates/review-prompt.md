@@ -41,7 +41,8 @@ Verify each of these against the **diff**, not the narrative:
 
 ### 5. Claims Check
 - **File count integrity**: Run `git diff origin/main --name-only | grep -v '^\.dangeresque/runs/'` and count the results. Compare against the `Files:` line in `<!-- SUMMARY -->`. If they don't match, this is an **automatic FAIL** — the worker is concealing changes. (The run result file under `.dangeresque/runs/` is gitignored and won't appear in the diff; the `grep -v` is defensive belt-and-suspenders.)
-- Do test counts (if claimed) match reality? Run tests if feasible.
+- **Verification integrity**: When the run prompt includes a `## Verification (pre-review, captured automatically)` section, treat those exit codes as ground truth. Any command shown as `FAIL` overrides any worker claim of "tests pass" or "build clean" — that contradiction is grounds for REJECT. Do NOT re-run verification commands; they already ran in the worktree pre-review. When the section says "Verification not run this session", fall back to manual claim checks (run tests/build if feasible).
+- Do test counts (if claimed) match reality? Cross-check against the verification section before re-running anything.
 - Does the stated status match what the diff shows?
 - Did the worker claim "verified" but skip verification steps?
 
