@@ -156,21 +156,23 @@ export function initProject(projectRoot: string): void {
     }
   }
 
-  // 2. Run artifacts live in .dangeresque/runs/ and are TRACKED in git
-  //    (one file per run). If an older init wrote that dir into .gitignore,
-  //    remove the entry so the artifacts flow through the normal git lifecycle.
+  // 2. Run artifacts live in .dangeresque/runs/ and are GITIGNORED — keeps
+  //    run-internal reasoning out of git history. Workers write them inside the
+  //    worktree; dangeresque mirrors them to the project root on merge.
   const gitignorePath = join(projectRoot, ".gitignore");
-  const legacyRunsPatterns = new Set([".dangeresque/runs/", ".dangeresque/runs"]);
-  if (existsSync(gitignorePath)) {
-    const gitignore = readFileSync(gitignorePath, "utf-8");
-    const lines = gitignore.split("\n");
-    const kept = lines.filter((l) => !legacyRunsPatterns.has(l.trim()));
-    if (kept.length !== lines.length) {
-      writeFileSync(gitignorePath, kept.join("\n"));
-      console.log(
-        `\nRemoved legacy .dangeresque/runs/ entry from .gitignore — run results are now tracked.`,
-      );
-    }
+  const runsEntry = ".dangeresque/runs/";
+  const variants = new Set([runsEntry, ".dangeresque/runs"]);
+  let gitignore = existsSync(gitignorePath)
+    ? readFileSync(gitignorePath, "utf-8")
+    : "";
+  const hasEntry = gitignore.split("\n").some((l) => variants.has(l.trim()));
+  if (!hasEntry) {
+    if (gitignore.length > 0 && !gitignore.endsWith("\n")) gitignore += "\n";
+    gitignore += `${runsEntry}\n`;
+    writeFileSync(gitignorePath, gitignore);
+    console.log(
+      `\nAdded ${runsEntry} to .gitignore — run results are stored locally, not committed.`,
+    );
   }
 
   // 3. Merge notification hooks into .claude/settings.json

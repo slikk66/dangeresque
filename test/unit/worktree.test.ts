@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,6 +15,7 @@ import {
   discardWorktree,
   filterWorktrees,
   isPidAlive,
+  mirrorIssueRuns,
   stopWorktree,
   runPreflightChecks,
   type WorktreeInfo,
@@ -305,6 +306,149 @@ test("mergeWorktree: branch checked out elsewhere → phase=branch-delete, headA
   } finally {
     try { execSync(`git worktree remove --force "${externalWtPath}"`, env(dir)); } catch { /* ignore */ }
     rmSync(externalHolder, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- mirrorIssueRuns / mergeWorktree copy-out coverage ---
+
+test("mirrorIssueRuns: src missing → no-op, no error", () => {
+  const src = mkdtempSync(join(tmpdir(), "dangeresque-mirror-src-"));
+  const dest = mkdtempSync(join(tmpdir(), "dangeresque-mirror-dest-"));
+  try {
+    mirrorIssueRuns(src, dest, 99);
+    assert.equal(
+      existsSync(join(dest, ".dangeresque", "runs", "issue-99")),
+      false,
+      "dest should remain empty when src has no runs",
+    );
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+    rmSync(dest, { recursive: true, force: true });
+  }
+});
+
+test("mirrorIssueRuns: copies all files from src/issue-N/ to dest/issue-N/, creating dest dirs", () => {
+  const src = mkdtempSync(join(tmpdir(), "dangeresque-mirror-src-"));
+  const dest = mkdtempSync(join(tmpdir(), "dangeresque-mirror-dest-"));
+  try {
+    const srcIssue = join(src, ".dangeresque", "runs", "issue-7");
+    mkdirSync(srcIssue, { recursive: true });
+    writeFileSync(join(srcIssue, "2026-01-01T00-00-00-INVESTIGATE.md"), "investigate body\n");
+    writeFileSync(join(srcIssue, "2026-01-01T00-00-00-INVESTIGATE.json"), "{}\n");
+    writeFileSync(join(srcIssue, "2026-01-02T00-00-00-IMPLEMENT.md"), "implement body\n");
+
+    mirrorIssueRuns(src, dest, 7);
+
+    const destIssue = join(dest, ".dangeresque", "runs", "issue-7");
+    assert.ok(existsSync(destIssue), "dest issue dir created");
+    assert.equal(
+      readFileSync(join(destIssue, "2026-01-01T00-00-00-INVESTIGATE.md"), "utf-8"),
+      "investigate body\n",
+    );
+    assert.equal(
+      readFileSync(join(destIssue, "2026-01-01T00-00-00-INVESTIGATE.json"), "utf-8"),
+      "{}\n",
+    );
+    assert.equal(
+      readFileSync(join(destIssue, "2026-01-02T00-00-00-IMPLEMENT.md"), "utf-8"),
+      "implement body\n",
+    );
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+    rmSync(dest, { recursive: true, force: true });
+  }
+});
+
+test("mirrorIssueRuns: copies only the requested issue's directory", () => {
+  const src = mkdtempSync(join(tmpdir(), "dangeresque-mirror-src-"));
+  const dest = mkdtempSync(join(tmpdir(), "dangeresque-mirror-dest-"));
+  try {
+    mkdirSync(join(src, ".dangeresque", "runs", "issue-7"), { recursive: true });
+    writeFileSync(join(src, ".dangeresque", "runs", "issue-7", "a.md"), "7\n");
+    mkdirSync(join(src, ".dangeresque", "runs", "issue-8"), { recursive: true });
+    writeFileSync(join(src, ".dangeresque", "runs", "issue-8", "b.md"), "8\n");
+
+    mirrorIssueRuns(src, dest, 7);
+
+    assert.ok(existsSync(join(dest, ".dangeresque", "runs", "issue-7", "a.md")));
+    assert.equal(
+      existsSync(join(dest, ".dangeresque", "runs", "issue-8")),
+      false,
+      "issue-8 should not be touched",
+    );
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+    rmSync(dest, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: copies gitignored runs/issue-N/ from worktree to project root", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-42",
+      "worktree-dangeresque-implement-42",
+    );
+
+    // Worker writes an artifact in the worktree; gitignored, never committed.
+    const wtArtifactDir = join(worktreePath, ".dangeresque", "runs", "issue-42");
+    mkdirSync(wtArtifactDir, { recursive: true });
+    writeFileSync(
+      join(wtArtifactDir, "2026-01-01T00-00-00-IMPLEMENT.md"),
+      "<!-- SUMMARY -->\nMode: IMPLEMENT | Status: implemented, unverified\n<!-- /SUMMARY -->\n",
+    );
+    writeFileSync(
+      join(wtArtifactDir, "2026-01-01T00-00-00-IMPLEMENT.json"),
+      '{"schema_version":"3"}\n',
+    );
+
+    const result = mergeWorktree(dir, "worktree-dangeresque-implement-42");
+    assert.equal(result.success, true);
+    assert.equal(result.phase, "merge");
+    assert.equal(result.headAdvanced, true);
+
+    // Worktree is gone …
+    assert.equal(existsSync(worktreePath), false);
+    // … but the artifact files are now at the project root.
+    const projectIssueDir = join(dir, ".dangeresque", "runs", "issue-42");
+    assert.ok(existsSync(projectIssueDir), "issue dir mirrored to project root");
+    assert.match(
+      readFileSync(
+        join(projectIssueDir, "2026-01-01T00-00-00-IMPLEMENT.md"),
+        "utf-8",
+      ),
+      /Mode: IMPLEMENT/,
+    );
+    assert.match(
+      readFileSync(
+        join(projectIssueDir, "2026-01-01T00-00-00-IMPLEMENT.json"),
+        "utf-8",
+      ),
+      /schema_version/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: branch without issue number → no copy attempted, merge still succeeds", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(dir, "no-issue", "worktree-no-issue");
+    const result = mergeWorktree(dir, "worktree-no-issue");
+    assert.equal(result.success, true);
+    assert.equal(
+      existsSync(join(dir, ".dangeresque", "runs")),
+      false,
+      "no runs/ dir should be created when branch has no issue number",
+    );
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

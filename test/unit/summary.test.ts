@@ -39,28 +39,6 @@ test("bucketNameStatus: R/C/T treated as modified", () => {
   });
 });
 
-test("bucketNameStatus: excludes .dangeresque/runs/ paths", () => {
-  const out =
-    "A\tsrc/code.ts\n" +
-    "M\t.dangeresque/runs/issue-1/2026-01-01T00-00-00-IMPLEMENT.md\n" +
-    "M\tsrc/other.ts\n";
-  assert.deepEqual(bucketNameStatus(out), {
-    added: 1,
-    modified: 1,
-    deleted: 0,
-  });
-});
-
-test("bucketNameStatus: rename destination evaluated for runs/ exclusion", () => {
-  // rename TO a runs/ path is excluded (defensive — should not happen in practice)
-  const out = "R100\tsrc/a.ts\t.dangeresque/runs/issue-1/foo.md\n";
-  assert.deepEqual(bucketNameStatus(out), {
-    added: 0,
-    modified: 0,
-    deleted: 0,
-  });
-});
-
 test("bucketNameStatus: empty input returns zero buckets", () => {
   assert.deepEqual(bucketNameStatus(""), {
     added: 0,
@@ -296,17 +274,7 @@ function writeArtifactFile(dir: string, filesLine: string): string {
     "Proof: 5/5 tests pass\n" +
     "<!-- /SUMMARY -->\n\n## Status\n\nimplemented, unverified\n";
   writeFileSync(archivePath, content, "utf-8");
-  // Commit the artifact to mimic the worker's commitArchiveFile step.
-  execSync(`git add "${archivePath}"`, {
-    cwd: dir,
-    encoding: "utf-8",
-    stdio: "pipe",
-  });
-  execSync('git commit -m "dangeresque run artifact"', {
-    cwd: dir,
-    encoding: "utf-8",
-    stdio: "pipe",
-  });
+  // Artifact files are gitignored in production — write only, do not commit.
   return archivePath;
 }
 
@@ -329,10 +297,10 @@ function headMessage(dir: string): string {
   }).trim();
 }
 
-test("normalizeSummaryFileCount: rewrites Files: line, commits, returns canonical N", () => {
+test("normalizeSummaryFileCount: rewrites Files: line in place, returns canonical N, no commit", () => {
   const { dir, base } = makeRepoWithBaseline();
   try {
-    // Worker stage: add, modify, delete actual code files (not under runs/).
+    // Worker stage: add, modify, delete actual code files (artifact is gitignored).
     writeFileSync(join(dir, "added.ts"), "new\n");
     writeFileSync(join(dir, "modify.ts"), "modified\n");
     rmSync(join(dir, "delete.ts"));
@@ -347,7 +315,7 @@ test("normalizeSummaryFileCount: rewrites Files: line, commits, returns canonica
       stdio: "pipe",
     });
 
-    // Worker artifact (with a wrong self-reported count, on top of code commit).
+    // Worker artifact (with a wrong self-reported count); never committed.
     const archivePath = writeArtifactFile(dir,"Files: 99 changed (lies, all lies)");
 
     const before = commitCount(dir);
@@ -358,10 +326,10 @@ test("normalizeSummaryFileCount: rewrites Files: line, commits, returns canonica
       diffBase: base,
     });
 
-    // 1 added + 1 modified + 1 deleted = 3 (artifact .md excluded).
+    // 1 added + 1 modified + 1 deleted = 3.
     assert.equal(result, 3);
 
-    // .md was rewritten with the canonical line.
+    // .md was rewritten in place with the canonical line.
     const newContent = readFileSync(archivePath, "utf-8");
     assert.match(
       newContent,
@@ -369,19 +337,19 @@ test("normalizeSummaryFileCount: rewrites Files: line, commits, returns canonica
     );
     assert.doesNotMatch(newContent, /lies, all lies/);
 
-    // A new commit was created with the dangeresque message.
-    assert.equal(commitCount(dir), before + 1);
-    assert.equal(headMessage(dir), "dangeresque normalize summary count");
+    // No commit produced by the normalize step — artifact is gitignored.
+    assert.equal(commitCount(dir), before);
+    assert.equal(headMessage(dir), "worker code");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("normalizeSummaryFileCount: zero changes (only artifact under runs/) → Files: 0 changed", () => {
+test("normalizeSummaryFileCount: zero changes (no code edits, gitignored artifact) → Files: 0 changed", () => {
   const { dir, base } = makeRepoWithBaseline();
   try {
-    // Only an artifact .md committed — no code changes.
-    const archivePath = writeArtifactFile(dir,"Files: 1 changed (.dangeresque/runs/issue-99/foo.md)");
+    // Artifact .md only — gitignored, never committed; no code changes vs base.
+    const archivePath = writeArtifactFile(dir,"Files: 1 changed (oops)");
 
     const result = normalizeSummaryFileCount({
       worktreePath: dir,

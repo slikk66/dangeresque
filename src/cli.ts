@@ -11,7 +11,6 @@ import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, for
 import {
   ArtifactBuilder,
   writeArtifact,
-  commitArtifactJson,
   jsonPathForArchive,
 } from "./artifact.js";
 import { normalizeSummaryFileCount } from "./summary.js";
@@ -464,7 +463,7 @@ async function cmdRun(args: string[]) {
       }
     }
 
-    finalizeArtifact(builder, projectRoot, workerResult.worktreeName);
+    finalizeArtifact(builder, projectRoot);
 
     process.exit(workerResult.exitCode);
   }
@@ -482,7 +481,7 @@ async function cmdRun(args: string[]) {
     })
       .trim()
       .split("\n")
-      .filter((f) => f && !f.startsWith(".dangeresque/runs/"));
+      .filter((f) => f);
 
     const haystack = issueData.body + formatIssueComments(issueData);
     const unexpected = changedFiles.filter((f) => !haystack.includes(f));
@@ -593,7 +592,7 @@ async function cmdRun(args: string[]) {
     }
   }
 
-  const artifact = finalizeArtifact(builder, projectRoot, workerResult.worktreeName);
+  const artifact = finalizeArtifact(builder, projectRoot);
 
   // Summary
   console.log(`\n${"=".repeat(60)}`);
@@ -619,16 +618,10 @@ async function cmdRun(args: string[]) {
   console.log("=".repeat(60));
 }
 
-function finalizeArtifact(
-  builder: ArtifactBuilder,
-  projectRoot: string,
-  worktreeName: string,
-) {
+function finalizeArtifact(builder: ArtifactBuilder, projectRoot: string) {
   try {
     const artifact = builder.build();
-    const absJsonPath = writeArtifact(artifact, projectRoot);
-    const worktreePath = `${projectRoot}/.claude/worktrees/${worktreeName}`;
-    commitArtifactJson(worktreePath, absJsonPath);
+    writeArtifact(artifact, projectRoot);
     return artifact;
   } catch (err) {
     console.error(

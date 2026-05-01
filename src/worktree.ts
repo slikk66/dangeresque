@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   readFileSync,
   writeFileSync,
@@ -287,6 +288,25 @@ function getIssueRunsDir(projectRoot: string, issueNumber: number): string {
 }
 
 /**
+ * Copy an issue's run-artifact directory between two roots (worktree ↔ main
+ * checkout). The runs dir is gitignored, so dangeresque carries it across
+ * the worktree boundary by file copy: project-root → new worktree at run
+ * start so workers see prior runs, worktree → project-root on merge so
+ * merged history persists. No-op when the source dir is missing.
+ */
+export function mirrorIssueRuns(
+  srcRoot: string,
+  destRoot: string,
+  issueNumber: number,
+): void {
+  const srcDir = getIssueRunsDir(srcRoot, issueNumber);
+  if (!existsSync(srcDir)) return;
+  const destDir = getIssueRunsDir(destRoot, issueNumber);
+  mkdirSync(destDir, { recursive: true });
+  cpSync(srcDir, destDir, { recursive: true, force: true });
+}
+
+/**
  * List run result files for an issue, sorted chronologically (oldest first).
  */
 export function listArchivedRuns(
@@ -541,8 +561,29 @@ export function mergeWorktree(
     };
   }
 
-  // Phase 2: worktree cleanup (worktreePath already resolved at top of function)
+  // Phase 2: worktree cleanup (worktreePath already resolved at top of function).
+  // Mirror gitignored run artifacts out of the worktree before removing it,
+  // so per-run history persists at the project root after merge.
   if (existsSync(worktreePath)) {
+    const issueNumber = extractIssueNumber(branch);
+    if (issueNumber !== undefined) {
+      try {
+        mirrorIssueRuns(worktreePath, projectRoot, issueNumber);
+      } catch (err) {
+        return {
+          success: false,
+          phase: "cleanup",
+          headAdvanced: true,
+          headBefore,
+          headAfter,
+          message:
+            `Merge succeeded — main is now at ${headAfter.slice(0, 8)} (was ${headBefore.slice(0, 8)}). ` +
+            `Mirroring run artifacts to project root failed: ${err instanceof Error ? err.message : String(err)}. ` +
+            `Worktree NOT removed at ${worktreePath} — copy ${worktreePath}/.dangeresque/runs/issue-${issueNumber}/ ` +
+            `to ${projectRoot}/.dangeresque/runs/issue-${issueNumber}/, then 'dangeresque discard ${branch}' to clean up.`,
+        };
+      }
+    }
     try {
       execSync(`git worktree remove "${worktreePath}"`, {
         cwd: projectRoot,

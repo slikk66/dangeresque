@@ -88,8 +88,10 @@ dangeresque results --issue <N> --all  # full history
 \`\`\`
 
 Run artifacts live at \`.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md\` —
-tracked in git, one file per run. Read only the newest if you need prior
-context; do not read all of them.
+one file per run. The runs directory is gitignored; dangeresque mirrors
+prior runs into each new worktree at dispatch and back to the project root
+on \`dangeresque merge\`. Read only the newest if you need prior context;
+do not read all of them.
 
 ## Staging Guidance
 

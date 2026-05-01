@@ -4,5 +4,6 @@ dist/
 .yarn/install-state.gz
 HANDOFF.md
 .dangeresque/sessions/
+.dangeresque/runs/
 .claude/scheduled_tasks.lock
 .claude/worktrees/

@@ -38,7 +38,6 @@ export { stageComment } from "./stage.js";
 export {
   ArtifactBuilder,
   writeArtifact,
-  commitArtifactJson,
   jsonPathForArchive,
   parseVerdictFromMarkdown,
   parseGitRemoteSlug,

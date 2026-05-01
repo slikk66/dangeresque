@@ -1,6 +1,5 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { relative } from "node:path";
 import type { ArtifactBuilder } from "./artifact.js";
 
 export interface NormalizeOptions {
@@ -17,9 +16,7 @@ export interface FileBuckets {
 }
 
 /**
- * Parse `git diff --name-status` output into bucketed counts. Excludes any
- * path under `.dangeresque/runs/` so committed run-artifact files don't inflate
- * the canonical count — matches the reviewer's exclusion in review-prompt.md.
+ * Parse `git diff --name-status` output into bucketed counts.
  *
  * Status letter mapping:
  *  - A → added
@@ -33,9 +30,6 @@ export interface FileBuckets {
  *   `M\tsrc/foo.ts`
  *   `R100\told.ts\tnew.ts`
  *   `C75\tsrc/a.ts\tsrc/b.ts`
- *
- * For R/C the destination path is the third column; we use that for the
- * .dangeresque/runs/ exclusion check.
  */
 export function bucketNameStatus(output: string): FileBuckets {
   const buckets: FileBuckets = { added: 0, modified: 0, deleted: 0 };
@@ -44,9 +38,6 @@ export function bucketNameStatus(output: string): FileBuckets {
     const parts = line.split("\t");
     if (parts.length < 2) continue;
     const status = parts[0];
-    const path = parts.length >= 3 ? parts[parts.length - 1] : parts[1];
-    if (path.startsWith(".dangeresque/runs/")) continue;
-
     const code = status[0];
     if (code === "A") buckets.added += 1;
     else if (code === "D") buckets.deleted += 1;
@@ -106,11 +97,11 @@ export function rewriteSummaryFilesLine(
 }
 
 /**
- * Compute the canonical file count via `git diff <base> --name-status`,
+ * Compute the canonical file count via `git diff <base> --name-status` and
  * rewrite the worker's `Files:` line in the run-artifact .md SUMMARY block to
- * the canonical form, and commit the rewrite as a new commit on the worktree
- * branch. Records the canonical count on the optional ArtifactBuilder so the
- * JSON `files_changed_count` field stays in sync.
+ * the canonical form. Records the canonical count on the optional
+ * ArtifactBuilder so the JSON `files_changed_count` field stays in sync.
+ * The artifact .md is gitignored, so the rewrite is in-place — no commit.
  *
  * Warn-and-degrade contract: every failure path logs a console.warn,
  * optionally records a `summary_normalize_failed` lifecycle event, and
@@ -169,22 +160,6 @@ export function normalizeSummaryFileCount(
     writeFileSync(archivePath, rewritten, "utf-8");
   } catch (err) {
     return degrade(builder, "archive_write_failed", err);
-  }
-
-  try {
-    const rel = relative(worktreePath, archivePath);
-    execSync(`git add "${rel}"`, {
-      cwd: worktreePath,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
-    execSync(`git commit -m "dangeresque normalize summary count"`, {
-      cwd: worktreePath,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
-  } catch (err) {
-    return degrade(builder, "commit_failed", err);
   }
 
   builder?.setFilesChangedCount(total);

@@ -276,6 +276,88 @@ test("initProject: CLAUDE.md exists but missing pointer — warns, does not muta
   }
 });
 
+test("initProject: adds .dangeresque/runs/ to .gitignore on a fresh project", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    initProject(scratch);
+    const gitignorePath = join(scratch, ".gitignore");
+    assert.ok(existsSync(gitignorePath), ".gitignore must be created");
+    const lines = readFileSync(gitignorePath, "utf-8").split("\n").map((l) => l.trim());
+    assert.ok(
+      lines.includes(".dangeresque/runs/"),
+      "expected .dangeresque/runs/ in .gitignore",
+    );
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: appends runs/ entry to existing .gitignore without losing prior entries", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    const gitignorePath = join(scratch, ".gitignore");
+    writeFileSync(gitignorePath, "node_modules/\n# my comment\nbuild/\n");
+    initProject(scratch);
+    const lines = readFileSync(gitignorePath, "utf-8").split("\n").map((l) => l.trim());
+    assert.ok(lines.includes("node_modules/"), "pre-existing entry preserved");
+    assert.ok(lines.includes("build/"), "pre-existing entry preserved");
+    assert.ok(lines.includes("# my comment"), "pre-existing comment preserved");
+    assert.ok(lines.includes(".dangeresque/runs/"), "runs/ entry appended");
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: idempotent — second run does not duplicate runs/ entry", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    initProject(scratch);
+    initProject(scratch);
+    const lines = readFileSync(join(scratch, ".gitignore"), "utf-8")
+      .split("\n")
+      .map((l) => l.trim());
+    const occurrences = lines.filter((l) => l === ".dangeresque/runs/").length;
+    assert.equal(occurrences, 1, "runs/ entry must appear exactly once");
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: recognizes equivalent runs entry (.dangeresque/runs without trailing slash)", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    writeFileSync(join(scratch, ".gitignore"), ".dangeresque/runs\n");
+    initProject(scratch);
+    const lines = readFileSync(join(scratch, ".gitignore"), "utf-8")
+      .split("\n")
+      .map((l) => l.trim());
+    // Should not append a duplicate variant.
+    assert.equal(
+      lines.filter((l) => l === ".dangeresque/runs/").length,
+      0,
+      "trailing-slash variant not added when bare entry already present",
+    );
+    assert.ok(
+      lines.includes(".dangeresque/runs"),
+      "pre-existing bare entry preserved",
+    );
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("initProject: second invocation does not duplicate pointer blocks in CLAUDE.md", () => {
   const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
   const origLog = console.log;

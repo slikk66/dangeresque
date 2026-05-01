@@ -9,7 +9,7 @@ import {
   RUNS_DIR,
   projectHash,
 } from "./config.js";
-import { writePidFile, removePidFile, readPidFile, resolveDiffBase } from "./worktree.js";
+import { writePidFile, removePidFile, readPidFile, resolveDiffBase, mirrorIssueRuns, parseSummaryBlock } from "./worktree.js";
 
 // --- engine-process tracking ---
 //
@@ -87,9 +87,9 @@ export interface RunResult {
 
 /**
  * Compute the archive path for a run. Lives inside the worktree at
- * <worktree>/.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md so it flows
- * through normal git merge into main. Discard drops the artifact along with
- * the worktree — which is what "discard" means.
+ * <worktree>/.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md. The directory
+ * is gitignored — dangeresque mirrors files to the project root on merge.
+ * Discard drops the artifact along with the worktree.
  */
 export function computeRunArchivePath(
   worktreePath: string,
@@ -98,17 +98,6 @@ export function computeRunArchivePath(
 ): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   return join(worktreePath, CONFIG_DIR, RUNS_DIR, `issue-${issueNumber}`, `${timestamp}-${mode}.md`);
-}
-
-function commitArchiveFile(worktreePath: string, archivePath: string): void {
-  if (!existsSync(archivePath)) return;
-  try {
-    const rel = relative(worktreePath, archivePath);
-    execSync(`git add "${rel}"`, { cwd: worktreePath, encoding: "utf-8", stdio: "pipe" });
-    execSync(`git commit -m "dangeresque run artifact"`, { cwd: worktreePath, encoding: "utf-8", stdio: "pipe" });
-  } catch {
-    // nothing to commit, or index already clean — fine
-  }
 }
 
 /**
@@ -125,8 +114,9 @@ function commitArchiveFile(worktreePath: string, archivePath: string): void {
  * - `git add -A` captures every tracked/untracked change in the worktree.
  *   Safe because the worktree is a throwaway branch from origin/HEAD and
  *   `.gitignore` still excludes build output, node_modules, PID files, etc.
- * - The run artifact directory (`.dangeresque/runs/`) is excluded so it
- *   stays in its own follow-up commit via `commitArchiveFile`.
+ * - The run artifact directory (`.dangeresque/runs/`) is gitignored, so the
+ *   exclude pathspec is defensive — keeps any pre-existing tracked entries
+ *   out of the worker's commit during the migration window for older repos.
  */
 export function commitWorkerChanges(
   worktreePath: string,
@@ -489,13 +479,13 @@ function buildReviewPrompt(opts: RunOptions, archivePath: string, diffStat: stri
     `${header}\n\n` +
     `## Actual Diff (ground truth — captured automatically)\n\`\`\`\n${diffStat}\n\`\`\`\n\n` +
     `## Run Artifact\n\n` +
-    `The worker's run result is committed in the worktree at: ${archivePath}\n` +
+    `The worker's run result lives in the worktree at: ${archivePath}\n` +
+    `(Run artifacts are stored locally and gitignored — they are NOT in the diff.) ` +
     `Treat this as a claims document — verify against the diff. ` +
     `Append your review findings to the SAME file.\n\n` +
     `Start by running git diff ${diffBase} to see full code changes. ` +
     `Then read the run artifact and compare the worker's claims against the diff. ` +
-    `When counting files, EXCLUDE any path under .dangeresque/runs/ — those are auto-committed artifacts, not worker claims. ` +
-    `Any remaining file-count discrepancy is an automatic FAIL.\n\n` +
+    `Any file-count discrepancy is an automatic FAIL.\n\n` +
     `Follow review-prompt.md.`
   );
 }
@@ -645,6 +635,11 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
   // Always create a fresh worktree — throws if one already exists.
   createWorktree(opts.projectRoot, worktreeName, branch);
 
+  // Carry prior runs for this issue into the new worktree. The runs dir is
+  // gitignored, so it doesn't ride the worktree's branch — dangeresque
+  // mirrors it across at dispatch time so workers see prior-run history.
+  mirrorIssueRuns(opts.projectRoot, worktreePath, opts.issueData.number);
+
   const archivePath = computeRunArchivePath(
     worktreePath,
     opts.issueData.number,
@@ -717,7 +712,6 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
             opts.issueData.number,
             opts.mode ?? "INVESTIGATE"
           );
-          commitArchiveFile(worktreePath, archivePath);
         }
         resolve({ worktreeName, branch, exitCode, archivePath });
       });
@@ -774,7 +768,6 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
     child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       removePidFile(worktreePath);
       const exitCode = exitCodeFromCloseEvent(code, signal);
-      if (exitCode === 0) commitArchiveFile(worktreePath, archivePath);
       resolve({
         worktreeName,
         branch,
@@ -846,7 +839,6 @@ export function runReview(
         logStream.end();
         removePidFile(worktreePath);
         const exitCode = exitCodeFromCloseEvent(code, signal);
-        if (exitCode === 0) commitArchiveFile(worktreePath, archivePath);
         resolve({ worktreeName, branch, exitCode, archivePath });
       });
     });
@@ -890,7 +882,6 @@ export function runReview(
     child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       removePidFile(worktreePath);
       const exitCode = exitCodeFromCloseEvent(code, signal);
-      if (exitCode === 0) commitArchiveFile(worktreePath, archivePath);
       resolve({ worktreeName, branch, exitCode, archivePath });
     });
   });
@@ -928,6 +919,7 @@ function buildRunTag(mode: string, opts: CommentOptions): string {
 export function postRunComment(opts: CommentOptions): void {
   const { projectRoot, issueNumber, mode, worktreeName, archivePath, workerExitCode, reviewExitCode } = opts;
   const tag = buildRunTag(mode, opts);
+  const archiveRel = relative(projectRoot, archivePath);
 
   let comment: string;
   if (workerExitCode !== 0) {
@@ -935,20 +927,30 @@ export function postRunComment(opts: CommentOptions): void {
       `${tag} ❌ FAILED\n\n` +
       `Worker exited with code ${workerExitCode}. No review was run.\n\n` +
       `- Worktree: \`.claude/worktrees/${worktreeName}/\`\n` +
-      `- Expected run artifact: \`${relative(projectRoot, archivePath)}\` ` +
+      `- Expected run artifact: \`${archiveRel}\` ` +
       `(${existsSync(archivePath) ? "partial output present" : "not written"})\n\n` +
       `Inspect the worker session log with \`dangeresque logs\`, then \`dangeresque discard worktree-${worktreeName}\` to clean up.`;
   } else if (!existsSync(archivePath)) {
     comment =
       `${tag} ⚠️  Worker exited cleanly but wrote no run artifact.\n\n` +
-      `Expected file: \`${relative(projectRoot, archivePath)}\`\n` +
+      `Expected file: \`${archiveRel}\`\n` +
       `Worktree: \`.claude/worktrees/${worktreeName}/\``;
   } else {
+    // Post just the SUMMARY block, never the full body. The artifact lives
+    // locally (gitignored) and is referenced by path so collaborators can
+    // read it via `dangeresque results --issue N` or directly on disk.
     const content = readFileSync(archivePath, "utf-8");
+    const summary = parseSummaryBlock(content);
+    const summaryBlock = summary
+      ? `<!-- SUMMARY -->\n${summary}\n<!-- /SUMMARY -->`
+      : `_(no SUMMARY block found in artifact)_`;
     const reviewNote = reviewExitCode !== undefined && reviewExitCode !== 0
-      ? `\n\n⚠️  Review process exited with code ${reviewExitCode} — findings above may be incomplete.`
+      ? `\n\n⚠️  Review process exited with code ${reviewExitCode} — full artifact may be incomplete.`
       : "";
-    comment = `${tag}\n\n${content}${reviewNote}`;
+    comment =
+      `${tag}\n\n${summaryBlock}\n\n` +
+      `Local artifact: \`${archiveRel}\` ` +
+      `(\`dangeresque results --issue ${issueNumber}\`)${reviewNote}`;
   }
 
   const result = spawnSync(

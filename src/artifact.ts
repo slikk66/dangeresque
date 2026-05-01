@@ -392,20 +392,6 @@ export function writeArtifact(artifact: RunArtifact, projectRoot: string): strin
   return absJsonPath;
 }
 
-export function commitArtifactJson(worktreePath: string, absJsonPath: string): void {
-  try {
-    const rel = relative(worktreePath, absJsonPath);
-    execSync(`git add "${rel}"`, { cwd: worktreePath, encoding: "utf-8", stdio: "pipe" });
-    execSync(`git commit -m "dangeresque run evaluation"`, {
-      cwd: worktreePath,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
-  } catch {
-    // nothing to commit
-  }
-}
-
 export function jsonPathForArchive(archivePath: string): string {
   return archivePath.replace(/\.md$/, ".json");
 }
