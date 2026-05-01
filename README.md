@@ -93,7 +93,7 @@ Creates `.dangeresque/` with canonical prompts (`worker-prompt.md`, `review-prom
 ```markdown
 <!-- DANGERESQUE-START -->
 
-**`.dangeresque/DANGERESQUE.md`** is the primer for the `dangeresque` CLI — AFK AI workers in isolated worktrees, human-gated merges. Phases: INVESTIGATE → stage → IMPLEMENT, with `dangeresque merge` + push to origin between each. **One Hard Rule:** push `main` to origin after every merge, before the next dispatch — workers branch from `origin/main`, so a stale origin causes phantom regressions. Read it before running `dangeresque` commands or dispatching workers.
+**`dangeresque` is installed in this repo.** Use it — not raw `git worktree`, `kill <pid>`, or `cd <worktree>` — to dispatch AFK AI workers, manage isolated worktrees, and gate merges. Before dispatching or merging, run **`dangeresque brief`** (workflow loop + the hard rule). Run **`dangeresque --help`** for the full command surface (auto-generated, never stale).
 
 <!-- DANGERESQUE-END -->
 ```
@@ -222,8 +222,9 @@ Run `dangeresque <cmd> --help` for flag-level detail.
 | `dangeresque logs`    | Pretty-print engine transcripts (snapshot, or `-f` to tail; `--review` for review pass; `--raw` for JSONL)                                                                                                                            |
 | `dangeresque results` | Show run results from active worktrees or archived history (`--issue <N>`, `--all`)                                                                                                                                                   |
 | `dangeresque stage`   | Post a structured `[staged]` context comment on a GitHub Issue before a run                                                                                                                                                           |
-| `dangeresque merge`   | Merge a worktree branch into the current branch; remove worktree + branch                                                                                                                                                             |
-| `dangeresque discard` | Force-remove worktree and branch without merging; drops the run artifact                                                                                                                                                              |
+| `dangeresque merge`   | Merge a worktree branch into the current branch; remove worktree + branch. **Keeps the run report** — mirrored from the worktree to `.dangeresque/runs/` before teardown                                                              |
+| `dangeresque discard` | Remove worktree and branch without merging; **deletes the run report along with the worktree**. `--force` first stops a running worker                                                                                                |
+| `dangeresque stop`    | Stop a running worker cleanly (parent CLI + engine child); leaves the worktree intact. Use this — never raw `kill <pid>`                                                                                                              |
 | `dangeresque clean`   | Delete on-disk run result files for an issue (e.g. after closing). Files are gitignored — clean is a local-disk operation, not a git operation                                                                                        |
 | `dangeresque stats`   | Aggregate run evaluation artifacts (`--issue`, `--engine`, `--mode`, `--glossary`)                                                                                                                                                    |
 | `dangeresque init`    | Scaffold `.dangeresque/`, copy skills, merge hooks. Refreshes canonical prompts; `.local.md` overrides and divergent canonical prompts are preserved (with a warning). Creates `CLAUDE.md` with the DANGERESQUE.md pointer if missing |
@@ -233,10 +234,12 @@ Run `dangeresque <cmd> --help` for flag-level detail.
 ### Monitoring a running session
 
 ```bash
+dangeresque status                                        # List active worktrees + worker liveness
 dangeresque logs investigate-63                           # Snapshot current transcript and exit
 dangeresque logs investigate-63 -f                        # Tail live output
 dangeresque logs investigate-63 --review                  # Review pass transcript
 dangeresque logs investigate-63 --raw | jq '.message.content[]?.text'  # Raw JSONL
+dangeresque stop investigate-63                           # Stop a runaway worker (don't `kill <pid>`)
 ```
 
 ## Configuration

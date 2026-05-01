@@ -1013,6 +1013,10 @@ test("runPreflightChecks: blocks when same-issue worktree exists", () => {
     assert.match(result.message!, /worktree-dangeresque-investigate-77/);
     assert.match(result.message!, /dangeresque merge worktree-dangeresque-investigate-77/);
     assert.match(result.message!, /--force/);
+    // Discard silently destroys the run report on a no-diff INVESTIGATE,
+    // so the choice list must disclose the artifact-loss asymmetry (#64).
+    assert.match(result.message!, /keeps the run report/);
+    assert.match(result.message!, /deletes the run report/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

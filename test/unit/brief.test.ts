@@ -55,13 +55,18 @@ test("BRIEF_MARKDOWN ends with version footer matching package.json", () => {
   );
 });
 
-test("BRIEF_MARKDOWN covers the core command surface", () => {
+test("BRIEF_MARKDOWN covers the workflow-relevant command surface", () => {
+  // These verbs drive the standard loop. Setup/utility verbs (init, allow,
+  // stats, clean, brief itself) and configuration flags are intentionally
+  // deferred to `dangeresque --help` to prevent the drift that produced
+  // commit a7d4e20.
   const commands = [
     "dangeresque run --issue",
     "dangeresque results",
     "dangeresque stage",
     "dangeresque merge",
     "dangeresque discard",
+    "dangeresque stop",
     "dangeresque logs",
     "dangeresque status",
   ];
@@ -71,6 +76,34 @@ test("BRIEF_MARKDOWN covers the core command surface", () => {
       `missing command reference: ${cmd}`,
     );
   }
+});
+
+test("BRIEF_MARKDOWN delegates command surface to `dangeresque --help`", () => {
+  // Drift firewall: the brief must explicitly tell the orchestrator that the
+  // full command list lives in --help. Otherwise readers treat the brief as
+  // exhaustive and the next added command goes unnoticed (a7d4e20).
+  assert.ok(
+    BRIEF_MARKDOWN.includes("dangeresque --help"),
+    "BRIEF_MARKDOWN must reference `dangeresque --help` as the canonical command surface",
+  );
+});
+
+test("BRIEF_MARKDOWN warns merge/discard have asymmetric artifact behavior", () => {
+  // The orchestrator-confusion symptom from #64: discard silently destroys
+  // the run report. Brief must spell out merge=keeps / discard=deletes near
+  // the loop and again in the cleanup section.
+  assert.ok(
+    /Merge keeps the run report\. Discard deletes it\./.test(BRIEF_MARKDOWN),
+    "BRIEF_MARKDOWN must contain the merge/discard asymmetry one-liner near the loop",
+  );
+  assert.ok(
+    BRIEF_MARKDOWN.includes("KEEPS the run report"),
+    "BRIEF_MARKDOWN merge command line must disclose artifact-keep behavior",
+  );
+  assert.ok(
+    BRIEF_MARKDOWN.includes("DELETES the run report"),
+    "BRIEF_MARKDOWN discard command line must disclose artifact-delete behavior",
+  );
 });
 
 test("BRIEF_MARKDOWN references the project-local AFK_WORKER_RULES and PERMISSIONS docs", () => {

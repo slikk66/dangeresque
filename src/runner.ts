@@ -632,8 +632,8 @@ function createWorktree(projectRoot: string, worktreeName: string, branch: strin
     throw new Error(
       `Worktree already exists: .claude/worktrees/${worktreeName}\n` +
       `A prior run on this mode+issue was not cleaned up. Choose one:\n` +
-      `  dangeresque merge   ${branch}   (keep the work)\n` +
-      `  dangeresque discard ${branch}   (throw it away)\n` +
+      `  dangeresque merge   ${branch}   (keeps the run report in .dangeresque/runs/)\n` +
+      `  dangeresque discard ${branch}   (deletes the run report along with the worktree)\n` +
       `Then re-run.`
     );
   }
