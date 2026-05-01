@@ -7,7 +7,13 @@ import { BRIEF_MARKDOWN, printBrief } from "#dist/brief.js";
 
 const packageJson = JSON.parse(
   readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json"),
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "..",
+      "..",
+      "package.json",
+    ),
     "utf-8",
   ),
 ) as { version: string };
@@ -20,10 +26,8 @@ test("BRIEF_MARKDOWN is a non-empty string", () => {
 test("BRIEF_MARKDOWN contains all required section headers", () => {
   const requiredSections = [
     "# Dangeresque Workflow",
-    "## Prime Directives",
-    "### Quality Gates",
     "### Honest Scoping",
-    "## The Loop",
+    "## The Standard Loop",
     "## The One Hard Rule",
     "## Creating Issues",
     "## Dispatching a Run",
@@ -39,23 +43,6 @@ test("BRIEF_MARKDOWN contains all required section headers", () => {
     assert.ok(
       BRIEF_MARKDOWN.includes(heading),
       `missing section header: ${heading}`,
-    );
-  }
-});
-
-test("BRIEF_MARKDOWN covers the Prime Directives named items", () => {
-  const namedItems = [
-    "VERIFY-BEFORE",
-    "VERIFY-AFTER",
-    "NO-BANDAID",
-    "ONE-PATH",
-    "FILE-IMMEDIATELY",
-    "INVESTIGATE-ALWAYS",
-  ];
-  for (const item of namedItems) {
-    assert.ok(
-      BRIEF_MARKDOWN.includes(item),
-      `missing Prime Directive item: ${item}`,
     );
   }
 });
@@ -79,7 +66,10 @@ test("BRIEF_MARKDOWN covers the core command surface", () => {
     "dangeresque status",
   ];
   for (const cmd of commands) {
-    assert.ok(BRIEF_MARKDOWN.includes(cmd), `missing command reference: ${cmd}`);
+    assert.ok(
+      BRIEF_MARKDOWN.includes(cmd),
+      `missing command reference: ${cmd}`,
+    );
   }
 });
 

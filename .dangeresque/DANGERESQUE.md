@@ -9,11 +9,6 @@ correctly end-to-end.
 
 ### Quality Gates
 
-- **VERIFY-BEFORE** — Read current code before changing it. Never edit what you haven't read.
-- **VERIFY-AFTER** — After a change, confirm it landed. Grep the file, check the value, build the project.
-- **NO-BANDAID** — We don't want the "simplest" or "fastest" fix. We are building professional software. We are not trying to skim by with the least amount of work.
-- **ONE-PATH** — Extend the existing system. Do not add a parallel code path when the existing one can be widened.
-- **FILE-IMMEDIATELY** — If you discover a bug/issue that is important, file it (gh cli) immediately.
 - **INVESTIGATE-ALWAYS** — Every GitHub Issue gets an INVESTIGATE run before IMPLEMENT. No exceptions, no "trivial one-liner" shortcuts.
 
 ### Honest Scoping
@@ -29,8 +24,8 @@ INVESTIGATE → read → discuss → stage → merge → push →
 IMPLEMENT   → read → discuss → merge → push → (VERIFY)
 ```
 
-**Every issue starts with INVESTIGATE. No exceptions.** Even a "trivial one-liner"
-gets an INVESTIGATE first — it independently verifies the hypothesis, surfaces
+**Every issue starts with INVESTIGATE.** Even a "trivial one-liner"
+gets an INVESTIGATE first (unless you specifically get sign-off from the user for edge cases) — it independently verifies the hypothesis, surfaces
 side-effects you missed, and lands a research artifact that the IMPLEMENT can
 cite. Skipping INVESTIGATE is the most common way a run goes wrong.
 

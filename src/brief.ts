@@ -13,34 +13,24 @@ worktrees with a human-gated merge. This brief is the self-contained workflow
 primer — an LLM or human reading only this document can drive dangeresque
 correctly end-to-end.
 
-## Prime Directives
-
-### Quality Gates
-
-- **VERIFY-BEFORE** — Read current code before changing it. Never edit what you haven't read.
-- **VERIFY-AFTER** — After a change, confirm it landed. Grep the file, check the value, build the project.
-- **NO-BANDAID** — Every fix must be researched and confirmed correct. No try/catch that swallows the problem.
-- **ONE-PATH** — Extend the existing system. Do not add a parallel code path when the existing one can be widened.
-- **FILE-IMMEDIATELY** — If you discover a bug/issue that is important, file it (gh cli) immediately.
-- **INVESTIGATE-ALWAYS** — Every GitHub Issue gets an INVESTIGATE run before IMPLEMENT. No exceptions, no "trivial one-liner" shortcuts.
-
 ### Honest Scoping
 
 - Stay inside the GitHub Issue. Do not widen scope.
 - If blocked, stop and report. Do not invent requirements.
 - Never say "fixed" or "done". Use allowed status language from \`.dangeresque/AFK_WORKER_RULES.md\`.
 
-## The Loop
+## The Standard Loop
 
 \`\`\`
 INVESTIGATE → read → discuss → stage → merge → push →
 IMPLEMENT   → read → discuss → merge → push → (VERIFY)
 \`\`\`
 
-**Every issue starts with INVESTIGATE. No exceptions.** Even a "trivial one-liner"
+**Every issue starts with INVESTIGATE.** Even a "trivial one-liner"
 gets an INVESTIGATE first — it independently verifies the hypothesis, surfaces
 side-effects you missed, and lands a research artifact that the IMPLEMENT can
-cite. Skipping INVESTIGATE is the most common way a run goes wrong.
+cite. Skipping INVESTIGATE is the most common way a run goes wrong. You may only skip INVESTIGATE
+after getting sign-off by the user for an edge case.
 
 ## The One Hard Rule
 
