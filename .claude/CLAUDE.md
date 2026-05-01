@@ -1,10 +1,8 @@
 <!-- DANGERESQUE-START -->
 
-**`.dangeresque/DANGERESQUE.md`** is the primer for the `dangeresque` CLI — AFK AI workers in isolated worktrees, human-gated merges. Phases: INVESTIGATE → stage → IMPLEMENT, with `dangeresque merge` + push to origin between each. **One Hard Rule:** push `main` to origin after every merge, before the next dispatch — workers branch from `origin/main`, so a stale origin causes phantom regressions. Read it before running `dangeresque` commands or dispatching workers.
+**`dangeresque` is installed in this repo.** Use it — not raw `git worktree`, `kill <pid>`, or `cd <worktree>` — to dispatch AFK AI workers, manage isolated worktrees, and gate merges. Before dispatching or merging, run **`dangeresque brief`** (workflow loop + the hard rule). Run **`dangeresque --help`** for the full command surface (auto-generated, never stale).
 
 <!-- DANGERESQUE-END -->
-
-# Project-Specific Rules
 
 ## Build & Test
 

@@ -1,9 +1,10 @@
 # Dangeresque Workflow
 
 Dangeresque runs AI coding agents (Claude Code or Codex) AFK in isolated git
-worktrees with a human-gated merge. This brief is the self-contained workflow
-primer — an LLM or human reading only this document can drive dangeresque
-correctly end-to-end.
+worktrees with a human-gated merge. **This brief covers the workflow loop
+only — the full command surface and flags live in `dangeresque --help`,
+auto-generated from the CLI definition so it never goes stale.** Read both
+to drive dangeresque end-to-end.
 
 ### Honest Scoping
 
@@ -23,6 +24,10 @@ gets an INVESTIGATE first — it independently verifies the hypothesis, surfaces
 side-effects you missed, and lands a research artifact that the IMPLEMENT can
 cite. Skipping INVESTIGATE is the most common way a run goes wrong. You may only skip INVESTIGATE
 after getting sign-off by the user for an edge case.
+
+**Merge keeps the run report. Discard deletes it.** That asymmetry is the
+only difference between the two cleanup paths worth memorizing — see
+[Merging or Discarding](#merging-or-discarding) for the artifact mirror flow.
 
 ## The One Hard Rule
 
@@ -65,11 +70,22 @@ Create with `gh issue create --label dangeresque --title "…" --body "…"`.
 ```bash
 dangeresque run --issue <N>                    # default mode: INVESTIGATE
 dangeresque run --issue <N> --mode IMPLEMENT
+dangeresque run --issue <N> --no-verify        # skip pre-review compile/test/lint
 ```
 
-Worker + review run automatically. Review is skipped for INVESTIGATE and
-VERIFY (no code changes). A macOS notification fires when complete. Nothing
-touches main until you run `dangeresque merge`.
+Worker + (optional) verification + review run automatically. The verification
+hook (configured per project under `verify` in `.dangeresque/config.json`)
+runs compile/test/lint commands in the worktree post-rebase, pre-review;
+block-style failures skip the review pass and mark the run `failure` with
+category `verification_failed`. Review is also skipped for INVESTIGATE and
+VERIFY (no code changes) and by `--no-review`. A macOS notification fires
+when complete. Nothing touches main until you run `dangeresque merge`.
+
+After each run, dangeresque posts ONE comment on the GitHub Issue containing
+only the artifact's `<!-- SUMMARY -->` block plus the local artifact path.
+The full body never leaves the host — read it via
+`dangeresque results --issue <N>` or directly at
+`.dangeresque/runs/issue-<N>/`.
 
 ## Reading Results
 
@@ -80,8 +96,10 @@ dangeresque results --issue <N> --all  # full history
 ```
 
 Run artifacts live at `.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md` —
-tracked in git, one file per run. Read only the newest if you need prior
-context; do not read all of them.
+one file per run. The runs directory is gitignored; dangeresque mirrors
+prior runs into each new worktree at dispatch and back to the project root
+on `dangeresque merge`. Read only the newest if you need prior context;
+do not read all of them.
 
 ## Staging Guidance
 
@@ -97,21 +115,33 @@ you steer an AFK worker without being present.
 ## Merging or Discarding
 
 ```bash
-dangeresque merge <short-branch>       # merge worktree into main, clean up
-dangeresque discard <short-branch>     # drop worktree + branch, no merge
+dangeresque merge <short-branch>            # merge worktree; KEEPS the run report under .dangeresque/runs/
+dangeresque discard <short-branch>          # drop worktree + branch; DELETES the run report along with the worktree
+dangeresque discard <short-branch> --force  # also stop a running worker first, then discard
 ```
 
-Merge brings the run result file (and any code changes) into main. Then push
-main to origin before your next dispatch — see The One Hard Rule.
+Merge brings any code changes into main via `git merge`. The run result
+file is gitignored — it does NOT flow through `git merge`. On merge,
+dangeresque mirrors it from the worktree to the project root just before
+tearing the worktree down, and mirrors prior artifacts into the next
+worktree on dispatch. **Discard is destructive**: the worktree's run
+report goes with it. For a no-diff INVESTIGATE you almost always want
+`merge` (no-op git merge + artifact preserved), not `discard`. Then
+push main to origin before your next dispatch — see The One Hard Rule.
 
 ## Monitoring a Run
 
 ```bash
+dangeresque status                         # list active worktrees + worker liveness
 dangeresque logs <short-branch>            # snapshot transcript + exit
 dangeresque logs <short-branch> -f         # follow live output
 dangeresque logs <short-branch> --review   # review pass transcript
-dangeresque status                         # list active worktrees
+dangeresque stop <short-branch>            # stop a running worker; leaves worktree intact
 ```
+
+To kill a runaway worker, use `dangeresque stop` — never raw `kill <pid>`.
+Stop tears down the engine + parent CLI cleanly so the worktree, PID file,
+and artifact state stay consistent.
 
 ## Modes (one-liners; full semantics in `.dangeresque/AFK_WORKER_RULES.md`)
 
@@ -146,6 +176,11 @@ dangeresque status                         # list active worktrees
   exists.
 - **Do not read every prior run.** Read only the newest file under
   `.dangeresque/runs/issue-<N>/`.
+- **Do not reach for raw `git worktree`, `kill <pid>`, or `cd <worktree>`.**
+  Use `dangeresque merge` / `discard`, `dangeresque stop`, and
+  `dangeresque results` / `logs` — they keep PID files, artifact mirrors,
+  and worktree state consistent. `dangeresque --help` is the canonical
+  command surface.
 
 ## Pointers (details live elsewhere in your project tree)
 
