@@ -12,7 +12,7 @@
   },
   "scripts": {
     "postinstall": "yarn build",
-    "build": "tsc && tsc -p tsconfig.test.json",
+    "build": "tsc && tsc -p tsconfig.test.json && chmod +x dist/cli.js",
     "dev": "tsc --watch",
     "test": "yarn build && node --test 'dist/__tests__/**/*.test.js'"
   },
