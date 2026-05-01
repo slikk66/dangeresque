@@ -725,15 +725,27 @@ test("cli stats: real repo prints non-zero counts and all sections", () => {
 });
 
 test("cli stats: --engine codex filter is accepted and renders all sections", () => {
-  const cliPath = resolve("dist", "cli.js");
-  const out = execFileSync(
-    process.execPath,
-    [cliPath, "stats", "--engine", "codex"],
-    { encoding: "utf-8" },
-  );
-  assert.match(out, /Filters: --engine codex/);
-  assert.match(out, /By engine:/);
-  assert.match(out, /By mode \(success rate\):/);
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-stats-"));
+  try {
+    const issueDir = join(tmp, ".dangeresque", "runs", "issue-1");
+    mkdirSync(issueDir, { recursive: true });
+    writeFileSync(
+      join(issueDir, "a.json"),
+      JSON.stringify(mkArtifact({ issue_number: 1, engine: "codex" })),
+    );
+
+    const cliPath = resolve("dist", "cli.js");
+    const out = execFileSync(
+      process.execPath,
+      [cliPath, "stats", "--engine", "codex"],
+      { cwd: tmp, encoding: "utf-8" },
+    );
+    assert.match(out, /Filters: --engine codex/);
+    assert.match(out, /By engine:/);
+    assert.match(out, /By mode \(success rate\):/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("cli stats: --issue + --mode compose and shrink the result set", () => {
@@ -775,16 +787,28 @@ test("cli stats: --issue + --mode compose and shrink the result set", () => {
 });
 
 test("cli stats: --issue with no match shows zero-counter shape + note", () => {
-  const cliPath = resolve("dist", "cli.js");
-  const out = execFileSync(
-    process.execPath,
-    [cliPath, "stats", "--issue", "999999"],
-    { encoding: "utf-8" },
-  );
-  assert.match(out, /Filters: --issue 999999/);
-  assert.match(out, /Total artifacts: 0/);
-  assert.match(out, /Note: no artifacts match filters \(--issue 999999\)/);
-  assert.match(out, /By engine:/);
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-stats-"));
+  try {
+    const issueDir = join(tmp, ".dangeresque", "runs", "issue-1");
+    mkdirSync(issueDir, { recursive: true });
+    writeFileSync(
+      join(issueDir, "a.json"),
+      JSON.stringify(mkArtifact({ issue_number: 1 })),
+    );
+
+    const cliPath = resolve("dist", "cli.js");
+    const out = execFileSync(
+      process.execPath,
+      [cliPath, "stats", "--issue", "999999"],
+      { cwd: tmp, encoding: "utf-8" },
+    );
+    assert.match(out, /Filters: --issue 999999/);
+    assert.match(out, /Total artifacts: 0/);
+    assert.match(out, /Note: no artifacts match filters \(--issue 999999\)/);
+    assert.match(out, /By engine:/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("cli stats: --issue requires numeric value", () => {
