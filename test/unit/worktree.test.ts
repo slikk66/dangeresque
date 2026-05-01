@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execSync } from "node:child_process";
+import { execSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,9 @@ import {
   mergeWorktree,
   discardWorktree,
   filterWorktrees,
+  isPidAlive,
+  stopWorktree,
+  runPreflightChecks,
   type WorktreeInfo,
 } from "#dist/worktree.js";
 
@@ -306,11 +309,11 @@ test("mergeWorktree: branch checked out elsewhere → phase=branch-delete, headA
   }
 });
 
-test("discardWorktree: clean success → success, phase=branch-delete", () => {
+test("discardWorktree: clean success → success, phase=branch-delete", async () => {
   const dir = makeRepo();
   try {
     const worktreePath = addWorktree(dir, "foxtrot", "worktree-foxtrot");
-    const result = discardWorktree(dir, "worktree-foxtrot");
+    const result = await discardWorktree(dir, "worktree-foxtrot");
 
     assert.equal(result.success, true);
     assert.equal(result.phase, "branch-delete");
@@ -322,7 +325,7 @@ test("discardWorktree: clean success → success, phase=branch-delete", () => {
   }
 });
 
-test("discardWorktree: worktree-remove fails (path is not a git worktree) → phase=cleanup", () => {
+test("discardWorktree: worktree-remove fails (path is not a git worktree) → phase=cleanup", async () => {
   const dir = makeRepo();
   try {
     execSync("git branch worktree-golf", env(dir));
@@ -330,7 +333,7 @@ test("discardWorktree: worktree-remove fails (path is not a git worktree) → ph
     mkdirSync(fakePath, { recursive: true });
     writeFileSync(join(fakePath, "not-a-worktree.txt"), "decoy\n");
 
-    const result = discardWorktree(dir, "worktree-golf");
+    const result = await discardWorktree(dir, "worktree-golf");
     assert.equal(result.success, false);
     assert.equal(result.phase, "cleanup");
     assert.match(result.message, /Worktree cleanup failed/i);
@@ -341,14 +344,14 @@ test("discardWorktree: worktree-remove fails (path is not a git worktree) → ph
   }
 });
 
-test("discardWorktree: branch-delete fails when branch is checked out elsewhere → phase=branch-delete (no silent swallow)", () => {
+test("discardWorktree: branch-delete fails when branch is checked out elsewhere → phase=branch-delete (no silent swallow)", async () => {
   const dir = makeRepo();
   const externalHolder = mkdtempSync(join(tmpdir(), "dangeresque-external-"));
   const externalWtPath = join(externalHolder, "external-wt");
   try {
     execSync(`git worktree add -b worktree-hotel "${externalWtPath}"`, env(dir));
 
-    const result = discardWorktree(dir, "worktree-hotel");
+    const result = await discardWorktree(dir, "worktree-hotel");
     assert.equal(result.success, false);
     assert.equal(result.phase, "branch-delete");
     assert.match(result.message, /Branch delete failed/i);
@@ -361,10 +364,10 @@ test("discardWorktree: branch-delete fails when branch is checked out elsewhere 
   }
 });
 
-test("discardWorktree: nothing to discard (no worktree, no branch) → existing not-found message preserved", () => {
+test("discardWorktree: nothing to discard (no worktree, no branch) → existing not-found message preserved", async () => {
   const dir = makeRepo();
   try {
-    const result = discardWorktree(dir, "worktree-india");
+    const result = await discardWorktree(dir, "worktree-india");
     assert.equal(result.success, false);
     assert.match(result.message, /Nothing to discard/i);
     assert.match(result.message, /worktree-india/);
@@ -599,5 +602,324 @@ test("getWorktreeResults: header surfaces scope_violations when populated", () =
     assert.match(out, /Failure categories: scope_violation/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- PID gates: discardWorktree / mergeWorktree / stopWorktree ---
+
+const PID_FILE = ".dangeresque.pid";
+
+function writePidFileFor(
+  worktreePath: string,
+  info: { pid: number; cliPid?: number; startedAt?: number; engine?: "claude" | "codex" },
+): void {
+  writeFileSync(
+    join(worktreePath, PID_FILE),
+    JSON.stringify({
+      startedAt: Date.now(),
+      engine: "claude",
+      ...info,
+    }),
+  );
+}
+
+function spawnLongRunningChild(): ChildProcess {
+  return spawn("node", ["-e", "setInterval(()=>{},1000)"], {
+    stdio: "ignore",
+    detached: false,
+  });
+}
+
+async function awaitDead(pid: number, timeoutMs = 5000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return !isPidAlive(pid);
+}
+
+test("isPidAlive: process.pid is alive; obviously dead PID 1 (pid 0) is not", () => {
+  assert.equal(isPidAlive(process.pid), true);
+  assert.equal(isPidAlive(undefined), false);
+});
+
+test("discardWorktree: refuses with gateRefusal when PID is alive", async () => {
+  const dir = makeRepo();
+  try {
+    // Path must match what discardWorktree derives from the branch — it
+    // strips "worktree-" off the branch to compute the path.
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-investigate-901",
+      "worktree-dangeresque-investigate-901",
+    );
+    // Use process.pid — guaranteed alive while the test runs.
+    writePidFileFor(worktreePath, {
+      pid: process.pid,
+      cliPid: process.pid,
+      startedAt: Date.now() - 263_000,
+    });
+
+    const result = await discardWorktree(dir, "worktree-dangeresque-investigate-901");
+    assert.equal(result.success, false);
+    assert.equal(result.gateRefusal, true);
+    assert.equal(result.phase, "gate");
+    assert.match(result.message, /refusing to discard/);
+    assert.match(result.message, /still running/);
+    assert.match(result.message, new RegExp(String(process.pid)));
+    assert.match(result.message, /dangeresque stop/);
+    assert.match(result.message, /--force/);
+    // Worktree must still exist — gate refused before destructive ops.
+    assert.equal(existsSync(worktreePath), true);
+    assert.equal(branchExists(dir, "worktree-dangeresque-investigate-901"), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discardWorktree: passes through when PID is stale", async () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "stale-discard", "worktree-stale-discard");
+    // Spawn-and-await: capture a PID, wait for it to die, then write that
+    // dead PID into the file. process.kill(deadPid, 0) will throw ESRCH.
+    const corpse = spawn("node", ["-e", "process.exit(0)"], { stdio: "ignore" });
+    await new Promise<void>((r) => corpse.once("exit", () => r()));
+    writePidFileFor(worktreePath, {
+      pid: corpse.pid!,
+      cliPid: corpse.pid!,
+    });
+
+    const result = await discardWorktree(dir, "worktree-stale-discard");
+    assert.equal(result.success, true);
+    assert.equal(existsSync(worktreePath), false);
+    assert.equal(branchExists(dir, "worktree-stale-discard"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discardWorktree: --force kills running worker then discards", async () => {
+  const dir = makeRepo();
+  let child: ChildProcess | undefined;
+  try {
+    const worktreePath = addWorktree(dir, "force-discard", "worktree-force-discard");
+    child = spawnLongRunningChild();
+    writePidFileFor(worktreePath, {
+      pid: child.pid!,
+      cliPid: child.pid!,
+    });
+    assert.equal(isPidAlive(child.pid!), true);
+
+    const result = await discardWorktree(dir, "worktree-force-discard", { force: true });
+    assert.equal(result.success, true, `expected success, got: ${result.message}`);
+    assert.equal(existsSync(worktreePath), false);
+    assert.equal(branchExists(dir, "worktree-force-discard"), false);
+    assert.equal(await awaitDead(child.pid!), true, "child should be killed by --force discard");
+  } finally {
+    if (child?.pid && isPidAlive(child.pid)) {
+      try { process.kill(child.pid, "SIGKILL"); } catch { /* ignore */ }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: refuses with gateRefusal when PID is alive", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "live-merge", "worktree-live-merge");
+    writePidFileFor(worktreePath, {
+      pid: process.pid,
+      cliPid: process.pid,
+      startedAt: Date.now() - 60_000,
+    });
+
+    const result = mergeWorktree(dir, "worktree-live-merge");
+    assert.equal(result.success, false);
+    assert.equal(result.gateRefusal, true);
+    assert.equal(result.phase, "gate");
+    assert.match(result.message, /refusing to merge/);
+    assert.match(result.message, /still running/);
+    assert.match(result.message, /dangeresque stop/);
+    // Worktree must still exist — gate refused before merge.
+    assert.equal(existsSync(worktreePath), true);
+    assert.equal(branchExists(dir, "worktree-live-merge"), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("stopWorktree: kills tracked engine + parent PIDs and clears PID file", async () => {
+  const dir = makeRepo();
+  let child: ChildProcess | undefined;
+  try {
+    const worktreePath = addWorktree(dir, "stop-1", "worktree-stop-1");
+    child = spawnLongRunningChild();
+    writePidFileFor(worktreePath, {
+      pid: child.pid!,
+      cliPid: child.pid!,
+    });
+    assert.equal(isPidAlive(child.pid!), true);
+
+    const result = await stopWorktree(dir, "worktree-stop-1");
+    assert.equal(result.success, true);
+    assert.equal(result.killed, true);
+    assert.match(result.message, /Stopped worktree-stop-1/);
+
+    assert.equal(await awaitDead(child.pid!), true, "engine should be dead after stop");
+    assert.equal(existsSync(join(worktreePath, PID_FILE)), false);
+  } finally {
+    if (child?.pid && isPidAlive(child.pid)) {
+      try { process.kill(child.pid, "SIGKILL"); } catch { /* ignore */ }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("stopWorktree: idempotent when PID file is missing", async () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(dir, "stop-2", "worktree-stop-2");
+    const result = await stopWorktree(dir, "worktree-stop-2");
+    assert.equal(result.success, true);
+    assert.equal(result.killed, false);
+    assert.match(result.message, /No PID file/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("stopWorktree: clears stale PID file when recorded process is already dead", async () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "stop-3", "worktree-stop-3");
+    const corpse = spawn("node", ["-e", "process.exit(0)"], { stdio: "ignore" });
+    await new Promise<void>((r) => corpse.once("exit", () => r()));
+    writePidFileFor(worktreePath, {
+      pid: corpse.pid!,
+      cliPid: corpse.pid!,
+    });
+
+    const result = await stopWorktree(dir, "worktree-stop-3");
+    assert.equal(result.success, true);
+    assert.equal(result.killed, false);
+    assert.match(result.message, /stale PID file/);
+    assert.equal(existsSync(join(worktreePath, PID_FILE)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- runPreflightChecks: same-issue worktree + main-ahead-of-origin ---
+
+test("runPreflightChecks: passes when no same-issue worktree and no remote", () => {
+  const dir = makeRepo();
+  try {
+    const result = runPreflightChecks(dir, 99, "IMPLEMENT");
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runPreflightChecks: blocks when same-issue worktree exists", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(
+      dir,
+      "dangeresque-investigate-77",
+      "worktree-dangeresque-investigate-77",
+    );
+    const result = runPreflightChecks(dir, 77, "IMPLEMENT");
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /refusing to run IMPLEMENT/);
+    assert.match(result.message!, /already has a worktree/);
+    assert.match(result.message!, /worktree-dangeresque-investigate-77/);
+    assert.match(result.message!, /dangeresque merge worktree-dangeresque-investigate-77/);
+    assert.match(result.message!, /--force/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runPreflightChecks: --force bypasses gates", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(
+      dir,
+      "dangeresque-investigate-78",
+      "worktree-dangeresque-investigate-78",
+    );
+    const result = runPreflightChecks(dir, 78, "IMPLEMENT", { force: true });
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function makeRepoWithRemote(): { local: string; remote: string } {
+  const remote = mkdtempSync(join(tmpdir(), "dangeresque-remote-"));
+  execSync("git init --bare -b main", env(remote));
+
+  const local = mkdtempSync(join(tmpdir(), "dangeresque-local-"));
+  execSync("git init -b main", env(local));
+  execSync("git config user.email test@dangeresque.local", env(local));
+  execSync("git config user.name test", env(local));
+  execSync("git config commit.gpgsign false", env(local));
+  execSync('git commit --allow-empty -m "initial"', env(local));
+  execSync(`git remote add origin "${remote}"`, env(local));
+  execSync("git push -u origin main", env(local));
+  // Pin origin/HEAD so resolveDiffBase / preflight gate 2 can resolve it.
+  execSync(
+    "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main",
+    env(local),
+  );
+  return { local, remote };
+}
+
+test("runPreflightChecks: blocks when local main is ahead of origin", () => {
+  const { local, remote } = makeRepoWithRemote();
+  try {
+    writeFileSync(join(local, "ahead.txt"), "ahead\n");
+    execSync("git add ahead.txt", env(local));
+    execSync('git commit -m "local ahead of origin"', env(local));
+
+    const result = runPreflightChecks(local, 99, "IMPLEMENT");
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /local main is 1 commit ahead of origin/);
+    assert.match(result.message!, /git push origin main/);
+  } finally {
+    rmSync(local, { recursive: true, force: true });
+    rmSync(remote, { recursive: true, force: true });
+  }
+});
+
+test("runPreflightChecks: passes when local main is in sync with origin", () => {
+  const { local, remote } = makeRepoWithRemote();
+  try {
+    const result = runPreflightChecks(local, 99, "IMPLEMENT");
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(local, { recursive: true, force: true });
+    rmSync(remote, { recursive: true, force: true });
+  }
+});
+
+test("runPreflightChecks: lists every failing gate in one refusal message", () => {
+  const { local, remote } = makeRepoWithRemote();
+  try {
+    addWorktree(local, "dangeresque-investigate-88", "worktree-dangeresque-investigate-88");
+    writeFileSync(join(local, "ahead.txt"), "ahead\n");
+    execSync("git add ahead.txt", env(local));
+    execSync('git commit -m "ahead"', env(local));
+
+    const result = runPreflightChecks(local, 88, "IMPLEMENT");
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /already has a worktree/);
+    assert.match(result.message!, /local main is 1 commit ahead/);
+  } finally {
+    rmSync(local, { recursive: true, force: true });
+    rmSync(remote, { recursive: true, force: true });
   }
 });

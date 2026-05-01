@@ -7,7 +7,7 @@ import {
   resolveProjectRoot,
   type Engine,
 } from "./config.js";
-import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, type IssueData } from "./runner.js";
+import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, killActiveEngines, type IssueData } from "./runner.js";
 import {
   ArtifactBuilder,
   writeArtifact,
@@ -18,6 +18,8 @@ import {
   listWorktrees,
   mergeWorktree,
   discardWorktree,
+  stopWorktree,
+  runPreflightChecks,
   getWorktreeResults,
   getArchivedResults,
   resolveBranch,
@@ -65,13 +67,16 @@ Commands:
   stage <number> --comment "text"      Add context comment to an issue
   status                               List active dangeresque worktrees
   merge <branch>                       Merge a reviewed worktree
-  discard <branch>                     Remove a worktree without merging
+  discard <branch> [--force]           Remove a worktree (--force kills running worker first)
+  stop <branch>                        Stop a running worker; leave worktree intact
   clean --issue <N>                    Delete archived runs for an issue
   stats [options]                      Aggregate run evaluation artifacts; review auto-skipped for INVESTIGATE/VERIFY modes; --glossary explains terms
   allow mcp [<server>] [--dry-run]     Add mcp__<server> entries to allowedTools (reads ./.mcp.json if no server given)
   allow bash "<pattern>" [--dry-run]   Append Bash(<pattern>) to allowedTools (e.g. allow bash "npm install *")
   init                                 Scaffold .dangeresque/ config + skills
   brief                                Print a self-contained workflow primer (pipe to CLAUDE.md or less)
+
+Exit codes: 0 success • 1 error • 2 gate refusal (workflow state — fix and retry)
 
 Run options:
   --issue <number>  Read task from GitHub Issue (recommended)
@@ -81,6 +86,7 @@ Run options:
   --name <name>     Custom worktree name (default: dangeresque-<timestamp>)
   --no-review       Skip the review pass
   --interactive     Run interactively (default: headless with -p)
+  --force           Bypass pre-flight gates (same-issue worktree, stale main)
   --model <model>   Override model (default: ${engine === "codex" ? "gpt-5.4" : "claude-opus-4-7"})
 ${engineRunNotes}  --review-model <model>  Override model for review pass (default: matches --model)
   --review-effort <level> Override effort for review pass (default: matches --effort)
@@ -176,6 +182,9 @@ async function main() {
     case "discard":
       await cmdDiscard(args.slice(1));
       break;
+    case "stop":
+      await cmdStop(args.slice(1));
+      break;
     case "clean":
       cmdClean(args.slice(1));
       break;
@@ -224,6 +233,7 @@ async function cmdRun(args: string[]) {
   let issueFixturePath: string | undefined;
   let mode: string | undefined;
   let effortFlagUsed = false;
+  let force = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--name" && args[i + 1]) {
@@ -232,6 +242,8 @@ async function cmdRun(args: string[]) {
       review = false;
     } else if (args[i] === "--interactive" || args[i] === "--no-tmux") {
       config.headless = false;
+    } else if (args[i] === "--force") {
+      force = true;
     } else if (args[i] === "--model" && args[i + 1]) {
       config.model = args[++i];
       // Hidden advanced override flag (kept for power users)
@@ -326,10 +338,41 @@ async function cmdRun(args: string[]) {
     console.warn("⚠️  --effort is ignored in codex mode");
   }
 
+  // Pre-flight gates: refuse to spawn a new worker when an unmerged worktree
+  // for the same issue exists, or when local main is ahead of origin. Both
+  // are workflow problems where the orchestrator skipped a step; surfacing
+  // them up front avoids the silent-stale-base failure mode in #53.
+  if (issueNumber !== undefined) {
+    const preflight = runPreflightChecks(projectRoot, issueNumber, effectiveMode, { force });
+    if (!preflight.ok) {
+      console.error(preflight.message);
+      process.exit(2);
+    }
+  }
+
   // Auto-generate name from mode + issue when not explicitly provided
   if (!name && issueNumber) {
     name = `${effectiveMode.toLowerCase()}-${issueNumber}`;
   }
+
+  // Install SIGTERM/SIGINT handler so an external `dangeresque stop` (or
+  // operator Ctrl-C) cleanly aborts the worker. We signal the engine and
+  // let its child.on("close") resolve runWorker with a non-zero exit code
+  // — cmdRun then takes the FAIL-banner path naturally, but the
+  // stopRequested flag suppresses the GitHub failure comment so an
+  // aborted run does not leave a stale "FAILED" notice on the issue.
+  let stopRequested = false;
+  const onStopSignal = (signal: NodeJS.Signals) => {
+    if (stopRequested) return;
+    stopRequested = true;
+    console.error(`\nReceived ${signal} — stopping engine and aborting run.`);
+    killActiveEngines("SIGTERM");
+    setTimeout(() => {
+      killActiveEngines("SIGKILL");
+    }, 5000).unref();
+  };
+  process.on("SIGTERM", () => onStopSignal("SIGTERM"));
+  process.on("SIGINT", () => onStopSignal("SIGINT"));
 
   const effectiveReviewModel = config.reviewModel ?? config.model;
   const effectiveReviewEffort = config.reviewEffort ?? config.effort;
@@ -384,7 +427,7 @@ async function cmdRun(args: string[]) {
   if (workerResult.exitCode !== 0) {
     const banner = "!".repeat(60);
     console.error(`\n${banner}`);
-    console.error(`!!  DANGERESQUE RUN FAILED`);
+    console.error(`!!  DANGERESQUE RUN ${stopRequested ? "STOPPED" : "FAILED"}`);
     console.error(`!!  Worker exit code: ${workerResult.exitCode}`);
     console.error(`!!  Worktree: .claude/worktrees/${workerResult.worktreeName}/`);
     console.error(`!!  Branch:   ${workerResult.branch}`);
@@ -394,7 +437,11 @@ async function cmdRun(args: string[]) {
     console.error(`!!  Cleanup: dangeresque discard ${workerResult.branch}`);
     console.error(`${banner}\n`);
 
-    if (issueNumber && !fixtureUsed) {
+    // Skip the GitHub failure comment when the operator explicitly stopped
+    // the run — a stale "FAILED" comment from an aborted run is noise, not
+    // signal. Real failures (engine crash, exit code from worker logic)
+    // still get reported.
+    if (issueNumber && !fixtureUsed && !stopRequested) {
       try {
         postRunComment({
           projectRoot,
@@ -749,7 +796,7 @@ async function cmdMerge(args: string[]) {
       console.log(result.message);
     } else {
       console.error(result.message);
-      process.exit(1);
+      process.exit(result.gateRefusal ? 2 : 1);
     }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -759,17 +806,21 @@ async function cmdMerge(args: string[]) {
 
 async function cmdDiscard(args: string[]) {
   const projectRoot = resolveProjectRoot();
+  const force = args.includes("--force");
   const positional = args.find((a) => !a.startsWith("-"));
   const worktrees = listWorktrees(projectRoot);
 
+  // With --force, the user is explicitly asking to discard running worktrees
+  // too, so the picker should surface them. Otherwise keep the long-standing
+  // "finished" UX hint (and rely on the in-function PID gate as the real check).
   const chosen = await resolvePositionalOrPick(
     positional,
     worktrees,
-    "finished",
+    force ? "all" : "finished",
     "Select a worktree to discard",
   );
   if (!chosen) {
-    console.error("Usage: dangeresque discard <branch>");
+    console.error("Usage: dangeresque discard <branch> [--force]");
     console.error("Run 'dangeresque status' to see active worktrees");
     process.exit(1);
   }
@@ -777,7 +828,41 @@ async function cmdDiscard(args: string[]) {
   try {
     assertInMainCheckout(projectRoot, "discard");
     const resolved = resolveBranch(projectRoot, chosen);
-    const result = discardWorktree(projectRoot, resolved);
+    const result = await discardWorktree(projectRoot, resolved, { force });
+
+    if (result.success) {
+      console.log(result.message);
+    } else {
+      console.error(result.message);
+      process.exit(result.gateRefusal ? 2 : 1);
+    }
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+}
+
+async function cmdStop(args: string[]) {
+  const projectRoot = resolveProjectRoot();
+  const positional = args.find((a) => !a.startsWith("-"));
+  const worktrees = listWorktrees(projectRoot);
+
+  const chosen = await resolvePositionalOrPick(
+    positional,
+    worktrees,
+    "running",
+    "Select a running worker to stop",
+  );
+  if (!chosen) {
+    console.error("Usage: dangeresque stop <branch>");
+    console.error("Run 'dangeresque status' to see running workers");
+    process.exit(1);
+  }
+
+  try {
+    assertInMainCheckout(projectRoot, "stop");
+    const resolved = resolveBranch(projectRoot, chosen);
+    const result = await stopWorktree(projectRoot, resolved);
 
     if (result.success) {
       console.log(result.message);

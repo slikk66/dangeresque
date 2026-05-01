@@ -1,5 +1,6 @@
-import { spawn, execSync, spawnSync } from "node:child_process";
+import { spawn, execSync, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { constants as osConstants } from "node:os";
 import { join, dirname, relative } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream } from "node:fs";
 import {
@@ -8,7 +9,60 @@ import {
   RUNS_DIR,
   projectHash,
 } from "./config.js";
-import { writePidFile, updatePidFile, removePidFile, readPidFile, resolveDiffBase } from "./worktree.js";
+import { writePidFile, removePidFile, readPidFile, resolveDiffBase } from "./worktree.js";
+
+// --- engine-process tracking ---
+//
+// `dangeresque stop` and the parent CLI's SIGTERM handler need to signal the
+// running engine child. The PID file gives `stop` (a separate process) what
+// it needs, but the in-process signal handler cannot read its own PID file
+// reliably during shutdown — it needs a direct ChildProcess reference. This
+// module-level set is the bridge.
+const activeEngines = new Set<ChildProcess>();
+
+function trackEngine(child: ChildProcess): void {
+  activeEngines.add(child);
+  const drop = () => activeEngines.delete(child);
+  child.once("close", drop);
+  child.once("error", drop);
+}
+
+/**
+ * Send `signal` to every currently-running engine spawned in this process.
+ * Used by the parent CLI's SIGTERM handler so an external `dangeresque stop`
+ * cleanly aborts both phases of a run instead of only killing the engine and
+ * letting the parent spawn the review pass on top.
+ */
+export function killActiveEngines(signal: NodeJS.Signals): number {
+  let count = 0;
+  for (const child of activeEngines) {
+    if (!child.pid) continue;
+    try {
+      process.kill(child.pid, signal);
+      count++;
+    } catch {
+      /* already dead */
+    }
+  }
+  return count;
+}
+
+/**
+ * Translate a `child.on("close", (code, signal))` event into a real exit
+ * code. Without this, a signal-killed engine (`code === null`) collapses to
+ * 0 via `code ?? 0`, which makes the parent CLI think the worker succeeded
+ * and proceed to spawn the review pass on top of a killed run. Maps signal
+ * names to the POSIX `128 + signal-number` convention.
+ */
+export function exitCodeFromCloseEvent(
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): number {
+  if (code !== null) return code;
+  if (signal === null) return 0;
+  const signalNum = osConstants.signals[signal] ?? 0;
+  return 128 + signalNum;
+}
 
 export interface RunOptions {
   projectRoot: string;
@@ -612,11 +666,17 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
       console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
       console.log(`\n--- Worker session starting ---\n`);
 
+      // detached:true makes the engine a process-group leader, letting
+      // `dangeresque stop` cascade SIGKILL to grandchildren (e.g. a stuck
+      // Bash tool) via `process.kill(-pid, …)`. Codex always pipes stdio,
+      // so detaching is safe — it does not steal the controlling terminal.
       const child = spawn("codex", args, {
         cwd: worktreePath,
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
+        detached: true,
       });
+      trackEngine(child);
 
       child.stdin?.on("error", () => { /* tolerate EPIPE if codex exits before reading */ });
       child.stdin?.end(prompt);
@@ -633,6 +693,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
 
       if (child.pid) {
         writePidFile(worktreePath, child.pid, {
+          cliPid: process.pid,
           engine: "codex",
           projectHash: hash,
           workerLogPath: logPath,
@@ -646,10 +707,11 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
         reject(new Error(`Failed to start codex: ${err.message}`));
       });
 
-      child.on("close", (code: number | null) => {
+      child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
         logStream.end();
         removePidFile(worktreePath);
-        if ((code ?? 0) === 0) {
+        const exitCode = exitCodeFromCloseEvent(code, signal);
+        if (exitCode === 0) {
           commitWorkerChanges(
             worktreePath,
             opts.issueData.number,
@@ -657,7 +719,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
           );
           commitArchiveFile(worktreePath, archivePath);
         }
-        resolve({ worktreeName, branch, exitCode: code ?? 0, archivePath });
+        resolve({ worktreeName, branch, exitCode, archivePath });
       });
     });
   }
@@ -673,11 +735,17 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
     console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
     console.log(`\n--- Worker session starting ---\n`);
 
+    // Detach only on the headless path. Interactive claude inherits the
+    // operator's controlling TTY ("inherit"), and detaching there steals
+    // terminal control. The headless path pipes stdin and inherits
+    // stdout/stderr, which is safe to detach.
     const child = spawn("claude", args, {
       cwd: opts.projectRoot,
       stdio: useStdin ? ["pipe", "inherit", "inherit"] : "inherit",
       env: { ...process.env },
+      detached: useStdin,
     });
+    trackEngine(child);
 
     if (useStdin) {
       child.stdin?.on("error", () => { /* tolerate EPIPE if claude exits before reading */ });
@@ -685,9 +753,17 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
     }
 
     if (child.pid) {
-      setTimeout(() => {
-        try { writePidFile(worktreePath, child.pid!, { workerSessionId, projectHash: hash, engine: "claude", archivePath }); } catch { /* worktree not ready yet — ok */ }
-      }, 3000);
+      try {
+        writePidFile(worktreePath, child.pid, {
+          cliPid: process.pid,
+          workerSessionId,
+          projectHash: hash,
+          engine: "claude",
+          archivePath,
+        });
+      } catch {
+        /* worktree not ready yet — ok */
+      }
     }
 
     child.on("error", (err: Error) => {
@@ -695,13 +771,14 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
       reject(new Error(`Failed to start claude: ${err.message}`));
     });
 
-    child.on("close", (code: number | null) => {
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       removePidFile(worktreePath);
-      if ((code ?? 0) === 0) commitArchiveFile(worktreePath, archivePath);
+      const exitCode = exitCodeFromCloseEvent(code, signal);
+      if (exitCode === 0) commitArchiveFile(worktreePath, archivePath);
       resolve({
         worktreeName,
         branch,
-        exitCode: code ?? 0,
+        exitCode,
         workerSessionId,
         archivePath,
       });
@@ -730,7 +807,9 @@ export function runReview(
         cwd: worktreePath,
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
+        detached: true,
       });
+      trackEngine(child);
 
       child.stdin?.on("error", () => { /* tolerate EPIPE if codex exits before reading */ });
       child.stdin?.end(prompt);
@@ -748,6 +827,7 @@ export function runReview(
       if (child.pid) {
         const existing = readPidFile(worktreePath);
         writePidFile(worktreePath, child.pid, {
+          cliPid: process.pid,
           engine: "codex",
           projectHash: hash,
           workerLogPath: existing?.workerLogPath,
@@ -762,11 +842,12 @@ export function runReview(
         reject(new Error(`Failed to start codex review: ${err.message}`));
       });
 
-      child.on("close", (code: number | null) => {
+      child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
         logStream.end();
         removePidFile(worktreePath);
-        if ((code ?? 0) === 0) commitArchiveFile(worktreePath, archivePath);
-        resolve({ worktreeName, branch, exitCode: code ?? 0, archivePath });
+        const exitCode = exitCodeFromCloseEvent(code, signal);
+        if (exitCode === 0) commitArchiveFile(worktreePath, archivePath);
+        resolve({ worktreeName, branch, exitCode, archivePath });
       });
     });
   }
@@ -781,7 +862,9 @@ export function runReview(
       cwd: opts.projectRoot,
       stdio: useStdin ? ["pipe", "inherit", "inherit"] : "inherit",
       env: { ...process.env },
+      detached: useStdin,
     });
+    trackEngine(child);
 
     if (useStdin) {
       child.stdin?.on("error", () => { /* tolerate EPIPE if claude exits before reading */ });
@@ -789,8 +872,14 @@ export function runReview(
     }
 
     if (child.pid) {
-      writePidFile(worktreePath, child.pid, { reviewSessionId, workerSessionId, projectHash: hash, engine: "claude", archivePath });
-      updatePidFile(worktreePath, { reviewSessionId, workerSessionId, projectHash: hash, engine: "claude", archivePath });
+      writePidFile(worktreePath, child.pid, {
+        cliPid: process.pid,
+        reviewSessionId,
+        workerSessionId,
+        projectHash: hash,
+        engine: "claude",
+        archivePath,
+      });
     }
 
     child.on("error", (err: Error) => {
@@ -798,10 +887,11 @@ export function runReview(
       reject(new Error(`Failed to start claude review: ${err.message}`));
     });
 
-    child.on("close", (code: number | null) => {
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       removePidFile(worktreePath);
-      if ((code ?? 0) === 0) commitArchiveFile(worktreePath, archivePath);
-      resolve({ worktreeName, branch, exitCode: code ?? 0, archivePath });
+      const exitCode = exitCodeFromCloseEvent(code, signal);
+      if (exitCode === 0) commitArchiveFile(worktreePath, archivePath);
+      resolve({ worktreeName, branch, exitCode, archivePath });
     });
   });
 }

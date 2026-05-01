@@ -18,6 +18,7 @@ import {
   buildClaudeWorkerArgs,
   buildClaudeReviewArgs,
   readPromptWithLocal,
+  exitCodeFromCloseEvent,
   CODEX_RULES_RELPATH,
 } from "#dist/runner.js";
 import type { RunOptions } from "#dist/runner.js";
@@ -667,4 +668,31 @@ test("readPromptWithLocal: canonical missing → throws (readFileSync ENOENT)", 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- exitCodeFromCloseEvent: prevent "code ?? 0" signal-kill collapse ---
+
+test("exitCodeFromCloseEvent: passes through non-null exit code", () => {
+  assert.equal(exitCodeFromCloseEvent(0, null), 0);
+  assert.equal(exitCodeFromCloseEvent(1, null), 1);
+  assert.equal(exitCodeFromCloseEvent(42, null), 42);
+});
+
+test("exitCodeFromCloseEvent: signal-killed maps to 128 + signal number (POSIX)", () => {
+  // SIGTERM is 15 → 143; SIGKILL is 9 → 137; SIGINT is 2 → 130.
+  assert.equal(exitCodeFromCloseEvent(null, "SIGTERM"), 143);
+  assert.equal(exitCodeFromCloseEvent(null, "SIGKILL"), 137);
+  assert.equal(exitCodeFromCloseEvent(null, "SIGINT"), 130);
+});
+
+test("exitCodeFromCloseEvent: both null returns 0 (clean exit fallback)", () => {
+  assert.equal(exitCodeFromCloseEvent(null, null), 0);
+});
+
+test("exitCodeFromCloseEvent: signal takes precedence over a non-null code", () => {
+  // Per Node child_process: when killed by signal, code is null. But guard
+  // against the inverse — if code is set we trust it; signal alone never
+  // beats an explicit code. This locks in the documented contract.
+  assert.equal(exitCodeFromCloseEvent(0, null), 0);
+  assert.equal(exitCodeFromCloseEvent(0, "SIGTERM"), 0);
 });

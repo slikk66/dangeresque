@@ -36,7 +36,14 @@ export function resolveDiffBase(projectRoot: string): string {
 }
 
 export interface PidInfo {
+  /** Engine child PID (claude / codex). */
   pid: number;
+  /**
+   * Dangeresque CLI parent PID. Tracked separately so `dangeresque stop` can
+   * SIGTERM the parent (which propagates to the engine and skips the review
+   * pass) instead of only killing the engine and leaking review-pass spawns.
+   */
+  cliPid?: number;
   startedAt: number; // epoch ms
   workerSessionId?: string;
   reviewSessionId?: string;
@@ -147,6 +154,35 @@ export function assertInMainCheckout(
 
 // --- PID file management ---
 
+/**
+ * Liveness probe for a recorded PID. `process.kill(pid, 0)` is a no-op signal
+ * that throws ESRCH when the PID does not exist (treated as not-running) and
+ * EPERM when it exists but is owned by another user (treated as not-running
+ * here — single-user CLI invariant).
+ */
+export function isPidAlive(pid: number | undefined): boolean {
+  if (pid === undefined) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function formatElapsedMs(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function shortBranchForRemediation(branch: string): string {
+  return branch.replace(/^worktree-dangeresque-/, "").replace(/^worktree-/, "");
+}
+
 function readPidState(worktreePath: string): {
   pidInfo?: PidInfo;
   running: boolean;
@@ -156,13 +192,12 @@ function readPidState(worktreePath: string): {
 
   try {
     const pidInfo: PidInfo = JSON.parse(readFileSync(pidPath, "utf-8"));
-    // Check if process is alive
-    try {
-      process.kill(pidInfo.pid, 0);
-      return { pidInfo, running: true };
-    } catch {
-      return { pidInfo, running: false };
-    }
+    // A run is considered live if EITHER the engine child OR the dangeresque
+    // CLI parent is still alive. The engine may be between worker→review
+    // transitions (engine briefly absent, parent still running) or vice-versa.
+    const engineAlive = isPidAlive(pidInfo.pid);
+    const parentAlive = isPidAlive(pidInfo.cliPid);
+    return { pidInfo, running: engineAlive || parentAlive };
   } catch {
     return { running: false };
   }
@@ -400,7 +435,7 @@ export function extractMode(branch: string): string {
   return modeMatch ? modeMatch[1].toUpperCase() : "UNKNOWN";
 }
 
-export type WorktreePhase = "merge" | "cleanup" | "branch-delete" | "noop";
+export type WorktreePhase = "merge" | "cleanup" | "branch-delete" | "noop" | "gate";
 
 export interface WorktreeOpResult {
   success: boolean;
@@ -410,12 +445,41 @@ export interface WorktreeOpResult {
   headAdvanced?: boolean;
   headBefore?: string;
   headAfter?: string;
+  /**
+   * True when the operation refused because of a workflow gate (e.g. worker
+   * still running). CLI commands map this to exit code 2 so the orchestrator
+   * can distinguish "fix workflow and retry" from a real error (exit 1).
+   */
+  gateRefusal?: boolean;
 }
 
 export function mergeWorktree(
   projectRoot: string,
   branch: string,
 ): WorktreeOpResult {
+  // Gate: refuse if worker (engine or parent CLI) is still running. Without
+  // this check git happily merges a branch whose worktree is mid-edit, then
+  // Phase 2 yanks the directory out from under the live process.
+  const worktreeName = branch.replace("worktree-", "");
+  const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
+  if (existsSync(worktreePath)) {
+    const { pidInfo, running } = readPidState(worktreePath);
+    if (running && pidInfo) {
+      const elapsed = formatElapsedMs(Date.now() - pidInfo.startedAt);
+      const short = shortBranchForRemediation(branch);
+      return {
+        success: false,
+        phase: "gate",
+        gateRefusal: true,
+        message:
+          `ERROR: refusing to merge ${branch} because -\n` +
+          `- worker is still running (pid ${pidInfo.pid}, started ${elapsed} ago)\n\n` +
+          `Stop it first:\n` +
+          `  dangeresque stop ${short}`,
+      };
+    }
+  }
+
   let headBefore: string;
   try {
     headBefore = execSync("git rev-parse HEAD", {
@@ -477,14 +541,7 @@ export function mergeWorktree(
     };
   }
 
-  const worktreePath = join(
-    projectRoot,
-    ".claude",
-    "worktrees",
-    branch.replace("worktree-", ""),
-  );
-
-  // Phase 2: worktree cleanup
+  // Phase 2: worktree cleanup (worktreePath already resolved at top of function)
   if (existsSync(worktreePath)) {
     try {
       execSync(`git worktree remove "${worktreePath}"`, {
@@ -544,12 +601,53 @@ export function mergeWorktree(
   };
 }
 
-export function discardWorktree(
+export interface DiscardOptions {
+  /**
+   * If true, kill any running worker (parent CLI + engine child) before
+   * discarding. Without --force, a running worker causes refusal.
+   */
+  force?: boolean;
+}
+
+export async function discardWorktree(
   projectRoot: string,
   branch: string,
-): WorktreeOpResult {
+  opts: DiscardOptions = {},
+): Promise<WorktreeOpResult> {
   const worktreeName = branch.replace("worktree-", "");
   const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
+
+  // Gate: refuse if worker is still running, unless --force.
+  if (existsSync(worktreePath)) {
+    const { pidInfo, running } = readPidState(worktreePath);
+    if (running && pidInfo) {
+      if (opts.force) {
+        const stopResult = await stopWorktree(projectRoot, branch);
+        if (!stopResult.success) {
+          return {
+            success: false,
+            phase: "gate",
+            gateRefusal: false,
+            message: `Failed to stop running worker before discarding ${branch}: ${stopResult.message}`,
+          };
+        }
+      } else {
+        const elapsed = formatElapsedMs(Date.now() - pidInfo.startedAt);
+        const short = shortBranchForRemediation(branch);
+        return {
+          success: false,
+          phase: "gate",
+          gateRefusal: true,
+          message:
+            `ERROR: refusing to discard ${branch} because -\n` +
+            `- worker is still running (pid ${pidInfo.pid}, started ${elapsed} ago)\n\n` +
+            `Stop it first:\n` +
+            `  dangeresque stop ${short}\n\n` +
+            `Or, if you really want to discard anyway (this will kill the worker), re-run with --force.`,
+        };
+      }
+    }
+  }
 
   let removedWorktree = false;
 
@@ -767,4 +865,184 @@ export function getArchivedResults(
   }
 
   return lines.join("\n");
+}
+
+// --- stop ---
+
+export interface StopResult {
+  success: boolean;
+  /** True if at least one tracked process was alive and signalled. */
+  killed: boolean;
+  message: string;
+}
+
+const STOP_GRACE_MS = 5000;
+
+async function waitForExit(pids: number[], deadlineMs: number): Promise<void> {
+  while (Date.now() < deadlineMs) {
+    if (pids.every((p) => !isPidAlive(p))) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+/**
+ * Stop a running worker. Sends SIGTERM to the dangeresque CLI parent and the
+ * engine child (both tracked in the PID file), waits up to 5s, then SIGKILLs
+ * any survivors. Worktree is left intact for inspection. PID file is cleared.
+ *
+ * Idempotent: if no PID file exists or the recorded processes are already
+ * dead, returns success with `killed: false` and clears any stale PID file.
+ */
+export async function stopWorktree(
+  projectRoot: string,
+  branch: string,
+): Promise<StopResult> {
+  const worktreeName = branch.replace("worktree-", "");
+  const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
+
+  if (!existsSync(worktreePath)) {
+    return {
+      success: false,
+      killed: false,
+      message: `Worktree not found: ${worktreePath}`,
+    };
+  }
+
+  const pidInfo = readPidFile(worktreePath);
+  if (!pidInfo) {
+    return {
+      success: true,
+      killed: false,
+      message: `No PID file found in ${worktreePath} — nothing to stop.`,
+    };
+  }
+
+  // Kill order: parent CLI first so its SIGTERM handler propagates to the
+  // engine and skips the review pass cleanly. Engine PID is included as a
+  // backstop in case the parent's handler is unresponsive.
+  const candidates: number[] = [];
+  if (pidInfo.cliPid !== undefined) candidates.push(pidInfo.cliPid);
+  if (pidInfo.pid !== pidInfo.cliPid) candidates.push(pidInfo.pid);
+  const live = candidates.filter((p) => isPidAlive(p));
+
+  if (live.length === 0) {
+    removePidFile(worktreePath);
+    return {
+      success: true,
+      killed: false,
+      message: `No live process for ${branch}; cleared stale PID file.`,
+    };
+  }
+
+  for (const p of live) {
+    try {
+      process.kill(p, "SIGTERM");
+    } catch {
+      /* already gone */
+    }
+  }
+
+  await waitForExit(live, Date.now() + STOP_GRACE_MS);
+
+  const survivors = live.filter((p) => isPidAlive(p));
+  for (const p of survivors) {
+    try {
+      process.kill(p, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  }
+
+  // Engine pgid backstop: if the engine was spawned with detached:true it is
+  // a process-group leader and -pid cascades SIGKILL to any tool grandchildren
+  // (e.g. a stuck `Bash(...)` invocation). Harmless when not detached.
+  try {
+    process.kill(-pidInfo.pid, "SIGKILL");
+  } catch {
+    /* not a pgid leader, or already gone */
+  }
+
+  removePidFile(worktreePath);
+
+  return {
+    success: true,
+    killed: true,
+    message: `Stopped ${branch} (signalled ${live.length} process${live.length > 1 ? "es" : ""}).`,
+  };
+}
+
+// --- run preflight gates ---
+
+export interface PreflightOptions {
+  /** Bypass all gates. */
+  force?: boolean;
+}
+
+export interface PreflightResult {
+  ok: boolean;
+  /** Refusal message when ok=false. CLI maps this to exit code 2. */
+  message?: string;
+}
+
+/**
+ * Pre-run gates for `dangeresque run`. Refuses to dispatch a new worker when:
+ *  - any existing worktree references the same issue (any mode, running or
+ *    finished — the prior run must be merged or discarded first);
+ *  - the local default branch is ahead of origin (the new worktree branches
+ *    from origin/HEAD, so a stale local head produces phantom diff drift).
+ *
+ * Repos without an `origin` remote silently skip the second gate. `--force`
+ * bypasses both gates and runs unchecked.
+ */
+export function runPreflightChecks(
+  projectRoot: string,
+  issueNumber: number,
+  mode: string,
+  opts: PreflightOptions = {},
+): PreflightResult {
+  if (opts.force) return { ok: true };
+
+  const failures: string[] = [];
+  const remediations: string[] = [];
+
+  // Gate 1: same-issue worktree exists (any mode, any state).
+  const sameIssue = listWorktrees(projectRoot).filter(
+    (wt) => extractIssueNumber(wt.branch) === issueNumber,
+  );
+  for (const wt of sameIssue) {
+    failures.push(`issue ${issueNumber} already has a worktree: ${wt.branch}`);
+    remediations.push(`  dangeresque merge ${wt.branch}`);
+    remediations.push(`  dangeresque discard ${wt.branch}`);
+  }
+
+  // Gate 2: local default branch ahead of origin/HEAD. Mirrors the
+  // checkRemoteBehind warn in src/runner.ts; here it blocks instead of warns.
+  try {
+    const ahead = execSync("git rev-list --count origin/HEAD..HEAD", {
+      cwd: projectRoot,
+      encoding: "utf-8",
+      stdio: "pipe",
+    }).trim();
+    const count = parseInt(ahead, 10);
+    if (count > 0) {
+      failures.push(
+        `local main is ${count} commit${count > 1 ? "s" : ""} ahead of origin (you probably forgot to push)`,
+      );
+      remediations.push("  git push origin main");
+    }
+  } catch {
+    // No remote / no origin/HEAD → silent noop. Local-only repos are valid.
+  }
+
+  if (failures.length === 0) return { ok: true };
+
+  const lines: string[] = [`ERROR: refusing to run ${mode} because -`];
+  for (const f of failures) lines.push(`- ${f}`);
+  lines.push("");
+  lines.push("Fix one of these:");
+  lines.push(...remediations);
+  lines.push("");
+  lines.push("Or, if you really want to continue anyway, re-run with --force.");
+
+  return { ok: false, message: lines.join("\n") };
 }
