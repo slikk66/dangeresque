@@ -172,19 +172,50 @@ test("mergeWorktree: clean fast-forward → success, phase=merge, headAdvanced=t
   }
 });
 
-test("mergeWorktree: no-op merge → phase=noop, headAdvanced=false, worktree preserved", () => {
+test("mergeWorktree: no-op merge (no commits, no artifacts) → success, phase=noop, worktree torn down", () => {
   const dir = makeRepo();
   try {
     addWorktree(dir, "bravo", "worktree-bravo", { advance: false });
     const result = mergeWorktree(dir, "worktree-bravo");
 
-    assert.equal(result.success, false);
+    assert.equal(result.success, true);
     assert.equal(result.phase, "noop");
     assert.equal(result.headAdvanced, false);
     assert.equal(result.headBefore, result.headAfter);
-    assert.match(result.message, /no effect|up to date/i);
-    assert.equal(existsSync(join(dir, ".claude", "worktrees", "bravo")), true);
-    assert.equal(branchExists(dir, "worktree-bravo"), true);
+    assert.match(result.message, /no code changes/i);
+    assert.equal(existsSync(join(dir, ".claude", "worktrees", "bravo")), false);
+    assert.equal(branchExists(dir, "worktree-bravo"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: no-op merge with gitignored runs/ artifact → mirrors to projectRoot", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "ignore runs"', env(dir));
+
+    const worktreePath = addWorktree(dir, "dangeresque-investigate-99", "worktree-dangeresque-investigate-99", { advance: false });
+    const wtRunsDir = join(worktreePath, ".dangeresque", "runs", "issue-99");
+    mkdirSync(wtRunsDir, { recursive: true });
+    writeFileSync(join(wtRunsDir, "2026-05-01T00-00-00-INVESTIGATE.md"), "# investigate body\n");
+    writeFileSync(join(wtRunsDir, "2026-05-01T00-00-00-INVESTIGATE.json"), '{"mode":"INVESTIGATE"}\n');
+
+    const result = mergeWorktree(dir, "worktree-dangeresque-investigate-99");
+
+    assert.equal(result.success, true);
+    assert.equal(result.phase, "noop");
+    assert.equal(result.headAdvanced, false);
+    assert.equal(existsSync(join(dir, ".claude", "worktrees", "dangeresque-investigate-99")), false);
+    assert.equal(branchExists(dir, "worktree-dangeresque-investigate-99"), false);
+
+    const mirroredMd = join(dir, ".dangeresque", "runs", "issue-99", "2026-05-01T00-00-00-INVESTIGATE.md");
+    const mirroredJson = join(dir, ".dangeresque", "runs", "issue-99", "2026-05-01T00-00-00-INVESTIGATE.json");
+    assert.equal(existsSync(mirroredMd), true);
+    assert.equal(existsSync(mirroredJson), true);
+    assert.match(readFileSync(mirroredMd, "utf-8"), /investigate body/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -296,7 +327,7 @@ test("mergeWorktree: branch checked out elsewhere → phase=branch-delete, headA
     assert.equal(result.headAdvanced, true);
     assert.ok(result.headBefore);
     assert.ok(result.headAfter);
-    assert.match(result.message, /Merge succeeded and worktree removed/);
+    assert.match(result.message, /Merge succeeded.*worktree removed/);
     assert.match(result.message, new RegExp(result.headAfter!.slice(0, 7)));
     assert.match(result.message, /Branch delete failed/i);
     assert.match(result.message, /worktree-kilo/);

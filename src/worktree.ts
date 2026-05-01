@@ -517,9 +517,8 @@ export function mergeWorktree(
   }
 
   // Phase 1: merge
-  let mergeOutput: string;
   try {
-    mergeOutput = execSync(`git merge ${branch}`, {
+    execSync(`git merge ${branch}`, {
       cwd: projectRoot,
       encoding: "utf-8",
       stdio: "pipe",
@@ -550,16 +549,16 @@ export function mergeWorktree(
     };
   }
 
-  if (headBefore === headAfter) {
-    return {
-      success: false,
-      phase: "noop",
-      headAdvanced: false,
-      headBefore,
-      headAfter,
-      message: `Merge had no effect — HEAD unchanged (${headBefore.slice(0, 8)}). git said: "${mergeOutput.trim()}". Worktree NOT cleaned up.`,
-    };
-  }
+  // After #57, INVESTIGATE/VERIFY worktrees end here with no commits ahead of
+  // origin/main (artifacts are gitignored and flow via mirrorIssueRuns, not
+  // git merge). A no-op `git merge` is therefore the expected success path
+  // for no-code modes — fall through to Phase 2 so the mirror step still
+  // runs and the worktree gets torn down. The final success message
+  // disambiguates the noop case from a real fast-forward.
+  const noopMerge = headBefore === headAfter;
+  const mergeOutcome = noopMerge
+    ? `No commits merged (HEAD unchanged at ${headBefore.slice(0, 8)})`
+    : `Merge succeeded — main is now at ${headAfter.slice(0, 8)} (was ${headBefore.slice(0, 8)})`;
 
   // Phase 2: worktree cleanup (worktreePath already resolved at top of function).
   // Mirror gitignored run artifacts out of the worktree before removing it,
@@ -573,11 +572,11 @@ export function mergeWorktree(
         return {
           success: false,
           phase: "cleanup",
-          headAdvanced: true,
+          headAdvanced: !noopMerge,
           headBefore,
           headAfter,
           message:
-            `Merge succeeded — main is now at ${headAfter.slice(0, 8)} (was ${headBefore.slice(0, 8)}). ` +
+            `${mergeOutcome}. ` +
             `Mirroring run artifacts to project root failed: ${err instanceof Error ? err.message : String(err)}. ` +
             `Worktree NOT removed at ${worktreePath} — copy ${worktreePath}/.dangeresque/runs/issue-${issueNumber}/ ` +
             `to ${projectRoot}/.dangeresque/runs/issue-${issueNumber}/, then 'dangeresque discard ${branch}' to clean up.`,
@@ -594,11 +593,11 @@ export function mergeWorktree(
       return {
         success: false,
         phase: "cleanup",
-        headAdvanced: true,
+        headAdvanced: !noopMerge,
         headBefore,
         headAfter,
         message:
-          `Merge succeeded — main is now at ${headAfter.slice(0, 8)} (was ${headBefore.slice(0, 8)}). ` +
+          `${mergeOutcome}. ` +
           `Worktree cleanup failed: ${err instanceof Error ? err.message : String(err)}. ` +
           `Recovery: (1) inspect ${worktreePath} for uncommitted work, ` +
           `(2) 'git worktree remove --force "${worktreePath}"' if safe, ` +
@@ -622,11 +621,11 @@ export function mergeWorktree(
     return {
       success: false,
       phase: "branch-delete",
-      headAdvanced: true,
+      headAdvanced: !noopMerge,
       headBefore,
       headAfter,
       message:
-        `Merge succeeded and worktree removed — main is now at ${headAfter.slice(0, 8)} (was ${headBefore.slice(0, 8)}). ` +
+        `${mergeOutcome}; worktree removed. ` +
         `Branch delete failed: ${err instanceof Error ? err.message : String(err)}. ` +
         `Recovery: check 'git branch --list ${branch}' and 'git worktree list'; if the branch is checked out in another worktree, remove that worktree first, then 'git branch -D ${branch}'.`,
     };
@@ -634,11 +633,13 @@ export function mergeWorktree(
 
   return {
     success: true,
-    phase: "merge",
-    headAdvanced: true,
+    phase: noopMerge ? "noop" : "merge",
+    headAdvanced: !noopMerge,
     headBefore,
     headAfter,
-    message: `Merged ${branch} into main. Main: ${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}.`,
+    message: noopMerge
+      ? `Merged ${branch}: no code changes (HEAD unchanged at ${headBefore.slice(0, 7)}). Mirrored run artifacts to project root and removed worktree.`
+      : `Merged ${branch} into main. Main: ${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}.`,
   };
 }
 
