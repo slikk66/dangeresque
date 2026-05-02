@@ -1,0 +1,94 @@
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+import { CONFIG_DIR, RUNS_DIR } from "./config.js";
+import { ARTIFACT_SCHEMA_VERSION, type RunArtifact } from "./artifact.js";
+
+export interface MigrateOneResult {
+  migrated: boolean;
+  result: RunArtifact;
+}
+
+export interface MigrateAllResult {
+  migrated: number;
+  skipped: number;
+  errors: string[];
+}
+
+export function migrateArtifact(json: unknown): MigrateOneResult {
+  if (!json || typeof json !== "object" || Array.isArray(json)) {
+    throw new Error("artifact is not a JSON object");
+  }
+  const obj = json as Record<string, unknown>;
+  const version =
+    typeof obj.schema_version === "string" ? obj.schema_version : "unknown";
+
+  if (version === ARTIFACT_SCHEMA_VERSION) {
+    return { migrated: false, result: obj as unknown as RunArtifact };
+  }
+
+  if (version !== "4") {
+    throw new Error(
+      `unsupported source schema_version: ${version} (only v4 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
+    );
+  }
+
+  const next: Record<string, unknown> = {
+    ...obj,
+    schema_version: ARTIFACT_SCHEMA_VERSION,
+  };
+  if (next.scope_block === undefined) {
+    next.scope_block = { allow: [], deny: [], diagnostics: [] };
+  }
+  if (next.scope_declaration === undefined) {
+    next.scope_declaration = [];
+  }
+  if (next.scope_report === undefined) {
+    next.scope_report = { in_scope: [], extended: [], outside: [] };
+  }
+  next.migrated_from_version = 4;
+
+  return { migrated: true, result: next as unknown as RunArtifact };
+}
+
+export function migrateAllArtifacts(projectRoot: string): MigrateAllResult {
+  const runsDir = join(projectRoot, CONFIG_DIR, RUNS_DIR);
+  const result: MigrateAllResult = { migrated: 0, skipped: 0, errors: [] };
+  if (!existsSync(runsDir)) return result;
+
+  const issueDirs = readdirSync(runsDir).filter((d) => /^issue-\d+$/.test(d));
+  for (const dir of issueDirs) {
+    const issueDirPath = join(runsDir, dir);
+    if (!statSync(issueDirPath).isDirectory()) continue;
+    const files = readdirSync(issueDirPath).filter((f) => f.endsWith(".json"));
+    for (const f of files) {
+      const fullPath = join(issueDirPath, f);
+      try {
+        const raw = readFileSync(fullPath, "utf-8");
+        const parsed = JSON.parse(raw);
+        const { migrated, result: migratedArtifact } = migrateArtifact(parsed);
+        if (migrated) {
+          writeFileSync(
+            fullPath,
+            JSON.stringify(migratedArtifact, null, 2) + "\n",
+            "utf-8",
+          );
+          result.migrated += 1;
+        } else {
+          result.skipped += 1;
+        }
+      } catch (err) {
+        result.errors.push(
+          `${fullPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  return result;
+}

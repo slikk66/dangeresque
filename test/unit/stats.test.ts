@@ -514,6 +514,33 @@ test("gatherArtifacts: parses valid json, skips bad, rejects unsupported version
   }
 });
 
+test("gatherArtifacts: v5 (current) artifacts parsed; older versions reported in unsupportedVersions", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-stats-"));
+  try {
+    const issueDir = join(tmp, ".dangeresque", "runs", "issue-5");
+    mkdirSync(issueDir, { recursive: true });
+    // Current v5 (uses ARTIFACT_SCHEMA_VERSION constant — survives future bumps)
+    writeFileSync(
+      join(issueDir, "current.json"),
+      JSON.stringify(mkArtifact({ issue_number: 5 })),
+    );
+    // Stale v4 — should be skipped and tallied
+    writeFileSync(
+      join(issueDir, "stale.json"),
+      JSON.stringify(mkArtifact({ issue_number: 5, schema_version: "4" })),
+    );
+    const r = gatherArtifacts(tmp);
+    assert.equal(r.filesScanned, 2);
+    assert.equal(r.artifacts.length, 1);
+    assert.equal(r.artifacts[0].schema_version, ARTIFACT_SCHEMA_VERSION);
+    assert.equal(r.unsupportedVersions["4"], 1);
+    assert.equal(r.schemaVersions["4"], 1);
+    assert.equal(r.schemaVersions[ARTIFACT_SCHEMA_VERSION], 1);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("gatherArtifacts: filters compose (issue + engine + mode)", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-stats-"));
   try {

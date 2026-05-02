@@ -29,6 +29,7 @@ Commands:
   allow mcp [<server>] [--dry-run]     Add mcp__<server> entries to allowedTools (reads ./.mcp.json if no server given)
   allow bash "<pattern>" [--dry-run]   Append Bash(<pattern>) to allowedTools (e.g. allow bash "npm install *")
   init                                 Scaffold .dangeresque/ config + skills
+  migrate                              Migrate run artifacts to current schema version
   brief                                Print a self-contained workflow primer (pipe to CLAUDE.md or less)
 
 Exit codes: 0 success • 1 error • 2 gate refusal (workflow state — fix and retry)

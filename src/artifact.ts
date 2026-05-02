@@ -4,8 +4,13 @@ import { relative, basename, join } from "node:path";
 import { execSync } from "node:child_process";
 import type { Engine } from "./config.js";
 import type { VerificationResult } from "./verify.js";
+import type {
+  ScopeBlock,
+  ScopeDeclarationEntry,
+  ScopeReport,
+} from "./scope.js";
 
-export const ARTIFACT_SCHEMA_VERSION = "4";
+export const ARTIFACT_SCHEMA_VERSION = "5";
 
 export type ResultClassification = "success" | "partial_success" | "failure";
 
@@ -74,6 +79,10 @@ export interface RunArtifact {
     json: string;
   };
   lifecycle_events: LifecycleEvent[];
+  scope_block?: ScopeBlock;
+  scope_declaration?: ScopeDeclarationEntry[];
+  scope_report?: ScopeReport;
+  migrated_from_version?: number;
 }
 
 export interface BuilderInit {
@@ -106,6 +115,9 @@ export class ArtifactBuilder {
   private reviewSkipped = false;
   private reviewSkipReason?: string;
   private verification: VerificationResult[] | null = null;
+  private scopeBlock?: ScopeBlock;
+  private scopeDeclaration?: ScopeDeclarationEntry[];
+  private scopeReport?: ScopeReport;
 
   constructor(init: BuilderInit) {
     this.init = init;
@@ -148,6 +160,26 @@ export class ArtifactBuilder {
 
   setVerification(results: VerificationResult[] | null): void {
     this.verification = results === null ? null : [...results];
+  }
+
+  setScopeBlock(block: ScopeBlock): void {
+    this.scopeBlock = {
+      allow: [...block.allow],
+      deny: [...block.deny],
+      diagnostics: [...block.diagnostics],
+    };
+  }
+
+  setScopeDeclaration(decl: ScopeDeclarationEntry[]): void {
+    this.scopeDeclaration = decl.map((d) => ({ ...d }));
+  }
+
+  setScopeReport(report: ScopeReport): void {
+    this.scopeReport = {
+      in_scope: [...report.in_scope],
+      extended: report.extended.map((e) => ({ ...e })),
+      outside: [...report.outside],
+    };
   }
 
   build(): RunArtifact {
@@ -255,6 +287,11 @@ export class ArtifactBuilder {
         json: relative(this.init.projectRoot, jsonPath),
       },
       lifecycle_events: [...this.events],
+      ...(this.scopeBlock ? { scope_block: this.scopeBlock } : {}),
+      ...(this.scopeDeclaration
+        ? { scope_declaration: this.scopeDeclaration }
+        : {}),
+      ...(this.scopeReport ? { scope_report: this.scopeReport } : {}),
     };
   }
 }

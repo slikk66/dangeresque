@@ -12,6 +12,7 @@ import {
   ArtifactBuilder,
   writeArtifact,
   jsonPathForArchive,
+  ARTIFACT_SCHEMA_VERSION,
 } from "./artifact.js";
 import { normalizeSummaryFileCount } from "./summary.js";
 import { runVerification, shouldRunVerify, type VerificationOutcome } from "./verify.js";
@@ -45,6 +46,12 @@ import {
   formatStats,
   type GatherOptions,
 } from "./stats.js";
+import { migrateAllArtifacts } from "./migrate.js";
+import {
+  parseScopeBlocks,
+  parseScopeDeclaration,
+  classifyChanges,
+} from "./scope.js";
 import { relative } from "node:path";
 
 function currentHelpEngine(): Engine {
@@ -142,6 +149,9 @@ async function main() {
       break;
     case "init":
       cmdInit();
+      break;
+    case "migrate":
+      cmdMigrate();
       break;
     case "brief":
       printBrief();
@@ -448,6 +458,29 @@ async function cmdRun(args: string[]) {
       changed_files: changedFiles.length,
       scope_violations: unexpected.length,
     });
+
+    // Phase 1 scope subsystem: parse declared scope blocks + worker
+    // self-declaration, classify changed files. Telemetry-only — UI behavior
+    // unchanged; the legacy substring check above still drives scope_violations.
+    const scopeBlock = parseScopeBlocks(haystack);
+    let scopeDeclaration: ReturnType<typeof parseScopeDeclaration> = [];
+    try {
+      const { readFileSync, existsSync } = await import("node:fs");
+      if (existsSync(workerResult.archivePath)) {
+        const md = readFileSync(workerResult.archivePath, "utf-8");
+        scopeDeclaration = parseScopeDeclaration(md);
+      }
+    } catch {
+      /* ignore — declaration parse failures are non-fatal */
+    }
+    const scopeReport = classifyChanges({
+      changedFiles,
+      block: scopeBlock,
+      declaration: scopeDeclaration,
+    });
+    builder.setScopeBlock(scopeBlock);
+    builder.setScopeDeclaration(scopeDeclaration);
+    builder.setScopeReport(scopeReport);
   } catch {
     // Silently ignore — worktree state query failures aren't fatal here
   }
@@ -1189,6 +1222,18 @@ function printAllowResult(result: AllowResult, dryRun: boolean): void {
 function cmdInit() {
   const projectRoot = resolveProjectRoot();
   initProject(projectRoot);
+}
+
+function cmdMigrate() {
+  const projectRoot = resolveProjectRoot();
+  const result = migrateAllArtifacts(projectRoot);
+  console.log(`Migrated: ${result.migrated}`);
+  console.log(`Skipped (already at v${ARTIFACT_SCHEMA_VERSION}): ${result.skipped}`);
+  if (result.errors.length > 0) {
+    console.log(`Errors: ${result.errors.length}`);
+    for (const e of result.errors) console.log(`  ${e}`);
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {
