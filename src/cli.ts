@@ -52,6 +52,8 @@ import {
   parseScopeDeclaration,
   classifyChanges,
 } from "./scope.js";
+import { detectDrift } from "./build-info.js";
+import { runDoctorChecks, formatDoctorReport } from "./doctor.js";
 import { relative } from "node:path";
 
 function currentHelpEngine(): Engine {
@@ -63,6 +65,38 @@ function currentHelpEngine(): Engine {
     return config.engine;
   } catch {
     return "claude";
+  }
+}
+
+// Loud, non-blocking warning printed at the top of artifact-writing commands
+// (`run`, `migrate`) when the running binary's dist/ does not match HEAD. The
+// silent-staleness trap from #66 motivated this — read-only commands skip it
+// to avoid drowning the signal in noise.
+function driftWarnIfStale(): void {
+  let drift;
+  try {
+    drift = detectDrift();
+  } catch {
+    return;
+  }
+  if (!drift.drift) return;
+  if (drift.reason === "no-build-info") {
+    console.warn(
+      `\n⚠️  No dist/build-info.json — binary predates drift detection.\n` +
+        `    Run \`yarn build\` to regenerate.\n` +
+        `    Run \`dangeresque doctor\` for full diagnosis.\n`,
+    );
+    return;
+  }
+  if (drift.reason === "drift") {
+    const built = drift.buildInfo?.commit?.slice(0, 8) ?? "null";
+    const head = drift.headCommit?.slice(0, 8) ?? "unknown";
+    console.warn(
+      `\n⚠️  STALE BINARY: dist/ built from ${built} but HEAD is ${head}.\n` +
+        `    Run \`yarn build\` and re-invoke. Continuing with stale code may write\n` +
+        `    wrong-schema artifacts (see issue #66).\n` +
+        `    Run \`dangeresque doctor\` for full diagnosis.\n`,
+    );
   }
 }
 
@@ -153,6 +187,9 @@ async function main() {
     case "migrate":
       cmdMigrate();
       break;
+    case "doctor":
+      cmdDoctor(args.slice(1));
+      break;
     case "brief":
       printBrief();
       break;
@@ -164,6 +201,7 @@ async function main() {
 }
 
 async function cmdRun(args: string[]) {
+  driftWarnIfStale();
   const runStartedAtMs = Date.now();
   const projectRoot = resolveProjectRoot();
   const validation = validateSetup(projectRoot);
@@ -1224,7 +1262,40 @@ function cmdInit() {
   initProject(projectRoot);
 }
 
+function cmdDoctor(args: string[]) {
+  const strict = args.includes("--strict");
+  const KNOWN_FLAGS = new Set(["--strict"]);
+  const unknown = args.filter((a) => a.startsWith("-") && !KNOWN_FLAGS.has(a));
+  if (unknown.length > 0) {
+    console.error(`Unknown flag(s) for doctor: ${unknown.join(", ")}`);
+    console.error("Usage: dangeresque doctor [--strict]");
+    process.exit(2);
+  }
+
+  let report;
+  try {
+    report = runDoctorChecks({ projectRoot: resolveProjectRoot() });
+  } catch (err) {
+    console.error(
+      `dangeresque doctor: internal error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exit(2);
+  }
+
+  process.stdout.write(formatDoctorReport(report));
+
+  const hasWarn = report.checks.some((c) => c.status === "warn");
+  const hasFail = report.checks.some((c) => c.status === "fail");
+  if (hasFail) {
+    process.exit(1);
+  }
+  if (strict && hasWarn) {
+    process.exit(1);
+  }
+}
+
 function cmdMigrate() {
+  driftWarnIfStale();
   const projectRoot = resolveProjectRoot();
   const result = migrateAllArtifacts(projectRoot);
   console.log(`Migrated: ${result.migrated}`);

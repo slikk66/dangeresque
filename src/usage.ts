@@ -30,6 +30,7 @@ Commands:
   allow bash "<pattern>" [--dry-run]   Append Bash(<pattern>) to allowedTools (e.g. allow bash "npm install *")
   init                                 Scaffold .dangeresque/ config + skills
   migrate                              Migrate run artifacts to current schema version
+  doctor [--strict]                    Health-check the install (binary freshness, deps, config; --strict: exit non-zero on warnings)
   brief                                Print a self-contained workflow primer (pipe to CLAUDE.md or less)
 
 Exit codes: 0 success • 1 error • 2 gate refusal (workflow state — fix and retry)
