@@ -10,8 +10,13 @@ Run Claude Code or OpenAI Codex AFK in isolated git worktrees with structured mu
 - [How It Works](#how-it-works)
 - [Quick Start](#quick-start)
 - [The Workflow](#the-workflow)
+- [Scope](#scope)
+- [Opportunistic Drive-by Fixes](#opportunistic-drive-by-fixes)
 - [Commands](#commands)
 - [Configuration](#configuration)
+- [Health Checks (`dangeresque doctor`)](#health-checks-dangeresque-doctor)
+- [Schema Migration (`dangeresque migrate`)](#schema-migration-dangeresque-migrate)
+- [Schema Versioning Model](#schema-versioning-model)
 - [Evaluation](#evaluation)
 - [Why Host-Native](#why-host-native)
 - [License](#license)
@@ -100,6 +105,8 @@ Creates `.dangeresque/` with canonical prompts (`worker-prompt.md`, `review-prom
 
 The pointer routes both interactive Claude Code sessions and AFK workers to the canonical workflow primer in `DANGERESQUE.md`.
 
+Confirm the install with `dangeresque doctor` — it checks that `gh` is on PATH, the binary's `dist/` matches HEAD, the artifact schema version is current, and `.dangeresque/` is initialized in the project. See [Health Checks](#health-checks-dangeresque-doctor) below for the full output shape.
+
 ### Customizing prompts
 
 Canonical `.dangeresque/*.md` files (`worker-prompt.md`, `review-prompt.md`, `AFK_WORKER_RULES.md`) are refreshed on every `dangeresque init`; your project overrides live in the `.local.md` sibling and are never touched. `DANGERESQUE.md` is the workflow primer — overwritten on every init, not meant for direct edits; keep project rules in `CLAUDE.md` instead.
@@ -138,6 +145,8 @@ Here's each step in detail.
 ### 1. Create a GitHub Issue
 
 Write a focused issue describing the task. Workers read the issue title, body, and selected comments as their assignment. Good issues are bounded — one slice of work, not an entire feature.
+
+Optionally include a fenced ` ```dangeresque-scope ``` ` YAML block in the body (or any `[staged]` comment) to declare an allow/deny list of file globs the worker is expected to touch. The reviewer applies category-specific scrutiny based on what fell inside, outside, or extended the declared scope. See [Scope](#scope) for syntax.
 
 You can create issues manually, or use the bundled Claude Code skill from your interactive session:
 
@@ -211,6 +220,101 @@ dangeresque merge implement-63
 - **Stage more comments** and dispatch another IMPLEMENT pass for the next slice
 - **Close the issue** when done
 
+## Scope
+
+Two complementary mechanisms bound what files a worker is allowed to touch: a **declared scope block** in the issue (operator-side allow/deny globs) and a **scope declaration** the worker writes into its run result (per-file category + rationale). Dangeresque classifies every changed file against both and stamps the result on the artifact for the reviewer.
+
+### Declared scope block (issue side)
+
+Add a fenced ` ```dangeresque-scope ``` ` YAML block to the issue body or any `[staged]` comment. Multiple blocks across body + staged comments are unioned; deny wins on conflict.
+
+````markdown
+## Goal
+
+Bump the auth timeout default from 5 minutes to 30.
+
+```dangeresque-scope
+allow:
+  - src/auth/timeout.ts
+  - src/auth/timeout.test.ts
+deny:
+  - src/auth/secrets.ts
+```
+````
+
+`allow:` and `deny:` are lists of glob patterns evaluated by Node's `node:path.matchesGlob` (Node 22+). `#` line comments and blank lines inside the block are tolerated; quoted values have their quotes stripped. Empty `allow:` means "no operator-side allow-list" (the worker's `## Scope Declaration` becomes the sole signal); empty `deny:` means no project-level no-fly list at the issue level.
+
+### Scope Declaration (worker side)
+
+For `IMPLEMENT`, `REFACTOR`, and `TEST` modes the worker is required to add a top-level `## Scope Declaration` section to its run result file listing every file it touched, with one of four categories and a rationale. Bullet form and table form are both accepted (mix freely).
+
+```markdown
+## Scope Declaration
+
+- `src/auth/timeout.ts` (declared) — implements the Goal's primary entry point
+- `src/auth/timeout.test.ts` (declared) — covers the new branch
+- `src/auth/util.ts` (extension) — added helper required by timeout.ts
+- `yarn.lock` (incidental) — touched by yarn install
+```
+
+| Category | Meaning |
+| --- | --- |
+| `declared` | The issue's allow-list explicitly named or globbed this file. Primary in-scope changes. |
+| `extension` | Not in the allow-list, but required to complete the Goal (a helper a new function depends on). Justify why. |
+| `opportunistic` | Drive-by edit unrelated to the Goal (typo fix, lint cleanup). Should be rare; bounded by the project budget below. |
+| `incidental` | Auto-generated or auto-touched (`yarn.lock`, build outputs, formatter changes). |
+
+### Classifier output
+
+After the worker exits, dangeresque computes a `scope_report` of every changed file (from `git diff` against the worktree base) into one of three buckets:
+
+- `in_scope` — matched an allow-glob, OR was declared `declared` / `incidental` by the worker.
+- `extended` — the worker declared it `extension` or `opportunistic` (subject to the budget below).
+- `outside` — matched no allow-glob, was not declared, OR was demoted from `extended` by a project denyGlob or the opportunistic budget.
+
+The report lands on the artifact JSON as `scope_report` (alongside the parsed `scope_block` and the `scope_declaration` array) and the reviewer reads it to apply category-specific scrutiny: `declared` reviewed on correctness only, `extension` on necessity AND correctness, `opportunistic` REJECT unless strictly trivial, `outside` REJECT unless justified.
+
+The reviewer is the authority on scope when it ran. When review is skipped (INVESTIGATE/VERIFY/`--no-review`), `outside` entries contribute the `scope_outside` failure category and the run is marked `partial_success` — see [Evaluation](#evaluation).
+
+## Opportunistic Drive-by Fixes
+
+Most agent orchestrators choose one of two scope postures: **stay strictly in lane** (any change outside the declared files is a violation) or **free-for-all** (the worker decides). Dangeresque sits between them with a **bounded opportunistic budget** — small drive-by fixes are allowed but capped, the worker tags them as such, and the reviewer scrutinizes them harder than declared changes.
+
+Configured per project under `scope.opportunistic` in `.dangeresque/config.json`:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `enabled` | `true` | When false, skip the file/line passes (denyGlobs still apply — security policy is unconditional). |
+| `maxFiles` | `1` | At most this many `opportunistic` files. Excess demoted to `outside`, trailing-first by declaration order. |
+| `maxLines` | `20` | Sum of (added + deleted) lines across remaining `opportunistic` files. Excess demoted largest-first. |
+| `denyGlobs` | `["infra/**", ".github/**", "**/*.lock", "**/migrations/**", "**/.env*", "**/secrets/**"]` | Project-level no-fly zones. Demote both `extension` and `opportunistic` matches to `outside`. |
+
+Three enforcement passes run in order: project denyGlobs → `maxFiles` cap → `maxLines` cap. A demoted file moves from `extended` to `outside` in the `scope_report`, where the reviewer adjudicates it.
+
+Example `config.json`:
+
+```json
+{
+  "scope": {
+    "opportunistic": {
+      "enabled": true,
+      "maxFiles": 1,
+      "maxLines": 20,
+      "denyGlobs": [
+        "infra/**",
+        ".github/**",
+        "**/*.lock",
+        "**/migrations/**",
+        "**/.env*",
+        "**/secrets/**"
+      ]
+    }
+  }
+}
+```
+
+To disable budget enforcement entirely while keeping the security denyGlobs, set `enabled: false` and leave `denyGlobs` populated. To allow unlimited drive-bys (not recommended), set `maxFiles` and `maxLines` to large values; the reviewer's per-category scrutiny still applies.
+
 ## Commands
 
 Run `dangeresque <cmd> --help` for flag-level detail.
@@ -228,6 +332,8 @@ Run `dangeresque <cmd> --help` for flag-level detail.
 | `dangeresque clean`   | Delete on-disk run result files for an issue (e.g. after closing). Files are gitignored — clean is a local-disk operation, not a git operation                                                                                        |
 | `dangeresque stats`   | Aggregate run evaluation artifacts (`--issue`, `--engine`, `--mode`, `--glossary`)                                                                                                                                                    |
 | `dangeresque init`    | Scaffold `.dangeresque/`, copy skills, merge hooks. Refreshes canonical prompts; `.local.md` overrides and divergent canonical prompts are preserved (with a warning). Creates `CLAUDE.md` with the DANGERESQUE.md pointer if missing |
+| `dangeresque migrate` | Walk `.dangeresque/runs/issue-*/*.json` and rewrite each artifact to the current `ARTIFACT_SCHEMA_VERSION`. Idempotent — already-current files are skipped. See [Schema Migration](#schema-migration-dangeresque-migrate)              |
+| `dangeresque doctor`  | Health-check the install: `dist/build-info.json` present, `dist/` matches HEAD, schema-version current, `gh` on PATH, `.dangeresque/` initialized. `--strict` exits non-zero on warnings (CI-friendly). See [Health Checks](#health-checks-dangeresque-doctor) |
 | `dangeresque brief`   | Print the self-contained workflow primer to stdout (same content as `.dangeresque/DANGERESQUE.md`, version-stamped). Useful for a quick read or piping into a new project before running init                                         |
 | `dangeresque allow`   | Extend `allowedTools`: `mcp` reads `.mcp.json` and adds each server; `bash "<pattern>"` adds a bash pattern                                                                                                                           |
 
@@ -273,6 +379,7 @@ dangeresque stop investigate-63                           # Stop a runaway worke
 | `reviewPrompt`    | string   | `"review-prompt.md"` | Review system prompt filename                                                                      |
 | `notifications`   | boolean  | `true`               | Enable macOS notification hooks                                                                    |
 | `verify`          | object   | _(empty commands)_   | Pre-review verification hook — see the [Verification](#verification-pre-review-hook) section below |
+| `scope`           | object   | _(see Opportunistic)_ | Scope subsystem policy. `scope.opportunistic` controls the per-project drive-by budget — see [Opportunistic Drive-by Fixes](#opportunistic-drive-by-fixes) |
 
 ### Engines (claude vs codex)
 
@@ -367,9 +474,92 @@ Operator escape hatches:
 
 Empty `commands` array (the default) means no-op; opt in by listing commands.
 
+## Health Checks (`dangeresque doctor`)
+
+`dangeresque doctor` runs five quick checks against the installed binary, the project, and the host environment. It exists because a globally-linked `dangeresque` is easy to forget about: a stale `dist/` writes wrong-schema artifacts, a missing `gh` makes `--issue` runs fail mid-flight, and a project that was never `init`-ed has no `.dangeresque/` for the worker to read.
+
+```
+$ dangeresque doctor
+dangeresque doctor
+  package root: /path/to/dangeresque
+  project root: /path/to/your-project
+
+Checks:
+  [PASS] build-info-present
+         commit=e30165fb built_at=2026-05-03T05:54:59.021Z schema=6
+  [PASS] dist-matches-head
+         dist matches HEAD (e30165fb)
+  [PASS] schema-version
+         schema_version=6
+  [PASS] gh-cli-available
+         gh --version OK
+  [PASS] dangeresque-initialized
+         .dangeresque/ exists at /path/to/your-project
+
+Summary: 5 pass · 0 warn · 0 fail
+
+Exit codes: 0 normal · 1 if --strict and any WARN · 2 on internal error
+```
+
+| Check | What it verifies |
+| --- | --- |
+| `build-info-present` | `dist/build-info.json` was emitted by `yarn build`. Without it, drift detection cannot run. |
+| `dist-matches-head` | The compiled `dist/` was built from the current git `HEAD` of the package. WARN on drift. |
+| `schema-version` | The build-info `schema_version` matches the loaded module's `ARTIFACT_SCHEMA_VERSION`. Catches mixed-build state. |
+| `gh-cli-available` | `gh --version` succeeds. The `--issue <N>` flow requires it. |
+| `dangeresque-initialized` | `.dangeresque/` exists in the project root. Catches "linked the binary but never ran `dangeresque init`". |
+
+`--strict` flips WARN into an exit-code-1 condition for CI use. By default only FAIL produces non-zero exit. Internal errors (uncaught exceptions in the doctor checks themselves) exit 2.
+
+`dangeresque run` and `dangeresque migrate` also auto-print a stale-binary banner at the top of stdout when `dist/build-info.json` does not match HEAD — read-only commands skip the banner to keep their output pipe-friendly. The banner points at `dangeresque doctor` for full diagnosis.
+
+## Schema Migration (`dangeresque migrate`)
+
+`dangeresque migrate` walks `.dangeresque/runs/issue-*/` and rewrites every `*.json` artifact in place to the current `ARTIFACT_SCHEMA_VERSION`. Idempotent — files already at the current version are skipped, not rewritten.
+
+```
+$ dangeresque migrate
+Migrated: 0
+Skipped (already at v6): 1
+```
+
+Currently supported source versions: `v4` and `v5`. Older versions throw with a "unsupported source schema_version" error and require manual handling.
+
+| Step | Effect |
+| --- | --- |
+| `v4 → v5` | Adds empty defaults for `scope_block`, `scope_declaration`, `scope_report` (the scope subsystem fields). |
+| `v5 → v6` | Drops the deprecated `scope_violations` field; renames the `scope_violation` enum value in `failure_categories` to `scope_outside`. |
+
+Migrations write a `migrated_from_version` field on each touched artifact so downstream consumers can tell a freshly-migrated file from one originally written at the current version. Run-result `.md` files are untouched — they are operator narrative, not derived data.
+
+Why this exists: schema-version bumps happen in service of the artifact format evolving (new fields, renamed enums, dropped legacy shapes). Old artifacts on disk should not block adopting a newer binary, and the human reading `.dangeresque/runs/` should not have to mentally diff two schemas. See [Schema Versioning Model](#schema-versioning-model) below.
+
+## Schema Versioning Model
+
+Dangeresque is pre-1.0 and runs a **break-and-migrate** posture on its artifact schema: when the artifact format needs to change, `ARTIFACT_SCHEMA_VERSION` bumps, the `dist/build-info.json` records the new version, and `dangeresque migrate` rewrites old artifacts on disk. Downstream consumers branch on `schema_version`.
+
+The same posture applies to the CLI surface and prompt templates — `dangeresque init` overwrites canonical templates on every run; project-specific overrides live in the `.local.md` siblings and survive. There is no in-place upgrade ceremony or version negotiation; the design favors a clean current shape over a backwards-compatible accumulation.
+
+Operator playbook for stale binary state:
+
+```bash
+# Inside the dangeresque package checkout
+yarn build
+dangeresque doctor   # confirms dist matches HEAD and schema is current
+```
+
+Operator playbook for old artifacts after upgrading:
+
+```bash
+# Inside any project that uses dangeresque
+dangeresque migrate
+```
+
+`dist/build-info.json` records `{commit, built_at, schema_version}` on every `yarn build`. The `dist-matches-head` and `schema-version` doctor checks read it; `dangeresque run` and `dangeresque migrate` read it via `detectDrift()` and emit a stale-binary banner when needed. The system is self-describing — a worker that crashes mid-run leaves an artifact stamped with the schema version it understood, so a later `dangeresque migrate` can decide what to do with it.
+
 ## Evaluation
 
-Every run writes a markdown run result file plus a structured JSON evaluation artifact. Terms derived from worker exit code, review phase, run artifact presence, scope violations, verification outcomes, and parsed reviewer verdicts: `success`, `partial_success`, `failure`, `scope_violation`, `verification_failed`, and `reviewer_verdict` ∈ {`accept`, `reject`, `needs_human_review`, `skipped`, `unknown`}. Review is automatically skipped for `INVESTIGATE`/`VERIFY`, when verification blocks (a `block`-policy command failed), and manually skipped by `--no-review`.
+Every run writes a markdown run result file plus a structured JSON evaluation artifact. Terms derived from worker exit code, review phase, run artifact presence, scope classification (`scope_report.outside`), verification outcomes, and parsed reviewer verdicts: `success`, `partial_success`, `failure`, `scope_outside`, `verification_failed`, and `reviewer_verdict` ∈ {`accept`, `reject`, `needs_human_review`, `skipped`, `unknown`}. Review is automatically skipped for `INVESTIGATE`/`VERIFY`, when verification blocks (a `block`-policy command failed), and manually skipped by `--no-review`. The `scope_outside` failure category is emitted only when review was skipped — when review ran, the reviewer verdict controls the result (see [Scope](#scope)).
 
 For full definitions, run `dangeresque stats --glossary`. For design rationale, see [`docs/DESIGN.md` §4 Observability & Evaluation](docs/DESIGN.md#4-observability--evaluation).
 

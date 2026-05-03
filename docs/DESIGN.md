@@ -281,18 +281,19 @@ repo, etc.) — same as build caches or editor configs.
   block the stage anyway, and dangeresque does not need it staged because
   the mirror step is what carries it across boundaries.
 - **The evaluation JSON** (`<timestamp>-<MODE>.json`) — a structured
-  `RunArtifact` (see `src/artifact.ts:RunArtifact`) at
-  `ARTIFACT_SCHEMA_VERSION = "4"` (bumped from 3 when
-  `verification: VerificationResult[] | null` was added; see
+  `RunArtifact` (see `src/artifact.ts:RunArtifact`) stamped with the
+  current `ARTIFACT_SCHEMA_VERSION` (`"6"` at time of writing; see
   `src/artifact.ts:ARTIFACT_SCHEMA_VERSION`). It captures engine, model,
   worktree name, branch, worker and review phase timings,
   `ResultClassification` (`success`/`partial_success`/`failure`),
-  `ReviewerVerdict`, `FailureCategory[]` (now including
-  `verification_failed`), scope violations, the verification result
+  `ReviewerVerdict`, `FailureCategory[]` (including `verification_failed`
+  and `scope_outside`), the parsed scope block, the worker's scope
+  declaration, the classifier's scope report, the verification result
   array, a one-line summary, and a lifecycle event stream including
   `verify_command_started` / `verify_command_completed` /
-  `verification_completed` / `verification_skipped` events. The verdict
-  is extracted from the run result markdown with `VERDICT_REGEX` (see
+  `verification_completed` / `verification_skipped` /
+  `scope_check_completed` events. The verdict is extracted from the run
+  result markdown with `VERDICT_REGEX` (see
   `src/artifact.ts:VERDICT_REGEX`) so the JSON reflects the same reviewer
   decision a human reads.
 
@@ -307,14 +308,21 @@ Two deliberate disciplines live in the artifact layer:
 
 - **Schema versioning.** `ARTIFACT_SCHEMA_VERSION` (see
   `src/artifact.ts:ARTIFACT_SCHEMA_VERSION`) is stamped on every artifact.
-  The project rule is that additive schema changes must bump this constant
-  so downstream consumers can branch on it. The shipping value is `"4"`;
-  earlier versions on disk (predating `verification`) remain readable —
-  `dangeresque stats` either reads forward-compatible fields or rejects
-  unknown shapes rather than silently coercing.
+  Pre-1.0, the project rule is **break-and-migrate**: bumping the
+  constant is the supported way to evolve the format, and the
+  `dangeresque migrate` command (see `src/migrate.ts:migrateArtifact`)
+  walks `.dangeresque/runs/issue-*/*.json` to rewrite older artifacts in
+  place. Idempotent on already-current files. The shipping value is
+  `"6"`; v4 artifacts (predating the scope subsystem) and v5 artifacts
+  (predating the `scope_violations` cleanup) both migrate forward in one
+  pass. Older or unknown source versions throw rather than silently
+  coercing. The matching `dist/build-info.json` records the schema
+  version the binary was built against, so a stale binary writing
+  wrong-schema artifacts is caught by `dangeresque doctor`'s
+  `schema-version` check.
 - **Derivation, not duplication.** `result`, `reviewer_verdict`,
   `failure_categories`, and the summary line are all *derived* from worker
-  exit code + review phase + archive existence + scope violations +
+  exit code + review phase + archive existence + scope classification +
   verification outcomes + parsed verdict (see
   `src/artifact.ts:deriveResult`, `src/artifact.ts:deriveReviewerVerdict`,
   and `src/artifact.ts:deriveFailureCategories`). The same inputs always
@@ -410,18 +418,6 @@ engines via the existing `disallowedTools` / `dangeresque.rules` paths.
 These are current gaps, not future plans. They appear here as honest
 footnotes on an otherwise-working system.
 
-- **Scope-check is telemetry, not authority (issue #27).** The post-worker
-  scope check (see the "Post-worker scope check" section in `src/cli.ts`)
-  does a substring match of changed files against the issue body plus
-  filtered comments. It cannot infer test paths from "add tests" language,
-  cannot expand globs, and cannot cross-reference an INVESTIGATE artifact.
-  When it fires, it still records `scope_violations[]` on the artifact
-  and prints a stdout warning, but it does NOT downgrade the run's
-  `result` classification when the adversarial reviewer accepted — the
-  reviewer is the authority on scope (ONE-PATH). Only when the reviewer
-  was skipped (e.g. `--no-review`) do scope violations still mark the run
-  `partial_success`. `scope_violations[]` stays on the artifact as
-  diagnostic signal for humans triaging borderline runs.
 - **AFK allowlist friction for in-worker build commands.** The default
   `allowedTools` (see `src/config.ts:DEFAULT_CONFIG.allowedTools`) doesn't
   include any build commands. If a project wants the worker itself (not
@@ -438,7 +434,107 @@ footnotes on an otherwise-working system.
   constraint for features that would otherwise want libraries (argument
   parsing, JSON schema validation, structured logging).
 
-## 7. Key Design Decisions (the "Why")
+## 7. Scope Contract
+
+The scope subsystem is the project's answer to a recurring failure mode:
+worker drifts outside the issue's intent, the diff lands changes the
+operator never asked for, and the reviewer ends up arguing about taste
+rather than correctness. The subsystem replaces the earlier substring
+matcher (which was telemetry-only, see issue #27) with an explicit
+contract that the issue, the worker, and the reviewer all consult.
+
+The contract has three inputs and three outputs.
+
+**Inputs:**
+
+1. **Declared scope block** — a fenced ` ```dangeresque-scope``` ` YAML
+   block in the issue body or a staged comment, parsed by
+   `parseScopeBlocks` (see `src/scope.ts:parseScopeBlocks`). Multiple
+   blocks across body + filtered staged comments are unioned; deny wins
+   on conflict; quoted values are stripped; `#` comments and blank lines
+   inside the block are tolerated. Empty `allow:` is allowed and means
+   "no operator-side allow-list" — the worker's declaration is then the
+   only positive signal.
+2. **Worker scope declaration** — a top-level `## Scope Declaration`
+   markdown section in the worker's run result, parsed by
+   `parseScopeDeclaration` (see `src/scope.ts:parseScopeDeclaration`).
+   Both bullet form (`- \`path\` (category) — rationale`) and table form
+   (`| path | category | rationale |`) are accepted. The four legal
+   categories are `declared`, `extension`, `opportunistic`, and
+   `incidental`. The worker prompt template
+   (`config-templates/worker-prompt.md`) is what compels the worker to
+   write the section for `IMPLEMENT`/`REFACTOR`/`TEST` modes; the
+   prompt-injection lives in `src/runner.ts` so the contract is
+   per-mode rather than a single global rule.
+3. **Changed-files list** — produced from `git diff --numstat` against
+   the worktree base after worker exit (and after the file-count
+   normalize step in `src/cli.ts`).
+
+**Outputs (on the artifact JSON):**
+
+- `scope_block` — the parsed declared scope (allow/deny/diagnostics).
+- `scope_declaration` — the worker's per-file category + rationale array.
+- `scope_report` — the classifier's verdict per file:
+  `in_scope` / `extended` / `outside`. Computed by `classifyChanges`
+  (see `src/scope.ts:classifyChanges`) and then narrowed by
+  `applyOpportunisticBudget` (see `src/cli.ts:applyOpportunisticBudget`).
+
+**Classifier rules** (in order):
+
+1. If a file matches any deny-glob → `outside`. Deny always wins.
+2. Else if it matches any allow-glob → `in_scope`.
+3. Else if the worker declared it → use the declaration:
+   `declared` and `incidental` → `in_scope`; `extension` and
+   `opportunistic` → `extended` (with rationale and category preserved).
+4. Else → `outside`.
+
+**Budget engine** (three passes, in order, applied to `extended` plus
+backfilled `outside`):
+
+1. **Project denyGlobs** (`config.scope.opportunistic.denyGlobs`) demote
+   any matching `extended` entry to `outside`. Applies regardless of
+   `enabled`, because denyGlobs encode security policy
+   (lockfiles, `.env*`, secrets dirs, infra IaC, generated migrations).
+2. **`maxFiles` cap** demotes trailing-by-declaration-order
+   `opportunistic` entries until the count is within budget.
+3. **`maxLines` cap** sums (added + deleted) lines across remaining
+   `opportunistic` entries from `git diff --numstat` and demotes
+   largest-first until the total is within budget.
+
+`enabled: false` skips passes 2 and 3 but keeps pass 1 — denyGlobs are
+unconditional. Defaults are tight on purpose: `maxFiles: 1`,
+`maxLines: 20`. The bet is that almost every drive-by worth keeping is a
+single small file; everything bigger should split out as a follow-up
+issue rather than ride along with an unrelated implementation.
+
+**Authority model.** The reviewer is the scope authority **when it
+ran**. The reviewer's prompt
+(`config-templates/review-prompt.md`) reads `scope_report` and
+`scope_declaration` from the artifact JSON and applies category-specific
+scrutiny: `declared` reviewed on correctness only, `extension` on
+necessity AND correctness, `opportunistic` REJECT unless strictly
+trivial, `outside` REJECT unless justified. When the review pass is
+skipped (INVESTIGATE/VERIFY by definition produce no diff worth
+reviewing; `--no-review` is the manual override; verification-blocked
+runs skip review because reviewing un-compiling code is waste), the
+classifier still runs and `scope_outside` becomes a `failure_categories`
+entry that downgrades the run to `partial_success` (see
+`src/artifact.ts:deriveFailureCategories`). This avoids the failure mode
+where a `--no-review` run silently lands an out-of-scope diff with no
+operator-visible signal.
+
+**Lifecycle event.** A `scope_check_completed` event with the
+`{in_scope, extended, outside}` counts is appended to the artifact's
+event stream so downstream consumers (`dangeresque stats`, future
+dashboards) can aggregate scope behavior without re-parsing the report.
+
+The result is a contract where the issue says what's in bounds, the
+worker says what it actually touched and why, the budget engine
+enforces project-level limits on drive-bys, and the reviewer
+adjudicates the gray zone — with the failure category as the
+fall-through when reviewer is absent.
+
+## 8. Key Design Decisions (the "Why")
 
 Each decision below is a tradeoff, not a default. Listing them with
 rationale is the clearest hiring-signal part of this document.
