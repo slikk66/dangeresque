@@ -561,7 +561,7 @@ function writeJsonArtifact(
     schema_version: "2",
     summary: "IMPLEMENT success | verdict=accept | file=run.md",
     reviewer_verdict: "accept",
-    scope_violations: [] as string[],
+    scope_report: { in_scope: [], extended: [], outside: [] },
     failure_categories: [] as string[],
   };
   writeFileSync(path, JSON.stringify({ ...base, ...overrides }));
@@ -587,7 +587,7 @@ test("formatRunHeader: returns null when JSON is unparseable", () => {
   }
 });
 
-test("formatRunHeader: renders summary, verdict, and 'none' for empty arrays", () => {
+test("formatRunHeader: renders summary, verdict, and zero-counts for empty scope_report", () => {
   const dir = mkdtempSync(join(tmpdir(), "dangeresque-header-"));
   try {
     const p = join(dir, "ok.json");
@@ -596,23 +596,29 @@ test("formatRunHeader: renders summary, verdict, and 'none' for empty arrays", (
     assert.ok(header);
     assert.match(header!, /^=== IMPLEMENT success \| verdict=accept \| file=run\.md ===$/m);
     assert.match(header!, /^Verdict: accept$/m);
-    assert.match(header!, /^Scope violations: none$/m);
+    assert.match(header!, /^Scope: in=0 extended=0 outside=0$/m);
     assert.match(header!, /^Failure categories: none$/m);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("formatRunHeader: surfaces scope violation files when populated", () => {
+test("formatRunHeader: surfaces scope counts when populated", () => {
   const dir = mkdtempSync(join(tmpdir(), "dangeresque-header-"));
   try {
     const p = join(dir, "scoped.json");
     writeJsonArtifact(p, {
-      scope_violations: ["src/off-scope.ts", "README.md"],
+      scope_report: {
+        in_scope: ["src/a.ts", "src/b.ts"],
+        extended: [
+          { path: "tools/helper.ts", category: "extension", rationale: "needed" },
+        ],
+        outside: ["src/off-scope.ts", "README.md"],
+      },
     });
     const header = formatRunHeader(p);
     assert.ok(header);
-    assert.match(header!, /Scope violations: src\/off-scope\.ts, README\.md/);
+    assert.match(header!, /Scope: in=2 extended=1 outside=2/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -624,12 +630,12 @@ test("formatRunHeader: surfaces failure categories when populated", () => {
     const p = join(dir, "failed.json");
     writeJsonArtifact(p, {
       reviewer_verdict: "reject",
-      failure_categories: ["reviewer_rejected", "scope_violation"],
+      failure_categories: ["reviewer_rejected", "scope_outside"],
     });
     const header = formatRunHeader(p);
     assert.ok(header);
     assert.match(header!, /Verdict: reject/);
-    assert.match(header!, /Failure categories: reviewer_rejected, scope_violation/);
+    assert.match(header!, /Failure categories: reviewer_rejected, scope_outside/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -681,7 +687,7 @@ function writeRunArtifacts(
       schema_version: "2",
       summary: `${mode} success | verdict=accept | file=${base}.md`,
       reviewer_verdict: "accept",
-      scope_violations: [] as string[],
+      scope_report: { in_scope: [], extended: [], outside: [] },
       failure_categories: [] as string[],
     };
     writeFileSync(
@@ -718,7 +724,7 @@ test("getWorktreeResults: structured header precedes diff summary when JSON pres
     assert.ok(headerIdx < diffIdx, "header must appear before diff summary");
     assert.ok(diffIdx < latestIdx, "diff summary must appear before latest run");
     assert.match(out, /Verdict: accept/);
-    assert.match(out, /Scope violations: none/);
+    assert.match(out, /Scope: in=0 extended=0 outside=0/);
     assert.match(out, /Failure categories: none/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -751,7 +757,7 @@ test("getWorktreeResults: header omitted when JSON artifact missing", () => {
   }
 });
 
-test("getWorktreeResults: header surfaces scope_violations when populated", () => {
+test("getWorktreeResults: header surfaces scope_report counts when populated", () => {
   const dir = makeRepo();
   try {
     const worktreePath = addWorktree(
@@ -766,15 +772,19 @@ test("getWorktreeResults: header surfaces scope_violations when populated", () =
       "IMPLEMENT",
       {
         jsonOverrides: {
-          scope_violations: ["src/unrelated.ts"],
-          failure_categories: ["scope_violation"],
+          scope_report: {
+            in_scope: [],
+            extended: [],
+            outside: ["src/unrelated.ts"],
+          },
+          failure_categories: ["scope_outside"],
         },
       },
     );
 
     const out = getWorktreeResults(dir, "worktree-dangeresque-implement-779");
-    assert.match(out, /Scope violations: src\/unrelated\.ts/);
-    assert.match(out, /Failure categories: scope_violation/);
+    assert.match(out, /Scope: in=0 extended=0 outside=1/);
+    assert.match(out, /Failure categories: scope_outside/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

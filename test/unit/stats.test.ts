@@ -36,7 +36,6 @@ function mkArtifact(overrides: Partial<RunArtifact> = {}): RunArtifact {
     result: "success",
     reviewer_verdict: "accept",
     failure_categories: [],
-    scope_violations: [],
     files_changed_count: 0,
     verification: null,
     summary: "",
@@ -70,7 +69,7 @@ test("computeStats: aggregates results, verdicts, engines, modes, models, failur
       result: "partial_success",
       reviewer_verdict: "skipped",
       mode: "IMPLEMENT",
-      failure_categories: ["scope_violation"],
+      failure_categories: ["scope_outside"],
     }),
     mkArtifact({
       result: "failure",
@@ -94,7 +93,7 @@ test("computeStats: aggregates results, verdicts, engines, modes, models, failur
   assert.deepEqual(s.byMode.INVESTIGATE, { total: 1, success: 1 });
   assert.equal(s.byModel["claude-opus-4-7"], 3);
   assert.equal(s.byModel["gpt-5.4"], 1);
-  assert.equal(s.failureCategories.scope_violation, 1);
+  assert.equal(s.failureCategories.scope_outside, 1);
   assert.equal(s.failureCategories.reviewer_rejected, 1);
 });
 
@@ -394,12 +393,12 @@ test("formatStats: Summary shows derived top-level facts first", () => {
     mkArtifact({
       result: "partial_success",
       reviewer_verdict: "skipped",
-      failure_categories: ["scope_violation"],
+      failure_categories: ["scope_outside"],
     }),
     mkArtifact({
       result: "failure",
       reviewer_verdict: "reject",
-      failure_categories: ["scope_violation", "reviewer_rejected"],
+      failure_categories: ["scope_outside", "reviewer_rejected"],
     }),
   ]);
   const text = formatStats(s, {
@@ -422,7 +421,7 @@ test("formatStats: Summary shows derived top-level facts first", () => {
     "Hard failures:       1",
     "Review coverage:     75.0% (3/4 runs reviewed, 1 skipped)",
     "Reviewer verdicts:   1 accept, 1 reject, 1 needs_human_review",
-    "Top failure category: scope_violation (2)",
+    "Top failure category: scope_outside (2)",
   ]);
 });
 
@@ -627,7 +626,7 @@ test("formatStats: Summary reflects filtered artifact scope", () => {
           mode: "VERIFY",
           result: "partial_success",
           reviewer_verdict: "skipped",
-          failure_categories: ["scope_violation"],
+          failure_categories: ["scope_outside"],
         }),
       ),
     );
@@ -679,7 +678,7 @@ test("cli stats: --glossary prints evaluation vocabulary", () => {
   assert.match(out, /success/);
   assert.match(out, /partial_success/);
   assert.match(out, /failure/);
-  assert.match(out, /scope_violation/);
+  assert.match(out, /scope_outside/);
   assert.match(out, /accept/);
   assert.match(out, /reject/);
   assert.match(out, /needs_human_review/);

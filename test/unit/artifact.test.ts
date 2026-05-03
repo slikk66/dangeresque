@@ -98,7 +98,7 @@ test("ArtifactBuilder: review skipped → verdict=skipped", () => {
   }
 });
 
-test("ArtifactBuilder: scope violations + reviewer accept → success (scope is telemetry)", () => {
+test("ArtifactBuilder: scope outside + reviewer accept → success (scope is telemetry)", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
   try {
     const archivePath = join(tmp, "run.md");
@@ -116,18 +116,27 @@ test("ArtifactBuilder: scope violations + reviewer accept → success (scope is 
     });
     builder.setWorkerTiming(100, 200, 0);
     builder.setReviewTiming(200, 300, 0);
-    builder.setScopeViolations(["unrelated.ts"]);
+    builder.setScopeReport({
+      in_scope: [],
+      extended: [],
+      outside: ["unrelated.ts"],
+    });
     const artifact = builder.build();
     assert.equal(artifact.result, "success");
-    assert.ok(!artifact.failure_categories.includes("scope_violation"));
+    assert.ok(!artifact.failure_categories.includes("scope_outside"));
     assert.deepEqual(artifact.failure_categories, []);
-    assert.deepEqual(artifact.scope_violations, ["unrelated.ts"]);
+    assert.deepEqual(artifact.scope_report?.outside, ["unrelated.ts"]);
+    assert.equal(
+      (artifact as unknown as Record<string, unknown>).scope_violations,
+      undefined,
+      "scope_violations field must be absent on v6 artifacts",
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test("ArtifactBuilder: scope violations + review skipped → partial_success + scope_violation", () => {
+test("ArtifactBuilder: scope outside + review skipped → partial_success + scope_outside", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
   try {
     const archivePath = join(tmp, "run.md");
@@ -145,17 +154,21 @@ test("ArtifactBuilder: scope violations + review skipped → partial_success + s
     });
     builder.setWorkerTiming(100, 200, 0);
     builder.markReviewSkipped("no-review flag");
-    builder.setScopeViolations(["unrelated.ts"]);
+    builder.setScopeReport({
+      in_scope: [],
+      extended: [],
+      outside: ["unrelated.ts"],
+    });
     const artifact = builder.build();
     assert.equal(artifact.result, "partial_success");
-    assert.deepEqual(artifact.failure_categories, ["scope_violation"]);
-    assert.deepEqual(artifact.scope_violations, ["unrelated.ts"]);
+    assert.deepEqual(artifact.failure_categories, ["scope_outside"]);
+    assert.deepEqual(artifact.scope_report?.outside, ["unrelated.ts"]);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test("ArtifactBuilder: review skipped + no scope violations → success", () => {
+test("ArtifactBuilder: review skipped + no scope outside → success", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
   try {
     const archivePath = join(tmp, "run.md");
@@ -199,17 +212,21 @@ test("ArtifactBuilder: reviewer reject → failure + reviewer_rejected (scope ir
     });
     builder.setWorkerTiming(100, 200, 0);
     builder.setReviewTiming(200, 300, 0);
-    builder.setScopeViolations(["unrelated.ts"]);
+    builder.setScopeReport({
+      in_scope: [],
+      extended: [],
+      outside: ["unrelated.ts"],
+    });
     const artifact = builder.build();
     assert.equal(artifact.result, "failure");
     assert.ok(artifact.failure_categories.includes("reviewer_rejected"));
-    assert.ok(!artifact.failure_categories.includes("scope_violation"));
+    assert.ok(!artifact.failure_categories.includes("scope_outside"));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test("ArtifactBuilder: reviewer needs_human_review → partial_success (no scope_violation)", () => {
+test("ArtifactBuilder: reviewer needs_human_review → partial_success (no scope_outside)", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
   try {
     const archivePath = join(tmp, "run.md");
@@ -227,18 +244,22 @@ test("ArtifactBuilder: reviewer needs_human_review → partial_success (no scope
     });
     builder.setWorkerTiming(100, 200, 0);
     builder.setReviewTiming(200, 300, 0);
-    builder.setScopeViolations(["unrelated.ts"]);
+    builder.setScopeReport({
+      in_scope: [],
+      extended: [],
+      outside: ["unrelated.ts"],
+    });
     const artifact = builder.build();
     assert.equal(artifact.result, "partial_success");
     assert.equal(artifact.reviewer_verdict, "needs_human_review");
-    assert.ok(!artifact.failure_categories.includes("scope_violation"));
+    assert.ok(!artifact.failure_categories.includes("scope_outside"));
     assert.deepEqual(artifact.failure_categories, []);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test("ArtifactBuilder: reviewer verdict unknown (no verdict line) → partial_success (no scope_violation)", () => {
+test("ArtifactBuilder: reviewer verdict unknown (no verdict line) → partial_success (no scope_outside)", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
   try {
     const archivePath = join(tmp, "run.md");
@@ -256,11 +277,15 @@ test("ArtifactBuilder: reviewer verdict unknown (no verdict line) → partial_su
     });
     builder.setWorkerTiming(100, 200, 0);
     builder.setReviewTiming(200, 300, 0);
-    builder.setScopeViolations(["unrelated.ts"]);
+    builder.setScopeReport({
+      in_scope: [],
+      extended: [],
+      outside: ["unrelated.ts"],
+    });
     const artifact = builder.build();
     assert.equal(artifact.result, "partial_success");
     assert.equal(artifact.reviewer_verdict, "unknown");
-    assert.ok(!artifact.failure_categories.includes("scope_violation"));
+    assert.ok(!artifact.failure_categories.includes("scope_outside"));
     assert.deepEqual(artifact.failure_categories, []);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -285,11 +310,15 @@ test("ArtifactBuilder: review nonzero exit → partial_success + review_nonzero_
     });
     builder.setWorkerTiming(100, 200, 0);
     builder.setReviewTiming(200, 300, 1);
-    builder.setScopeViolations(["unrelated.ts"]);
+    builder.setScopeReport({
+      in_scope: [],
+      extended: [],
+      outside: ["unrelated.ts"],
+    });
     const artifact = builder.build();
     assert.equal(artifact.result, "partial_success");
     assert.ok(artifact.failure_categories.includes("review_nonzero_exit"));
-    assert.ok(!artifact.failure_categories.includes("scope_violation"));
+    assert.ok(!artifact.failure_categories.includes("scope_outside"));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

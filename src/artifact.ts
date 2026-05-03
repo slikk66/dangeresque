@@ -10,7 +10,7 @@ import type {
   ScopeReport,
 } from "./scope.js";
 
-export const ARTIFACT_SCHEMA_VERSION = "5";
+export const ARTIFACT_SCHEMA_VERSION = "6";
 
 // Modes whose worker output produces a code diff and must therefore carry a
 // `## Scope Declaration` section. Kept in sync with `src/runner.ts` (prompt
@@ -32,7 +32,7 @@ export type FailureCategory =
   | "review_nonzero_exit"
   | "no_run_artifact"
   | "rebase_conflict"
-  | "scope_violation"
+  | "scope_outside"
   | "reviewer_rejected"
   | "verification_failed"
   | "unknown";
@@ -76,7 +76,6 @@ export interface RunArtifact {
   result: ResultClassification;
   reviewer_verdict: ReviewerVerdict;
   failure_categories: FailureCategory[];
-  scope_violations: string[];
   files_changed_count: number;
   verification: VerificationResult[] | null;
   summary: string;
@@ -116,7 +115,6 @@ export class ArtifactBuilder {
   private readonly events: LifecycleEvent[] = [];
   private worker?: PhaseTiming;
   private review?: ReviewPhase;
-  private scopeViolations: string[] = [];
   private filesChangedCount = 0;
   private reviewSkipped = false;
   private reviewSkipReason?: string;
@@ -154,10 +152,6 @@ export class ArtifactBuilder {
   markReviewSkipped(reason: string): void {
     this.reviewSkipped = true;
     this.reviewSkipReason = reason;
-  }
-
-  setScopeViolations(files: string[]): void {
-    this.scopeViolations = [...files];
   }
 
   setFilesChangedCount(n: number): void {
@@ -221,12 +215,13 @@ export class ArtifactBuilder {
     });
 
     const verificationBlocked = isVerificationBlocked(this.verification);
+    const outsideCount = this.scopeReport?.outside.length ?? 0;
 
     const failureCategories = deriveFailureCategories({
       workerExitCode: worker.exit_code,
       reviewExitCode: review && !review.skipped ? review.exit_code : undefined,
       archiveExists: existsSync(archivePath),
-      scopeViolations: this.scopeViolations,
+      outsideCount,
       reviewerVerdict,
       events: this.events,
       verificationBlocked,
@@ -237,7 +232,7 @@ export class ArtifactBuilder {
       review,
       archiveExists: existsSync(archivePath),
       reviewerVerdict,
-      scopeViolations: this.scopeViolations,
+      outsideCount,
       verificationBlocked,
     });
 
@@ -295,7 +290,6 @@ export class ArtifactBuilder {
       result,
       reviewer_verdict: reviewerVerdict,
       failure_categories: failureCategories,
-      scope_violations: [...this.scopeViolations],
       files_changed_count: this.filesChangedCount,
       verification: this.verification === null ? null : [...this.verification],
       summary,
@@ -359,7 +353,7 @@ function deriveFailureCategories(opts: {
   workerExitCode: number;
   reviewExitCode: number | undefined;
   archiveExists: boolean;
-  scopeViolations: string[];
+  outsideCount: number;
   reviewerVerdict: ReviewerVerdict;
   events: LifecycleEvent[];
   verificationBlocked: boolean;
@@ -371,15 +365,16 @@ function deriveFailureCategories(opts: {
   }
   if (!opts.archiveExists) categories.push("no_run_artifact");
   if (opts.verificationBlocked) categories.push("verification_failed");
-  // scope_violation only contributes when scope_violations actually caused a downgrade:
-  // worker succeeded, archive exists, reviewer did NOT run, and scope was flagged.
-  // When the reviewer ran, its verdict is the authority on scope (issue #27).
+  // scope_outside only contributes when outside-scope changes actually caused
+  // a downgrade: worker succeeded, archive exists, reviewer did NOT run, and
+  // scope_report.outside was non-empty. When the reviewer ran, its verdict is
+  // the authority on scope (issue #27).
   const scopeContributedToDowngrade =
     opts.workerExitCode === 0 &&
     opts.archiveExists &&
     opts.reviewExitCode === undefined &&
-    opts.scopeViolations.length > 0;
-  if (scopeContributedToDowngrade) categories.push("scope_violation");
+    opts.outsideCount > 0;
+  if (scopeContributedToDowngrade) categories.push("scope_outside");
   if (opts.reviewerVerdict === "reject") categories.push("reviewer_rejected");
   if (opts.events.some((e) => e.event === "rebase_failed")) {
     categories.push("rebase_conflict");
@@ -397,7 +392,7 @@ function deriveResult(opts: {
   review: ReviewPhase | null;
   archiveExists: boolean;
   reviewerVerdict: ReviewerVerdict;
-  scopeViolations: string[];
+  outsideCount: number;
   verificationBlocked: boolean;
 }): ResultClassification {
   if (opts.workerExitCode !== 0) return "failure";
@@ -416,7 +411,7 @@ function deriveResult(opts: {
     return "partial_success";
   }
 
-  return opts.scopeViolations.length > 0 ? "partial_success" : "success";
+  return opts.outsideCount > 0 ? "partial_success" : "success";
 }
 
 function buildSummaryLine(opts: {

@@ -32,16 +32,27 @@ export function migrateArtifact(json: unknown): MigrateOneResult {
     return { migrated: false, result: obj as unknown as RunArtifact };
   }
 
-  if (version !== "4") {
+  if (version !== "4" && version !== "5") {
     throw new Error(
-      `unsupported source schema_version: ${version} (only v4 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
+      `unsupported source schema_version: ${version} (only v4/v5 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
     );
   }
 
-  const next: Record<string, unknown> = {
-    ...obj,
-    schema_version: ARTIFACT_SCHEMA_VERSION,
-  };
+  const fromVersion = parseInt(version, 10);
+  let next: Record<string, unknown> = { ...obj };
+
+  if (version === "4") {
+    next = stepV4toV5(next);
+  }
+  next = stepV5toV6(next);
+  next.schema_version = ARTIFACT_SCHEMA_VERSION;
+  next.migrated_from_version = fromVersion;
+
+  return { migrated: true, result: next as unknown as RunArtifact };
+}
+
+function stepV4toV5(obj: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...obj };
   if (next.scope_block === undefined) {
     next.scope_block = { allow: [], deny: [], diagnostics: [] };
   }
@@ -51,9 +62,18 @@ export function migrateArtifact(json: unknown): MigrateOneResult {
   if (next.scope_report === undefined) {
     next.scope_report = { in_scope: [], extended: [], outside: [] };
   }
-  next.migrated_from_version = 4;
+  return next;
+}
 
-  return { migrated: true, result: next as unknown as RunArtifact };
+function stepV5toV6(obj: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...obj };
+  delete next.scope_violations;
+  if (Array.isArray(next.failure_categories)) {
+    next.failure_categories = next.failure_categories.map((c) =>
+      c === "scope_violation" ? "scope_outside" : c,
+    );
+  }
+  return next;
 }
 
 export function migrateAllArtifacts(projectRoot: string): MigrateAllResult {

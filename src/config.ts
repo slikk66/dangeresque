@@ -77,6 +77,19 @@ export interface DangeresqueConfig {
   codexReviewModel?: string;
   /** Pre-review verification commands (compile/test/lint) run in the worktree. */
   verify?: VerifyConfig;
+  /** Scope subsystem config (allow-list policy + opportunistic-fix budget). */
+  scope?: ScopeConfig;
+}
+
+export interface ScopeOpportunisticConfig {
+  enabled: boolean;
+  maxFiles: number;
+  maxLines: number;
+  denyGlobs: string[];
+}
+
+export interface ScopeConfig {
+  opportunistic: ScopeOpportunisticConfig;
 }
 
 const DEFAULT_CONFIG: DangeresqueConfig = {
@@ -127,10 +140,28 @@ export const DEFAULT_VERIFY_CONFIG: VerifyConfig = {
   commands: [],
 };
 
+export const DEFAULT_SCOPE_OPPORTUNISTIC_CONFIG: ScopeOpportunisticConfig = {
+  enabled: true,
+  maxFiles: 1,
+  maxLines: 20,
+  denyGlobs: [
+    "infra/**",
+    ".github/**",
+    "**/*.lock",
+    "**/migrations/**",
+    "**/.env*",
+    "**/secrets/**",
+  ],
+};
+
 export function loadConfig(projectRoot: string): DangeresqueConfig {
   const configPath = join(projectRoot, CONFIG_DIR, "config.json");
   if (!existsSync(configPath)) {
-    return { ...DEFAULT_CONFIG, verify: { ...DEFAULT_VERIFY_CONFIG } };
+    return {
+      ...DEFAULT_CONFIG,
+      verify: { ...DEFAULT_VERIFY_CONFIG },
+      scope: defaultScopeConfig(),
+    };
   }
   const raw = JSON.parse(readFileSync(configPath, "utf-8"));
   const merged: DangeresqueConfig = { ...DEFAULT_CONFIG, ...raw };
@@ -139,7 +170,55 @@ export function loadConfig(projectRoot: string): DangeresqueConfig {
   merged.allowedTools = mergeStringList(DEFAULT_CONFIG.allowedTools, raw.allowedTools);
   merged.disallowedTools = mergeStringList(DEFAULT_CONFIG.disallowedTools, raw.disallowedTools);
   merged.verify = normalizeVerifyConfig(raw.verify);
+  merged.scope = normalizeScopeConfig(raw.scope);
   return merged;
+}
+
+function defaultScopeConfig(): ScopeConfig {
+  return {
+    opportunistic: {
+      ...DEFAULT_SCOPE_OPPORTUNISTIC_CONFIG,
+      denyGlobs: [...DEFAULT_SCOPE_OPPORTUNISTIC_CONFIG.denyGlobs],
+    },
+  };
+}
+
+function normalizeScopeConfig(raw: unknown): ScopeConfig {
+  if (!raw || typeof raw !== "object") return defaultScopeConfig();
+  const obj = raw as Record<string, unknown>;
+  return {
+    opportunistic: normalizeScopeOpportunisticConfig(obj.opportunistic),
+  };
+}
+
+export function normalizeScopeOpportunisticConfig(
+  raw: unknown,
+): ScopeOpportunisticConfig {
+  if (!raw || typeof raw !== "object") {
+    return {
+      ...DEFAULT_SCOPE_OPPORTUNISTIC_CONFIG,
+      denyGlobs: [...DEFAULT_SCOPE_OPPORTUNISTIC_CONFIG.denyGlobs],
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  const enabled =
+    typeof obj.enabled === "boolean"
+      ? obj.enabled
+      : DEFAULT_SCOPE_OPPORTUNISTIC_CONFIG.enabled;
+  const maxFiles =
+    typeof obj.maxFiles === "number" && obj.maxFiles >= 0
+      ? Math.floor(obj.maxFiles)
+      : DEFAULT_SCOPE_OPPORTUNISTIC_CONFIG.maxFiles;
+  const maxLines =
+    typeof obj.maxLines === "number" && obj.maxLines >= 0
+      ? Math.floor(obj.maxLines)
+      : DEFAULT_SCOPE_OPPORTUNISTIC_CONFIG.maxLines;
+  // Empty array overrides defaults to "no project-level deny" — distinct from
+  // missing/malformed which falls back. Drops malformed entries silently.
+  const denyGlobs = Array.isArray(obj.denyGlobs)
+    ? obj.denyGlobs.filter((g): g is string => typeof g === "string")
+    : [...DEFAULT_SCOPE_OPPORTUNISTIC_CONFIG.denyGlobs];
+  return { enabled, maxFiles, maxLines, denyGlobs };
 }
 
 function normalizeVerifyConfig(raw: unknown): VerifyConfig {
