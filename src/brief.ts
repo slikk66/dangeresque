@@ -89,6 +89,18 @@ category \`verification_failed\`. Review is also skipped for INVESTIGATE and
 VERIFY (no code changes) and by \`--no-review\`. A macOS notification fires
 when complete. Nothing touches main until you run \`dangeresque merge\`.
 
+**Don't truncate or close the orchestrator's stdout.** \`dangeresque run\` is a
+long-running orchestrator that streams output across multiple phases — worker
+session → pre-review verification → review session → JSON eval write. Piping
+its stdout through a truncating tool (\`| head\`, \`| grep -m\`, \`| awk 'NR==N{exit}'\`)
+or otherwise closing the pipe early triggers SIGPIPE when the orchestrator
+tries to write later phases. The worker's commit and run-result MD survive
+(those happen first), but verify hooks, the review pass, and the JSON eval
+write die — leaving you with a worktree that looks done but never got
+reviewed. Always let stdout stream fully. If you need to background the run,
+capture stdout to a file and read it when complete; don't apply any pipeline
+that can exit before the orchestrator does.
+
 After each run, dangeresque posts ONE comment on the GitHub Issue containing
 only the artifact's \`<!-- SUMMARY -->\` block plus the local artifact path.
 The full body never leaves the host — read it via
