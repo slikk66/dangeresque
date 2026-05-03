@@ -19,6 +19,16 @@
     ]
   },
 
+  "_doc_scope": "Scope subsystem: project-level opportunistic-fix budget. `enabled` toggles file/line caps (denyGlobs apply unconditionally regardless). `denyGlobs` is the project no-fly list — files matching are demoted to `outside` even if a worker categorized them `extension`; security-sensitive paths cannot be laundered. `maxFiles` caps how many opportunistic drive-by files a worker may bundle in one run; `maxLines` caps total LOC across them. Excess opportunistic files are demoted to `scope_report.outside`, and the reviewer adjudicates. Tighten for stricter projects; relax for greenfield.",
+  "scope": {
+    "opportunistic": {
+      "enabled": true,
+      "maxFiles": 1,
+      "maxLines": 20,
+      "denyGlobs": ["infra/**", ".github/**", "**/*.lock", "**/migrations/**", "**/.env*", "**/secrets/**"]
+    }
+  },
+
   "_doc_other_examples": [
     "Cargo project: { name: 'compile', cmd: 'cargo build', on_failure: 'block' }, { name: 'test', cmd: 'cargo test', on_failure: 'block' }",
     "Go project:    { name: 'vet', cmd: 'go vet ./...', on_failure: 'block' }, { name: 'test', cmd: 'go test ./...', on_failure: 'block' }",
