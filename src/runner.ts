@@ -317,6 +317,13 @@ export function formatIssueComments(issueData: IssueData): string {
   return result;
 }
 
+// Modes whose worker output produces a code diff and therefore must declare
+// every touched file in a `## Scope Declaration` section. Kept in sync with
+// the matching set in `src/artifact.ts` (warning emission). Two literal sets
+// rather than a shared export so each consumer can drift independently if
+// future modes change semantics.
+const CODE_CHANGING_MODES = new Set(["IMPLEMENT", "REFACTOR", "TEST"]);
+
 function buildTaskPrompt(opts: RunOptions, archivePath: string): string {
   const mode = opts.mode ?? "INVESTIGATE";
   const runsDir = dirname(archivePath);
@@ -337,6 +344,14 @@ function buildTaskPrompt(opts: RunOptions, archivePath: string): string {
     `- Prior runs for this issue live at ${runsDir}/ (one timestamped file per run, newest last). ` +
     `Read the latest there ONLY if you need prior context — do not read them all.\n\n` +
     `Follow .dangeresque/AFK_WORKER_RULES.md (appended to your system prompt).`;
+
+  if (CODE_CHANGING_MODES.has(mode)) {
+    prompt +=
+      `\n\n## Scope Declaration\n\n` +
+      `Your run artifact MUST include a top-level \`## Scope Declaration\` section listing every file you touched in this run. ` +
+      `One entry per changed file. See worker-prompt.md for the four categories (\`declared\` / \`extension\` / \`opportunistic\` / \`incidental\`) and the bullet/table formats. ` +
+      `Phase 2 logs a warning when this section is missing — Phase 3 will hard-fail.`;
+  }
 
   return prompt;
 }

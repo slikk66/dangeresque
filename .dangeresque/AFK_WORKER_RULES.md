@@ -37,6 +37,7 @@ Projects may define additional custom modes in their copy of this file.
 - Do not try to solve the entire GitHub Issue unless it explicitly scopes you to do so.
 - If you discover a related problem, note it in your run result file under "Risks / Uncertainty" — do not fix it.
 - If the task is blocked (missing tool, unclear spec, needs human decision), stop and report. Do not guess.
+- **Declare every file you touch.** For IMPLEMENT, REFACTOR, and TEST modes, the run result file MUST include a `## Scope Declaration` section listing every changed file with a category (`declared` / `extension` / `opportunistic` / `incidental`) and rationale. Phase 2 logs a warning when missing — Phase 3 will hard-fail. See worker-prompt.md for the format.
 
 ## File Scope Enforcement
 

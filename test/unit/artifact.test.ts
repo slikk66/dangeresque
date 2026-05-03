@@ -334,10 +334,148 @@ test("ArtifactBuilder: schema_version + run_id + lifecycle events populated", ()
     archivePath: "/tmp/nope.md",
   });
   builder.setWorkerTiming(0, 1, 0);
-  const artifact = builder.build();
+  const captured: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: unknown[]) => { captured.push(args.map(String).join(" ")); };
+  let artifact;
+  try {
+    artifact = builder.build();
+  } finally {
+    console.warn = origWarn;
+  }
   assert.equal(artifact.schema_version, ARTIFACT_SCHEMA_VERSION);
   assert.match(artifact.run_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   const events = artifact.lifecycle_events.map((e) => e.event);
   assert.ok(events.includes("run_started"));
   assert.ok(events.includes("run_completed"));
+});
+
+// --- Scope Declaration warn-only emission (Phase 2) ---
+
+function captureWarn<T>(fn: () => T): { result: T; warnings: string[] } {
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+  try {
+    const result = fn();
+    return { result, warnings };
+  } finally {
+    console.warn = origWarn;
+  }
+}
+
+for (const mode of ["IMPLEMENT", "REFACTOR", "TEST"] as const) {
+  test(`ArtifactBuilder: missing scope_declaration warns for ${mode} (warn-only, run still classifies)`, () => {
+    const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+    try {
+      const archivePath = join(tmp, "run.md");
+      writeFileSync(archivePath, "**Verdict:** ACCEPT\n");
+      const builder = new ArtifactBuilder({
+        projectRoot: tmp,
+        issueNumber: 1,
+        issueUrl: null,
+        mode,
+        engine: "claude",
+        model: "m",
+        worktreeName: "wt",
+        branch: "br",
+        archivePath,
+      });
+      builder.setWorkerTiming(100, 200, 0);
+      builder.setReviewTiming(200, 300, 0);
+      const { result: artifact, warnings } = captureWarn(() => builder.build());
+      assert.equal(warnings.length, 1, "expected exactly one warn");
+      assert.match(warnings[0], /Scope Declaration/);
+      assert.match(warnings[0], new RegExp(`mode=${mode}`));
+      assert.equal(artifact.result, "success");
+      assert.deepEqual(artifact.failure_categories, []);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+}
+
+test("ArtifactBuilder: empty scope_declaration array warns for IMPLEMENT", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "**Verdict:** ACCEPT\n");
+    const builder = new ArtifactBuilder({
+      projectRoot: tmp,
+      issueNumber: 1,
+      issueUrl: null,
+      mode: "IMPLEMENT",
+      engine: "claude",
+      model: "m",
+      worktreeName: "wt",
+      branch: "br",
+      archivePath,
+    });
+    builder.setWorkerTiming(100, 200, 0);
+    builder.setReviewTiming(200, 300, 0);
+    builder.setScopeDeclaration([]);
+    const { warnings } = captureWarn(() => builder.build());
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /Scope Declaration/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+for (const mode of ["INVESTIGATE", "VERIFY"] as const) {
+  test(`ArtifactBuilder: missing scope_declaration does NOT warn for ${mode}`, () => {
+    const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+    try {
+      const archivePath = join(tmp, "run.md");
+      writeFileSync(archivePath, "# run\n");
+      const builder = new ArtifactBuilder({
+        projectRoot: tmp,
+        issueNumber: 1,
+        issueUrl: null,
+        mode,
+        engine: "claude",
+        model: "m",
+        worktreeName: "wt",
+        branch: "br",
+        archivePath,
+      });
+      builder.setWorkerTiming(100, 200, 0);
+      builder.markReviewSkipped("no-review for non-code modes");
+      const { warnings } = captureWarn(() => builder.build());
+      assert.equal(warnings.length, 0, "expected no warn for non-code-changing mode");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+}
+
+test("ArtifactBuilder: populated scope_declaration suppresses warn for IMPLEMENT", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "**Verdict:** ACCEPT\n");
+    const builder = new ArtifactBuilder({
+      projectRoot: tmp,
+      issueNumber: 1,
+      issueUrl: null,
+      mode: "IMPLEMENT",
+      engine: "claude",
+      model: "m",
+      worktreeName: "wt",
+      branch: "br",
+      archivePath,
+    });
+    builder.setWorkerTiming(100, 200, 0);
+    builder.setReviewTiming(200, 300, 0);
+    builder.setScopeDeclaration([
+      { path: "src/foo.ts", category: "declared", rationale: "primary change" },
+    ]);
+    const { result: artifact, warnings } = captureWarn(() => builder.build());
+    assert.equal(warnings.length, 0, "expected no warn when declaration present");
+    assert.deepEqual(artifact.scope_declaration, [
+      { path: "src/foo.ts", category: "declared", rationale: "primary change" },
+    ]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

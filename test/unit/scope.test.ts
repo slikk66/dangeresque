@@ -198,6 +198,90 @@ test("parseScopeDeclaration: skips lines with unknown category", () => {
   assert.equal(decl[0].path, "src/b.ts");
 });
 
+test("parseScopeDeclaration: parses markdown table form", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "| Path | Category | Rationale |",
+    "|---|---|---|",
+    "| `src/scope.ts` | declared | implements parser |",
+    "| `src/cli.ts` | extension | wire the new helper |",
+    "| yarn.lock | incidental | auto-touched |",
+    "| `tools/extra.ts` | opportunistic | drive-by typo fix |",
+    "",
+    "## Next",
+  ].join("\n");
+  const decl = parseScopeDeclaration(md);
+  assert.deepEqual(decl, [
+    {
+      path: "src/scope.ts",
+      rationale: "implements parser",
+      category: "declared",
+    },
+    {
+      path: "src/cli.ts",
+      rationale: "wire the new helper",
+      category: "extension",
+    },
+    { path: "yarn.lock", rationale: "auto-touched", category: "incidental" },
+    {
+      path: "tools/extra.ts",
+      rationale: "drive-by typo fix",
+      category: "opportunistic",
+    },
+  ]);
+});
+
+test("parseScopeDeclaration: table header + separator rows are skipped", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "| Path | Category | Rationale |",
+    "|---|---|---|",
+    "| `src/a.ts` | declared | only real entry |",
+  ].join("\n");
+  const decl = parseScopeDeclaration(md);
+  assert.equal(decl.length, 1);
+  assert.equal(decl[0].path, "src/a.ts");
+});
+
+test("parseScopeDeclaration: mixed bullet + table form within same section", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "- `src/bullet.ts` (declared) — bullet entry",
+    "",
+    "| Path | Category | Rationale |",
+    "|---|---|---|",
+    "| `src/table.ts` | extension | table entry |",
+  ].join("\n");
+  const decl = parseScopeDeclaration(md);
+  assert.deepEqual(decl, [
+    {
+      path: "src/bullet.ts",
+      rationale: "bullet entry",
+      category: "declared",
+    },
+    {
+      path: "src/table.ts",
+      rationale: "table entry",
+      category: "extension",
+    },
+  ]);
+});
+
+test("parseScopeDeclaration: table row with unknown category is skipped", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "| `src/a.ts` | bogus | wrong category |",
+    "| `src/b.ts` | declared | fine |",
+  ].join("\n");
+  const decl = parseScopeDeclaration(md);
+  assert.equal(decl.length, 1);
+  assert.equal(decl[0].path, "src/b.ts");
+});
+
 test("classifyChanges: allow-only block", () => {
   const block = parseScopeBlocks(
     [

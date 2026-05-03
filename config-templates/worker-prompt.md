@@ -85,6 +85,48 @@ Rules for the summary block:
 
 The rest of the file follows with full details (Status, Summary, Verification, Risks, Next Steps).
 
+## Scope Declaration
+
+**Required for IMPLEMENT, REFACTOR, and TEST modes.** INVESTIGATE and VERIFY produce no diff and skip this section.
+
+Add a top-level `## Scope Declaration` section to your run result file listing **every file you touched** in this run — one entry per file. Categorize each entry:
+
+| Category | Meaning |
+|---|---|
+| `declared` | The GitHub Issue's allow-list explicitly named or globbed this file. Primary in-scope changes. |
+| `extension` | Not in the issue's allow-list, but required to complete the Goal (e.g. a helper a new function depends on). Justify why. |
+| `opportunistic` | Drive-by edit unrelated to the Goal (typo fix, lint cleanup). Should be rare. |
+| `incidental` | Auto-generated or auto-touched (`yarn.lock`, build outputs, formatter changes). |
+
+### Format
+
+Either bullet form or markdown table form is accepted (mix freely within the section). Pin column order to **path / category / rationale**.
+
+**Bullet form:**
+
+```markdown
+## Scope Declaration
+
+- `src/feature.ts` (declared) — implements the Goal's primary entry point
+- `src/feature.test.ts` (declared) — covers the new branch
+- `src/util.ts` (extension) — added helper required by feature.ts
+- `yarn.lock` (incidental) — touched by yarn install
+```
+
+**Table form:**
+
+```markdown
+## Scope Declaration
+
+| Path | Category | Rationale |
+|---|---|---|
+| `src/feature.ts` | declared | implements the Goal's primary entry point |
+| `src/util.ts` | extension | added helper required by feature.ts |
+| `yarn.lock` | incidental | touched by yarn install |
+```
+
+Phase 2 is **warn-only** — a missing or empty section logs a warning at run completion but does not fail the run. Phase 3 will hard-fail when the section is missing for code-changing modes.
+
 ## Shutdown Sequence
 
 Before ending your session:

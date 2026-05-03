@@ -612,6 +612,60 @@ test("buildClaudeReviewArgs(headless=false): prompt returned AND appended positi
   }
 });
 
+// --- Scope Declaration prompt stub: mode-gated injection ---
+
+for (const mode of ["IMPLEMENT", "REFACTOR", "TEST"] as const) {
+  test(`buildClaudeWorkerArgs: prompt includes '## Scope Declaration' stub for ${mode}`, () => {
+    const { opts, cleanup } = makeClaudeArgsFixture(true);
+    try {
+      const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-43/2026-04-23T00-00-00-IMPLEMENT.md";
+      const result = buildClaudeWorkerArgs({ ...opts, mode }, "dangeresque-implement-43", archivePath);
+      assert.match(result.prompt, /## Scope Declaration/);
+      assert.match(result.prompt, /declared/);
+      assert.match(result.prompt, /extension/);
+      assert.match(result.prompt, /opportunistic/);
+      assert.match(result.prompt, /incidental/);
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+for (const mode of ["INVESTIGATE", "VERIFY"] as const) {
+  test(`buildClaudeWorkerArgs: prompt does NOT include '## Scope Declaration' stub for ${mode}`, () => {
+    const { opts, cleanup } = makeClaudeArgsFixture(true);
+    try {
+      const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-43/2026-04-23T00-00-00-IMPLEMENT.md";
+      const result = buildClaudeWorkerArgs({ ...opts, mode }, "dangeresque-implement-43", archivePath);
+      assert.doesNotMatch(result.prompt, /## Scope Declaration/);
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+test("buildCodexWorkerArgs: prompt includes '## Scope Declaration' stub for IMPLEMENT (engine parity)", () => {
+  const { opts, cleanup } = makeCodexArgsFixture();
+  try {
+    const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-35/2026-04-23T00-00-00-IMPLEMENT.md";
+    const result = buildCodexWorkerArgs(opts, "dangeresque-implement-35", archivePath);
+    assert.match(result.prompt, /## Scope Declaration/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("buildCodexWorkerArgs: prompt does NOT include '## Scope Declaration' stub for INVESTIGATE", () => {
+  const { opts, cleanup } = makeCodexArgsFixture();
+  try {
+    const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-35/2026-04-23T00-00-00-IMPLEMENT.md";
+    const result = buildCodexWorkerArgs({ ...opts, mode: "INVESTIGATE" }, "dangeresque-implement-35", archivePath);
+    assert.doesNotMatch(result.prompt, /## Scope Declaration/);
+  } finally {
+    cleanup();
+  }
+});
+
 test("readPromptWithLocal: canonical only, .local.md missing → canonical", () => {
   const dir = mkdtempSync(join(tmpdir(), "dangeresque-prompt-local-"));
   try {

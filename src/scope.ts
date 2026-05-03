@@ -126,6 +126,13 @@ function uniq(arr: string[]): string[] {
 const DECLARATION_LINE_REGEX =
   /^[-*]\s+`([^`]+)`\s*\(([a-z]+)\)\s*[—\-:]\s*(.+)$/;
 
+// Markdown table form: `| path | category | rationale |`. Backticks around
+// path optional. Header (`| Path | Category | Rationale |`) and separator
+// (`|---|---|---|`) rows are rejected by the `[a-z]+` category capture and
+// the downstream whitelist check, so no explicit row-skip needed.
+const TABLE_LINE_REGEX =
+  /^\s*\|\s*`?([^`|]+?)`?\s*\|\s*([a-z]+)\s*\|\s*(.+?)\s*\|\s*$/;
+
 export function parseScopeDeclaration(markdown: string): ScopeDeclarationEntry[] {
   const lines = markdown.split(/\r?\n/);
   const entries: ScopeDeclarationEntry[] = [];
@@ -142,7 +149,7 @@ export function parseScopeDeclaration(markdown: string): ScopeDeclarationEntry[]
     }
     if (!inSection) continue;
 
-    const m = line.match(DECLARATION_LINE_REGEX);
+    const m = line.match(DECLARATION_LINE_REGEX) ?? line.match(TABLE_LINE_REGEX);
     if (!m) continue;
     const cat = m[2];
     if (

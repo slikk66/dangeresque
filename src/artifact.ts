@@ -12,6 +12,12 @@ import type {
 
 export const ARTIFACT_SCHEMA_VERSION = "5";
 
+// Modes whose worker output produces a code diff and must therefore carry a
+// `## Scope Declaration` section. Kept in sync with `src/runner.ts` (prompt
+// injection). Two literal sets rather than a shared export so each consumer
+// can drift independently if future modes change semantics.
+const CODE_CHANGING_MODES = new Set(["IMPLEMENT", "REFACTOR", "TEST"]);
+
 export type ResultClassification = "success" | "partial_success" | "failure";
 
 export type ReviewerVerdict =
@@ -247,6 +253,17 @@ export class ArtifactBuilder {
       result,
       reviewer_verdict: reviewerVerdict,
     });
+
+    if (
+      CODE_CHANGING_MODES.has(this.init.mode) &&
+      (this.scopeDeclaration === undefined || this.scopeDeclaration.length === 0)
+    ) {
+      console.warn(
+        `⚠️  Run artifact missing '## Scope Declaration' section ` +
+          `(mode=${this.init.mode}). Phase 2 is warn-only — Phase 3 will hard-fail. ` +
+          `See worker-prompt.md for the format.`,
+      );
+    }
 
     const reviewRan = review !== null && !review.skipped;
 
