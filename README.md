@@ -1,6 +1,6 @@
 # Dangeresque
 
-Run Claude Code or OpenAI Codex AFK in isolated git worktrees with automatic review and human merge control.
+Run Claude Code or OpenAI Codex AFK in isolated git worktrees with structured multi-phase passes, automatic adversarial review, and human merge control.
 
 ![image info](./docs/image.png)
 
