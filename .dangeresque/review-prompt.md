@@ -20,9 +20,15 @@ The worker's **run result file** is at the absolute path given in your initial p
 Verify each of these against the **diff**, not the narrative:
 
 ### 1. Scope Check
-- Did the worker touch files outside the issue's stated scope?
-- Did the worker revert or modify changes that belong to other branches/features?
-- Any unexpected file additions or deletions?
+
+Read the run artifact's `scope_report` (path counts: `in_scope`, `extended`, `outside`) and `scope_declaration` (worker's per-file category + rationale) from the JSON sibling of the run result file. Apply category-specific scrutiny:
+
+- **`declared` files** (worker's primary change, allow-listed in the issue's `dangeresque-scope` block): review only on correctness. Touching them is expected.
+- **`extension` files** (not in the allow-list, but worker declared them necessary to complete the Goal): review on **necessity AND correctness**. Could the change land without touching this file? If yes, push back — that's scope creep wearing an "extension" badge. If no, verify the change itself is correct.
+- **`opportunistic` files** (worker's drive-by fix unrelated to the Goal): **REJECT if not strictly trivial, even if the change is correct**. Suggest "split this out as a followup issue" rather than rubber-stamping scope creep that happens to be good code. Trivial = typo fix, lint cleanup, comment correction; everything else is too much.
+- **`scope_report.outside` entries** (path matched no allow-glob and the worker filed no declaration for it, OR was demoted from `extension`/`opportunistic` because of a project denyGlob or opportunistic-budget cap): treat as a strong signal. Demand a justification or REJECT.
+
+Also: did the worker revert or modify changes that belong to other branches/features? Any unexpected file additions or deletions?
 
 ### 2. Regression Check
 - Any deleted code that looks unintentional (not part of the task)?

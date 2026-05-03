@@ -51,10 +51,109 @@ import {
   parseScopeBlocks,
   parseScopeDeclaration,
   classifyChanges,
+  matchesGlob,
+  type ScopeReport,
 } from "./scope.js";
+import type { ScopeOpportunisticConfig } from "./config.js";
 import { detectDrift } from "./build-info.js";
 import { runDoctorChecks, formatDoctorReport } from "./doctor.js";
 import { relative } from "node:path";
+
+const SKIP_REVIEW_MODES = new Set(["INVESTIGATE", "VERIFY"]);
+
+interface FileLineCounts {
+  /** Per-file (added + deleted) line counts, keyed by path. */
+  totals: Map<string, number>;
+}
+
+function parseNumstat(numstat: string): FileLineCounts {
+  const totals = new Map<string, number>();
+  for (const line of numstat.split("\n")) {
+    const m = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
+    if (!m) continue;
+    const added = m[1] === "-" ? 0 : parseInt(m[1], 10);
+    const deleted = m[2] === "-" ? 0 : parseInt(m[2], 10);
+    totals.set(m[3], (totals.get(m[3]) ?? 0) + added + deleted);
+  }
+  return { totals };
+}
+
+// Project-level policy engine for opportunistic-fix budget. Operates on a
+// classified report from `classifyChanges` and demotes over-budget extended
+// entries to `outside`. Three independent passes:
+//
+//   1. denyGlobs — every `extended` entry whose path matches a project-level
+//      denyGlob moves to `outside`. Applies to BOTH `extension` and
+//      `opportunistic` so security/infra paths cannot be laundered as
+//      "extension".
+//   2. maxFiles — count remaining `opportunistic` entries; if > maxFiles,
+//      demote the trailing (declaration-order) entries until under.
+//   3. maxLines — sum (added + deleted) lines across remaining `opportunistic`
+//      entries; if > maxLines, demote largest-first until under.
+//
+// Disabled-config (`enabled: false`) skips passes 2/3 but keeps pass 1 — denyGlobs
+// is security policy and applies regardless. Empty `denyGlobs: []` makes pass 1
+// a no-op naturally (no globs to match).
+function applyOpportunisticBudget(
+  report: ScopeReport,
+  cfg: ScopeOpportunisticConfig,
+  lineCounts: FileLineCounts,
+): ScopeReport {
+  const inScope = [...report.in_scope];
+  const outside = [...report.outside];
+  let extended = report.extended.map((e) => ({ ...e }));
+
+  // Pass 1: project-level denyGlobs (both extension + opportunistic).
+  if (cfg.denyGlobs.length > 0) {
+    const kept: typeof extended = [];
+    for (const e of extended) {
+      if (cfg.denyGlobs.some((g) => matchesGlob(e.path, g))) {
+        outside.push(e.path);
+      } else {
+        kept.push(e);
+      }
+    }
+    extended = kept;
+  }
+
+  if (!cfg.enabled) {
+    return { in_scope: inScope, extended, outside };
+  }
+
+  // Pass 2: maxFiles cap on opportunistic entries.
+  const opportunisticIdx: number[] = [];
+  for (let i = 0; i < extended.length; i++) {
+    if (extended[i].category === "opportunistic") opportunisticIdx.push(i);
+  }
+  const overFiles = Math.max(0, opportunisticIdx.length - cfg.maxFiles);
+  const demoteSet = new Set<number>();
+  for (let i = opportunisticIdx.length - overFiles; i < opportunisticIdx.length; i++) {
+    demoteSet.add(opportunisticIdx[i]);
+  }
+
+  // Pass 3: maxLines cap. Sum LOC over remaining opportunistic entries
+  // (those not already slated for demotion in pass 2). Demote largest-first.
+  const remaining = opportunisticIdx
+    .filter((i) => !demoteSet.has(i))
+    .map((i) => ({ idx: i, lines: lineCounts.totals.get(extended[i].path) ?? 0 }));
+  let totalLines = remaining.reduce((s, r) => s + r.lines, 0);
+  if (totalLines > cfg.maxLines) {
+    remaining.sort((a, b) => b.lines - a.lines);
+    for (const r of remaining) {
+      if (totalLines <= cfg.maxLines) break;
+      demoteSet.add(r.idx);
+      totalLines -= r.lines;
+    }
+  }
+
+  const finalExtended: typeof extended = [];
+  for (let i = 0; i < extended.length; i++) {
+    if (demoteSet.has(i)) outside.push(extended[i].path);
+    else finalExtended.push(extended[i]);
+  }
+
+  return { in_scope: inScope, extended: finalExtended, outside };
+}
 
 function currentHelpEngine(): Engine {
   const envEngine = process.env.DANGERESQUE_ENGINE?.toLowerCase();
@@ -114,8 +213,14 @@ Results:
     The worker failed, the run artifact was missing, or the reviewer explicitly rejected the run.
 
 Failure categories:
-  scope_violation
-    Changed files were outside the issue body or selected issue comments, excluding .dangeresque/runs/. This category is emitted only when those scope violations caused a downgrade because review did not run; when review ran, the reviewer verdict controls the result.
+  scope_outside
+    Changed files were classified \`outside\` of the issue's declared scope:
+    not matched by any allow-glob in a \`dangeresque-scope\` block, not mentioned
+    in the worker's \`## Scope Declaration\`, OR demoted from \`extension\`/
+    \`opportunistic\` because they hit a project denyGlob or exceeded the
+    opportunistic budget. This category is emitted only when those entries
+    caused a downgrade because review did not run; when review ran, the
+    reviewer verdict controls the result.
   verification_failed
     A pre-review verification command configured with on_failure="block" exited non-zero (or timed out). The review pass is skipped when this happens because reviewing un-compiling or test-failing code wastes effort. Inspect the run artifact's "## Verification" section for the failing command and its captured stderr.
 
@@ -465,7 +570,10 @@ async function cmdRun(args: string[]) {
     process.exit(workerResult.exitCode);
   }
 
-  // Post-worker scope check: flag files changed that aren't mentioned in the issue body
+  // Post-worker scope check: classify changed files via the policy engine
+  // (allow/deny globs from issue's `dangeresque-scope` blocks + worker's
+  // `## Scope Declaration`), then apply project-level opportunistic budget
+  // (denyGlobs + maxFiles + maxLines) to demote over-budget extended entries.
   try {
     const { execSync } = await import("node:child_process");
     const { resolveDiffBase } = await import("./worktree.js");
@@ -481,25 +589,6 @@ async function cmdRun(args: string[]) {
       .filter((f) => f);
 
     const haystack = issueData.body + formatIssueComments(issueData);
-    const unexpected = changedFiles.filter((f) => !haystack.includes(f));
-    if (unexpected.length > 0) {
-      console.warn(
-        `\n⚠️  Worker modified files not mentioned in issue body:`,
-      );
-      for (const f of unexpected) {
-        console.warn(`   ${f}`);
-      }
-      console.warn(`   Review carefully for scope violations.\n`);
-      builder.setScopeViolations(unexpected);
-    }
-    builder.recordEvent("scope_check_completed", {
-      changed_files: changedFiles.length,
-      scope_violations: unexpected.length,
-    });
-
-    // Phase 1 scope subsystem: parse declared scope blocks + worker
-    // self-declaration, classify changed files. Telemetry-only — UI behavior
-    // unchanged; the legacy substring check above still drives scope_violations.
     const scopeBlock = parseScopeBlocks(haystack);
     let scopeDeclaration: ReturnType<typeof parseScopeDeclaration> = [];
     try {
@@ -511,14 +600,51 @@ async function cmdRun(args: string[]) {
     } catch {
       /* ignore — declaration parse failures are non-fatal */
     }
-    const scopeReport = classifyChanges({
+    let scopeReport = classifyChanges({
       changedFiles,
       block: scopeBlock,
       declaration: scopeDeclaration,
     });
+
+    const opportunisticCfg = config.scope?.opportunistic;
+    if (opportunisticCfg) {
+      const numstat = (() => {
+        try {
+          return execSync(`git diff ${diffBase}...HEAD --numstat`, {
+            cwd: worktreePath,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+        } catch {
+          return "";
+        }
+      })();
+      scopeReport = applyOpportunisticBudget(
+        scopeReport,
+        opportunisticCfg,
+        parseNumstat(numstat),
+      );
+    }
+
     builder.setScopeBlock(scopeBlock);
     builder.setScopeDeclaration(scopeDeclaration);
     builder.setScopeReport(scopeReport);
+    builder.recordEvent("scope_check_completed", {
+      changed_files: changedFiles.length,
+      in_scope: scopeReport.in_scope.length,
+      extended: scopeReport.extended.length,
+      outside: scopeReport.outside.length,
+    });
+
+    // Demote the operator-facing warning. For code-changing modes the reviewer
+    // adjudicates `outside` entries — printing here would double-noise. For
+    // INVESTIGATE/VERIFY (review skipped), surface a single structured line
+    // so the operator can spot drift at a glance.
+    if (SKIP_REVIEW_MODES.has(effectiveMode)) {
+      console.log(
+        `\nScope: in=${scopeReport.in_scope.length} extended=${scopeReport.extended.length} outside=${scopeReport.outside.length}`,
+      );
+    }
   } catch {
     // Silently ignore — worktree state query failures aren't fatal here
   }
@@ -593,7 +719,6 @@ async function cmdRun(args: string[]) {
   }
 
   // Review pass — skip for modes that don't produce code changes
-  const SKIP_REVIEW_MODES = new Set(["INVESTIGATE", "VERIFY"]);
   let reviewExitCode: number | undefined;
   if (verificationOutcome?.blocked) {
     const blockedBy = verificationOutcome.blockedBy ?? "unknown";

@@ -374,8 +374,9 @@ export function formatRunOneLiner(
 
 /**
  * Render a skim-friendly header block from a run's JSON artifact: summary line,
- * verdict, scope violations, failure categories. Returns null when the JSON is
- * missing or unparseable so callers can fall back to the pre-header layout.
+ * verdict, scope counts (in/extended/outside), failure categories. Returns null
+ * when the JSON is missing or unparseable so callers can fall back to the
+ * pre-header layout.
  */
 export function formatRunHeader(jsonPath: string): string | null {
   if (!existsSync(jsonPath)) return null;
@@ -393,9 +394,10 @@ export function formatRunHeader(jsonPath: string): string | null {
       : null;
   if (!summary || !verdict) return null;
 
-  const scope = Array.isArray(artifact.scope_violations)
-    ? artifact.scope_violations
-    : [];
+  const report = artifact.scope_report;
+  const inCount = Array.isArray(report?.in_scope) ? report.in_scope.length : 0;
+  const extCount = Array.isArray(report?.extended) ? report.extended.length : 0;
+  const outCount = Array.isArray(report?.outside) ? report.outside.length : 0;
   const fails = Array.isArray(artifact.failure_categories)
     ? artifact.failure_categories
     : [];
@@ -403,7 +405,7 @@ export function formatRunHeader(jsonPath: string): string | null {
   return [
     `=== ${summary} ===`,
     `Verdict: ${verdict}`,
-    `Scope violations: ${scope.length > 0 ? scope.join(", ") : "none"}`,
+    `Scope: in=${inCount} extended=${extCount} outside=${outCount}`,
     `Failure categories: ${fails.length > 0 ? fails.join(", ") : "none"}`,
   ].join("\n");
 }

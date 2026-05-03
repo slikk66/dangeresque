@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   loadConfig,
+  normalizeScopeOpportunisticConfig,
   validateSetup,
   validateEngineRuntime,
   claudeMdHasPointer,
@@ -372,4 +373,105 @@ test("claudeMdHasPointer: returns found=false with both candidate paths when nei
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }
+});
+
+// --- scope.opportunistic config ---
+
+test("loadConfig: scope.opportunistic defaults present when no config file", () => {
+  const tmp = makeTmp();
+  try {
+    const cfg = loadConfig(tmp);
+    assert.equal(cfg.scope?.opportunistic.enabled, true);
+    assert.equal(cfg.scope?.opportunistic.maxFiles, 1);
+    assert.equal(cfg.scope?.opportunistic.maxLines, 20);
+    assert.deepEqual(cfg.scope?.opportunistic.denyGlobs, [
+      "infra/**",
+      ".github/**",
+      "**/*.lock",
+      "**/migrations/**",
+      "**/.env*",
+      "**/secrets/**",
+    ]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: scope.opportunistic missing in config.json → defaults", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(join(tmp, CONFIG_DIR, "config.json"), JSON.stringify({ engine: "claude" }));
+    const cfg = loadConfig(tmp);
+    assert.equal(cfg.scope?.opportunistic.enabled, true);
+    assert.equal(cfg.scope?.opportunistic.maxFiles, 1);
+    assert.equal(cfg.scope?.opportunistic.maxLines, 20);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: scope.opportunistic custom denyGlobs replace defaults", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({
+        scope: {
+          opportunistic: {
+            denyGlobs: ["custom/**"],
+          },
+        },
+      }),
+    );
+    const cfg = loadConfig(tmp);
+    assert.deepEqual(cfg.scope?.opportunistic.denyGlobs, ["custom/**"]);
+    assert.equal(cfg.scope?.opportunistic.enabled, true, "missing fields fall to defaults");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: scope.opportunistic empty denyGlobs is honored as override", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({ scope: { opportunistic: { denyGlobs: [] } } }),
+    );
+    const cfg = loadConfig(tmp);
+    assert.deepEqual(cfg.scope?.opportunistic.denyGlobs, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("normalizeScopeOpportunisticConfig: malformed input falls back silently", () => {
+  const cfg = normalizeScopeOpportunisticConfig({
+    enabled: "yes",
+    maxFiles: -3,
+    maxLines: "lots",
+    denyGlobs: ["ok", 42, null, "also/**"],
+  });
+  // enabled non-boolean → default
+  assert.equal(cfg.enabled, true);
+  // negative numbers rejected → default
+  assert.equal(cfg.maxFiles, 1);
+  // string rejected → default
+  assert.equal(cfg.maxLines, 20);
+  // non-string entries dropped silently
+  assert.deepEqual(cfg.denyGlobs, ["ok", "also/**"]);
+});
+
+test("normalizeScopeOpportunisticConfig: null/undefined → defaults", () => {
+  const a = normalizeScopeOpportunisticConfig(null);
+  const b = normalizeScopeOpportunisticConfig(undefined);
+  assert.equal(a.enabled, true);
+  assert.equal(b.enabled, true);
+  assert.equal(a.maxFiles, 1);
+  assert.equal(b.maxFiles, 1);
+  assert.equal(a.maxLines, 20);
+  assert.ok(a.denyGlobs.length > 0);
 });

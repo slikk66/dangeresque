@@ -47,12 +47,12 @@ function v4Fixture(overrides: Record<string, unknown> = {}): Record<string, unkn
   };
 }
 
-test("migrateArtifact: v4 → v5 adds empty scope_* fields and audit field", () => {
+test("migrateArtifact: v4 → v6 adds scope_* fields, drops scope_violations, renames enum", () => {
   const v4 = v4Fixture();
   const { migrated, result } = migrateArtifact(v4);
   assert.equal(migrated, true);
   assert.equal(result.schema_version, ARTIFACT_SCHEMA_VERSION);
-  assert.equal(result.schema_version, "5");
+  assert.equal(result.schema_version, "6");
   assert.equal(result.migrated_from_version, 4);
   assert.deepEqual(result.scope_block, {
     allow: [],
@@ -65,17 +65,56 @@ test("migrateArtifact: v4 → v5 adds empty scope_* fields and audit field", () 
     extended: [],
     outside: [],
   });
+  assert.equal(
+    (result as unknown as Record<string, unknown>).scope_violations,
+    undefined,
+    "scope_violations field must be dropped on v6",
+  );
 });
 
-test("migrateArtifact: v5 input is a no-op", () => {
-  const v5 = v4Fixture({ schema_version: "5" });
+test("migrateArtifact: v5 → v6 drops scope_violations + renames scope_violation enum", () => {
+  const v5 = v4Fixture({
+    schema_version: "5",
+    failure_categories: ["scope_violation", "reviewer_rejected"],
+    scope_violations: ["unrelated.ts"],
+    scope_block: { allow: [], deny: [], diagnostics: [] },
+    scope_declaration: [],
+    scope_report: { in_scope: [], extended: [], outside: ["unrelated.ts"] },
+  });
   const { migrated, result } = migrateArtifact(v5);
-  assert.equal(migrated, false);
-  assert.equal(result.schema_version, "5");
-  assert.equal(result.migrated_from_version, undefined);
+  assert.equal(migrated, true);
+  assert.equal(result.schema_version, "6");
+  assert.equal(result.migrated_from_version, 5);
+  assert.deepEqual(result.failure_categories, ["scope_outside", "reviewer_rejected"]);
+  assert.equal(
+    (result as unknown as Record<string, unknown>).scope_violations,
+    undefined,
+    "scope_violations field must be dropped on v6",
+  );
+  assert.deepEqual(result.scope_report, {
+    in_scope: [],
+    extended: [],
+    outside: ["unrelated.ts"],
+  });
 });
 
-test("migrateArtifact: preserves all v4 fields verbatim", () => {
+test("migrateArtifact: v6 input is a no-op", () => {
+  const v6 = v4Fixture({
+    schema_version: "6",
+    failure_categories: ["scope_outside"],
+    scope_block: { allow: [], deny: [], diagnostics: [] },
+    scope_declaration: [],
+    scope_report: { in_scope: [], extended: [], outside: ["x.ts"] },
+  });
+  delete (v6 as Record<string, unknown>).scope_violations;
+  const { migrated, result } = migrateArtifact(v6);
+  assert.equal(migrated, false);
+  assert.equal(result.schema_version, "6");
+  assert.equal(result.migrated_from_version, undefined);
+  assert.deepEqual(result.failure_categories, ["scope_outside"]);
+});
+
+test("migrateArtifact: v4 → v6 chain renames scope_violation in failure_categories", () => {
   const v4 = v4Fixture({
     issue_number: 42,
     mode: "TEST",
@@ -85,8 +124,11 @@ test("migrateArtifact: preserves all v4 fields verbatim", () => {
   const { result } = migrateArtifact(v4);
   assert.equal(result.issue_number, 42);
   assert.equal(result.mode, "TEST");
-  assert.deepEqual(result.failure_categories, ["scope_violation"]);
-  assert.deepEqual(result.scope_violations, ["unrelated.ts"]);
+  assert.deepEqual(result.failure_categories, ["scope_outside"]);
+  assert.equal(
+    (result as unknown as Record<string, unknown>).scope_violations,
+    undefined,
+  );
 });
 
 test("migrateArtifact: unsupported source version throws", () => {
@@ -102,7 +144,7 @@ test("migrateArtifact: rejects non-object input", () => {
   assert.throws(() => migrateArtifact([]), /not a JSON object/);
 });
 
-test("migrateAllArtifacts: walks issue dirs, migrates only v4", () => {
+test("migrateAllArtifacts: walks issue dirs, migrates v4 + v5, leaves v6 alone", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-migrate-"));
   try {
     const issueDir = join(tmp, ".dangeresque", "runs", "issue-1");
@@ -114,33 +156,53 @@ test("migrateAllArtifacts: walks issue dirs, migrates only v4", () => {
     );
     writeFileSync(
       join(issueDir, "v5.json"),
-      JSON.stringify(v4Fixture({ issue_number: 1, schema_version: "5" })),
+      JSON.stringify(
+        v4Fixture({
+          issue_number: 1,
+          schema_version: "5",
+          failure_categories: ["scope_violation"],
+          scope_violations: ["unrelated.ts"],
+        }),
+      ),
     );
+    const v6Source = v4Fixture({
+      issue_number: 1,
+      schema_version: "6",
+      failure_categories: ["scope_outside"],
+    });
+    delete (v6Source as Record<string, unknown>).scope_violations;
+    writeFileSync(join(issueDir, "v6.json"), JSON.stringify(v6Source));
 
     const result = migrateAllArtifacts(tmp);
-    assert.equal(result.migrated, 1);
+    assert.equal(result.migrated, 2);
     assert.equal(result.skipped, 1);
     assert.deepEqual(result.errors, []);
 
-    const migratedRaw = readFileSync(join(issueDir, "v4.json"), "utf-8");
-    const migrated = JSON.parse(migratedRaw);
-    assert.equal(migrated.schema_version, "5");
-    assert.equal(migrated.migrated_from_version, 4);
-    assert.deepEqual(migrated.scope_block, {
+    const migratedV4 = JSON.parse(readFileSync(join(issueDir, "v4.json"), "utf-8"));
+    assert.equal(migratedV4.schema_version, "6");
+    assert.equal(migratedV4.migrated_from_version, 4);
+    assert.deepEqual(migratedV4.scope_block, {
       allow: [],
       deny: [],
       diagnostics: [],
     });
-    assert.deepEqual(migrated.scope_declaration, []);
-    assert.deepEqual(migrated.scope_report, {
+    assert.deepEqual(migratedV4.scope_declaration, []);
+    assert.deepEqual(migratedV4.scope_report, {
       in_scope: [],
       extended: [],
       outside: [],
     });
+    assert.equal(migratedV4.scope_violations, undefined);
 
-    const v5File = JSON.parse(readFileSync(join(issueDir, "v5.json"), "utf-8"));
-    assert.equal(v5File.schema_version, "5");
-    assert.equal(v5File.migrated_from_version, undefined);
+    const migratedV5 = JSON.parse(readFileSync(join(issueDir, "v5.json"), "utf-8"));
+    assert.equal(migratedV5.schema_version, "6");
+    assert.equal(migratedV5.migrated_from_version, 5);
+    assert.deepEqual(migratedV5.failure_categories, ["scope_outside"]);
+    assert.equal(migratedV5.scope_violations, undefined);
+
+    const v6File = JSON.parse(readFileSync(join(issueDir, "v6.json"), "utf-8"));
+    assert.equal(v6File.schema_version, "6");
+    assert.equal(v6File.migrated_from_version, undefined);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
