@@ -7,3 +7,4 @@ HANDOFF.md
 .dangeresque/runs/
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+.claude/skills/

@@ -22,12 +22,17 @@ export const POINTER_BLOCK = `<!-- DANGERESQUE-START -->
 `;
 
 export function claudeMdCandidates(projectRoot: string): string[] {
-  return [join(projectRoot, "CLAUDE.md"), join(projectRoot, ".claude", "CLAUDE.md")];
+  return [
+    join(projectRoot, "CLAUDE.md"),
+    join(projectRoot, ".claude", "CLAUDE.md"),
+  ];
 }
 
-export function claudeMdHasPointer(
-  projectRoot: string,
-): { found: boolean; matchedPath: string | null; checkedPaths: string[] } {
+export function claudeMdHasPointer(projectRoot: string): {
+  found: boolean;
+  matchedPath: string | null;
+  checkedPaths: string[];
+} {
   const checkedPaths = claudeMdCandidates(projectRoot);
   for (const p of checkedPaths) {
     if (!existsSync(p)) continue;
@@ -120,6 +125,7 @@ const DEFAULT_CONFIG: DangeresqueConfig = {
     "Bash(head *)",
     "Bash(tail *)",
     "Bash(grep *)",
+    "Bash(echo *)",
     "Bash(find *)",
     "Bash(wc *)",
   ],
@@ -167,8 +173,14 @@ export function loadConfig(projectRoot: string): DangeresqueConfig {
   const merged: DangeresqueConfig = { ...DEFAULT_CONFIG, ...raw };
   // Tool lists extend defaults rather than replace them: the user's config.json
   // is purely additions. Empty/missing user array leaves defaults untouched.
-  merged.allowedTools = mergeStringList(DEFAULT_CONFIG.allowedTools, raw.allowedTools);
-  merged.disallowedTools = mergeStringList(DEFAULT_CONFIG.disallowedTools, raw.disallowedTools);
+  merged.allowedTools = mergeStringList(
+    DEFAULT_CONFIG.allowedTools,
+    raw.allowedTools,
+  );
+  merged.disallowedTools = mergeStringList(
+    DEFAULT_CONFIG.disallowedTools,
+    raw.disallowedTools,
+  );
   merged.verify = normalizeVerifyConfig(raw.verify);
   merged.scope = normalizeScopeConfig(raw.scope);
   return merged;
@@ -226,10 +238,14 @@ function normalizeVerifyConfig(raw: unknown): VerifyConfig {
     return { ...DEFAULT_VERIFY_CONFIG };
   }
   const obj = raw as Record<string, unknown>;
-  const enabled = typeof obj.enabled === "boolean" ? obj.enabled : DEFAULT_VERIFY_CONFIG.enabled;
-  const modes = Array.isArray(obj.modes) && obj.modes.every((m) => typeof m === "string")
-    ? (obj.modes as string[]).map((m) => m.toUpperCase())
-    : [...DEFAULT_VERIFY_CONFIG.modes];
+  const enabled =
+    typeof obj.enabled === "boolean"
+      ? obj.enabled
+      : DEFAULT_VERIFY_CONFIG.enabled;
+  const modes =
+    Array.isArray(obj.modes) && obj.modes.every((m) => typeof m === "string")
+      ? (obj.modes as string[]).map((m) => m.toUpperCase())
+      : [...DEFAULT_VERIFY_CONFIG.modes];
   const commandsRaw = Array.isArray(obj.commands) ? obj.commands : [];
   const commands: VerifyCommand[] = [];
   for (const c of commandsRaw) {
