@@ -1,5 +1,9 @@
 <!-- DANGERESQUE-START -->
-**`dangeresque` is installed in this repo.** Use it — not raw `git worktree`, `kill <pid>`, or `cd <worktree>` — to dispatch AFK AI workers, manage isolated worktrees, and gate merges. Before dispatching or merging, run **`dangeresque brief`** (workflow loop + the hard rule). Run **`dangeresque --help`** for the full command surface (auto-generated, never stale).
+**`dangeresque` is installed in this repo.** Use it to orchestrate issue-driven work — managing AI workers, isolated git worktrees, and gated merges — instead of raw `git worktree`, `kill <pid>`, or `cd <worktree>` commands.
+
+- **Workflow primer:** read `.dangeresque/DANGERESQUE.md` or run `dangeresque brief`.
+- **Command surface:** run `dangeresque --help` (auto-generated, never stale).
+- **AFK worker constraints:** `.dangeresque/AFK_WORKER_RULES.md` (mode table, scope rules, status language).
 <!-- DANGERESQUE-END -->
 
 - **RESEARCH** — Understand before answering. Check the code first. Search the Internet with search tool if you don't know something. Your knowledge is almost certainly out of date if you don't search. If attempt #2 fails like #1, STOP — you're flapping. Step back, read docs, find root cause. Flapping wastes user time and money. Persist research to `./research/<CATEGORY>.md`.

@@ -26,8 +26,8 @@ cite. Skipping INVESTIGATE is the most common way a run goes wrong. You may only
 after getting sign-off by the user for an edge case.
 
 **Merge keeps the run report. Discard deletes it.** That asymmetry is the
-only difference between the two cleanup paths worth memorizing — see
-[Merging or Discarding](#merging-or-discarding) for the artifact mirror flow.
+only difference between the two cleanup paths worth memorizing — see the
+[Quick Command Reference](#quick-command-reference).
 
 ## The One Hard Rule
 
@@ -72,8 +72,8 @@ Two complementary contracts bound what a worker is allowed to touch:
 1. **Issue-side allow/deny block** — optional fenced `dangeresque-scope` YAML
    block in the issue body or a `[staged]` comment. Lists `allow:` and
    `deny:` globs (Node `path.matchesGlob`). Multiple blocks across body +
-   staged comments are unioned; deny wins on conflict. See README §Scope for
-   syntax + examples.
+   staged comments are unioned; deny wins on conflict. See `docs/SCOPE.md`
+   for syntax + examples.
 2. **Worker-side `## Scope Declaration`** — REQUIRED in IMPLEMENT/REFACTOR/TEST
    run results. Every changed file gets one of four categories:
    `declared` (matched the allow-list), `extension` (helper required to
@@ -86,21 +86,35 @@ The classifier turns both signals into `scope_report` ∈ {in_scope, extended,
 outside} on the run artifact. The reviewer treats `outside` as
 REJECT-unless-justified.
 
-## Dispatching a Run
+## Quick Command Reference
 
-```bash
-dangeresque run --issue <N>                    # default mode: INVESTIGATE
-dangeresque run --issue <N> --mode IMPLEMENT
-dangeresque run --issue <N> --no-verify        # skip pre-review compile/test/lint
-```
+The full command surface lives in `dangeresque --help` — auto-generated, never
+stale. Run `dangeresque <verb> --help` for flags. The verbs that drive the
+workflow loop:
 
-Worker + (optional) verification + review run automatically. The verification
-hook (configured per project under `verify` in `.dangeresque/config.json`)
-runs compile/test/lint commands in the worktree post-rebase, pre-review;
+| Verb                                | Purpose                                                  |
+|-------------------------------------|----------------------------------------------------------|
+| `dangeresque run --issue <N>`       | Dispatch a worker (default mode: INVESTIGATE)            |
+| `dangeresque results --issue <N>`   | Read the latest archived run for an issue                |
+| `dangeresque stage <N>`             | Post a `[staged]` comment to steer the next worker       |
+| `dangeresque merge <branch>`        | Merge worktree into main; **KEEPS the run report**       |
+| `dangeresque discard <branch>`      | Drop worktree + branch; **DELETES the run report**       |
+| `dangeresque stop <branch>`         | Stop a running worker; leaves the worktree intact        |
+| `dangeresque logs <branch>`         | Snapshot or follow worker (or review) transcript         |
+| `dangeresque status`                | List active worktrees + worker liveness                  |
+| `dangeresque doctor`                | Health/drift check (binary, schema, PATH, init)          |
+| `dangeresque migrate`               | Upgrade older run-artifact JSON to the current schema    |
+
+**Run pipeline.** `dangeresque run` orchestrates worker → optional pre-review
+verification (compile/test/lint per `verify` in `.dangeresque/config.json`;
 block-style failures skip the review pass and mark the run `failure` with
-category `verification_failed`. Review is also skipped for INVESTIGATE and
-VERIFY (no code changes) and by `--no-review`. A macOS notification fires
-when complete. Nothing touches main until you run `dangeresque merge`.
+category `verification_failed`) → review pass (skipped for INVESTIGATE/VERIFY
+and by `--no-review`) → JSON eval write. A macOS notification fires when
+complete. Nothing touches main until you run `dangeresque merge`. After each
+run, dangeresque posts ONE comment on the GitHub Issue containing only the
+artifact's `<!-- SUMMARY -->` block plus the local artifact path; the full
+body never leaves the host — read it via `dangeresque results --issue <N>`
+or directly under `.dangeresque/runs/issue-<N>/`.
 
 **Don't truncate or close the orchestrator's stdout.** `dangeresque run` is a
 long-running orchestrator that streams output across multiple phases — worker
@@ -114,68 +128,6 @@ reviewed. Always let stdout stream fully. If you need to background the run,
 capture stdout to a file and read it when complete; don't apply any pipeline
 that can exit before the orchestrator does.
 
-After each run, dangeresque posts ONE comment on the GitHub Issue containing
-only the artifact's `<!-- SUMMARY -->` block plus the local artifact path.
-The full body never leaves the host — read it via
-`dangeresque results --issue <N>` or directly at
-`.dangeresque/runs/issue-<N>/`.
-
-## Reading Results
-
-```bash
-dangeresque results <short-branch>     # e.g. investigate-63 — active worktree
-dangeresque results --issue <N>        # latest archived run for an issue
-dangeresque results --issue <N> --all  # full history
-```
-
-Run artifacts live at `.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.md` —
-one file per run. The runs directory is gitignored; dangeresque mirrors
-prior runs into each new worktree at dispatch and back to the project root
-on `dangeresque merge`. Read only the newest if you need prior context;
-do not read all of them.
-
-## Staging Guidance
-
-Add structured context before the next run:
-
-```bash
-dangeresque stage <N> --comment "root cause confirmed; use approach A" --mode IMPLEMENT
-```
-
-The `[staged]` comment becomes part of the next worker's prompt. This is how
-you steer an AFK worker without being present.
-
-## Merging or Discarding
-
-```bash
-dangeresque merge <short-branch>            # merge worktree; KEEPS the run report under .dangeresque/runs/
-dangeresque discard <short-branch>          # drop worktree + branch; DELETES the run report along with the worktree
-dangeresque discard <short-branch> --force  # also stop a running worker first, then discard
-```
-
-Merge brings any code changes into main via `git merge`. The run result
-file is gitignored — it does NOT flow through `git merge`. On merge,
-dangeresque mirrors it from the worktree to the project root just before
-tearing the worktree down, and mirrors prior artifacts into the next
-worktree on dispatch. **Discard is destructive**: the worktree's run
-report goes with it. For a no-diff INVESTIGATE you almost always want
-`merge` (no-op git merge + artifact preserved), not `discard`. Then
-push main to origin before your next dispatch — see The One Hard Rule.
-
-## Monitoring a Run
-
-```bash
-dangeresque status                         # list active worktrees + worker liveness
-dangeresque logs <short-branch>            # snapshot transcript + exit
-dangeresque logs <short-branch> -f         # follow live output
-dangeresque logs <short-branch> --review   # review pass transcript
-dangeresque stop <short-branch>            # stop a running worker; leaves worktree intact
-```
-
-To kill a runaway worker, use `dangeresque stop` — never raw `kill <pid>`.
-Stop tears down the engine + parent CLI cleanly so the worktree, PID file,
-and artifact state stay consistent.
-
 ## Modes (one-liners; full semantics in `.dangeresque/AFK_WORKER_RULES.md`)
 
 | Mode        | Purpose                               |
@@ -185,16 +137,6 @@ and artifact state stay consistent.
 | VERIFY      | Prove an existing change works        |
 | REFACTOR    | Restructure without behavior change   |
 | TEST        | Write tests for existing behavior     |
-
-## Health Checks
-
-- `dangeresque doctor` — verify the linked binary's `dist/` matches HEAD,
-  the artifact schema is current, `gh` is on PATH, and `.dangeresque/` is
-  initialized. `--strict` exits non-zero on warnings (CI-friendly).
-- `dangeresque migrate` — rewrite older `.dangeresque/runs/issue-*/*.json`
-  artifacts to the current schema version. Idempotent.
-
-Both are detailed in README §Health Checks and §Schema Migration.
 
 ## What NOT to Do
 

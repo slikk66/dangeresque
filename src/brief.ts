@@ -80,8 +80,8 @@ Two complementary contracts bound what a worker is allowed to touch:
 1. **Issue-side allow/deny block** — optional fenced \`dangeresque-scope\` YAML
    block in the issue body or a \`[staged]\` comment. Lists \`allow:\` and
    \`deny:\` globs (Node \`path.matchesGlob\`). Multiple blocks across body +
-   staged comments are unioned; deny wins on conflict. See README §Scope for
-   syntax + examples.
+   staged comments are unioned; deny wins on conflict. See \`docs/SCOPE.md\`
+   for syntax + examples.
 2. **Worker-side \`## Scope Declaration\`** — REQUIRED in IMPLEMENT/REFACTOR/TEST
    run results. Every changed file gets one of four categories:
    \`declared\` (matched the allow-list), \`extension\` (helper required to
