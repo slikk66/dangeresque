@@ -437,6 +437,24 @@ test("ensurePointer: noop when block already current", () => {
   assert.equal(content, before);
 });
 
+test("POINTER_BLOCK names primer, command surface, and worker constraints files", () => {
+  // Drift guard: the redrafted pointer routes new readers to three named
+  // files. Removing any of these silently steers them back to scrolling
+  // through the long brief or guessing where rules live.
+  assert.ok(
+    POINTER_BLOCK.includes(".dangeresque/DANGERESQUE.md"),
+    "POINTER_BLOCK must name the workflow primer (DANGERESQUE.md)",
+  );
+  assert.ok(
+    POINTER_BLOCK.includes("dangeresque --help"),
+    "POINTER_BLOCK must point at the canonical command surface (--help)",
+  );
+  assert.ok(
+    POINTER_BLOCK.includes(".dangeresque/AFK_WORKER_RULES.md"),
+    "POINTER_BLOCK must name the AFK worker constraints file",
+  );
+});
+
 // --- scope.opportunistic config ---
 
 test("loadConfig: scope.opportunistic defaults present when no config file", () => {

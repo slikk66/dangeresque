@@ -18,7 +18,11 @@ export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 export const POINTER_ANCHOR = "<!-- DANGERESQUE-START -->";
 export const POINTER_END_ANCHOR = "<!-- DANGERESQUE-END -->";
 export const POINTER_BLOCK = `<!-- DANGERESQUE-START -->
-**\`dangeresque\` is installed in this repo.** Use it — not raw \`git worktree\`, \`kill <pid>\`, or \`cd <worktree>\` — to dispatch AFK AI workers, manage isolated worktrees, and gate merges. Before dispatching or merging, run **\`dangeresque brief\`** (workflow loop + the hard rule). Run **\`dangeresque --help\`** for the full command surface (auto-generated, never stale).
+**\`dangeresque\` is installed in this repo.** Use it to orchestrate issue-driven work — managing AI workers, isolated git worktrees, and gated merges — instead of raw \`git worktree\`, \`kill <pid>\`, or \`cd <worktree>\` commands.
+
+- **Workflow primer:** read \`.dangeresque/DANGERESQUE.md\` or run \`dangeresque brief\`.
+- **Command surface:** run \`dangeresque --help\` (auto-generated, never stale).
+- **AFK worker constraints:** \`.dangeresque/AFK_WORKER_RULES.md\` (mode table, scope rules, status language).
 <!-- DANGERESQUE-END -->
 `;
 
