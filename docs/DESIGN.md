@@ -244,8 +244,8 @@ run artifact included — that's the whole point of discard.
 ## 4. Observability & Evaluation
 
 For the concise user-facing definitions of evaluation terms, see
-`README.md` section "Evaluation." This section keeps the longer design
-rationale and implementation tradeoffs.
+[`docs/SCHEMA.md` section "Evaluation"](SCHEMA.md#evaluation). This section
+keeps the longer design rationale and implementation tradeoffs.
 
 Each run writes two companion artifacts inside the worktree at
 `.dangeresque/runs/issue-<N>/<timestamp>-<MODE>.{md,json}`. The directory
@@ -548,10 +548,11 @@ across runs. The failure message directs the user to either `merge` or
 tradeoff:** more branches to manage, at the cost of zero cross-run
 contamination.
 
-**INVESTIGATE→IMPLEMENT as the canonical flow.** The README documents
-`INVESTIGATE → read → discuss → stage → merge → IMPLEMENT` as the
-recommended path (see `README.md`). **The tradeoff** is one extra Claude
-run per non-trivial task, in exchange for three benefits: the
+**INVESTIGATE→IMPLEMENT as the canonical flow.** The
+`INVESTIGATE → read → discuss → stage → merge → IMPLEMENT` path is the
+recommended sequence (see [`docs/WORKFLOW.md`](WORKFLOW.md)). **The
+tradeoff** is one extra Claude run per non-trivial task, in exchange for
+three benefits: the
 investigation fails cheaply when the hypothesis is wrong, the human sees
 the analysis before authorizing changes, and the IMPLEMENT worker reads
 the INVESTIGATE artifact from prior merges as context. For well-scoped
