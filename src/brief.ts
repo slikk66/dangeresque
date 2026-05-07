@@ -14,6 +14,13 @@ only — the full command surface and flags live in \`dangeresque --help\`,
 auto-generated from the CLI definition so it never goes stale.** Read both
 to drive dangeresque end-to-end.
 
+### Important setup
+Verify the following paths are in your .gitignore
+- .dangeresque/sessions/
+- .dangeresque/runs/
+Ensure the bootstrap pointer is installed in your CLAUDE.md/AGENTS.md, more infromation
+see "dangeresque init" for pointer and instructions.
+
 ### Honest Scoping
 
 - Stay inside the GitHub Issue. Do not widen scope.
