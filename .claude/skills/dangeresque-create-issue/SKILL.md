@@ -48,7 +48,7 @@ Do NOT invent priority names like `P3-blocked`, `P3-eventually`, `P2-medium`, et
 
 Use `gh issue create` with this template:
 
-```bash
+````bash
 gh issue create \
   --title "<concise title>" \
   --label "dangeresque" \
@@ -68,6 +68,16 @@ gh issue create \
 - `path/to/file.ts` — reason
 - `path/to/other.ts` — reason
 
+## Scope (optional — add when the issue touches multiple files or has clear deny-list candidates)
+
+```dangeresque-scope
+allow:
+  - path/to/file.ts
+  - path/to/file.test.ts
+deny:
+  - path/to/secrets.ts
+```
+
 ## Reproduction Steps
 <if applicable>
 
@@ -79,7 +89,7 @@ gh issue create \
 <P1-now | P2-soon | P3-later | P4-someday> — <one-line justification>
 ISSUE_EOF
 )"
-```
+````
 
 ### 4. Report back
 
@@ -122,3 +132,4 @@ Scope label (always present):
 - Do NOT ask more than 2 clarifying questions — use conversation context.
 - Do NOT invent priority label names (no `P3-blocked`, `P3-eventually`, `P2-medium`, etc.).
 - Do NOT add a `blocked` label — track blockage in comments.
+- **Scope block is OPTIONAL** — populate the `## Scope` section's `dangeresque-scope` block only when the issue touches multiple files or has clear deny-list candidates (config, secrets, lockfiles, infra). Skip for simple INVESTIGATE-only issues; the worker reads everything anyway. When unsure, drop the section — an empty allow-list defers to the worker's `## Scope Declaration`.

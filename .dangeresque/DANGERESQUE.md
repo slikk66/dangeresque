@@ -65,6 +65,27 @@ Use this template (the `dangeresque-create-issue` skill produces the same shape)
 
 Create with `gh issue create --label dangeresque --title "…" --body "…"`.
 
+## Scope
+
+Two complementary contracts bound what a worker is allowed to touch:
+
+1. **Issue-side allow/deny block** — optional fenced `dangeresque-scope` YAML
+   block in the issue body or a `[staged]` comment. Lists `allow:` and
+   `deny:` globs (Node `path.matchesGlob`). Multiple blocks across body +
+   staged comments are unioned; deny wins on conflict. See README §Scope for
+   syntax + examples.
+2. **Worker-side `## Scope Declaration`** — REQUIRED in IMPLEMENT/REFACTOR/TEST
+   run results. Every changed file gets one of four categories:
+   `declared` (matched the allow-list), `extension` (helper required to
+   finish the Goal), `opportunistic` (drive-by, capped per project via
+   `scope.opportunistic` in `.dangeresque/config.json`), or `incidental`
+   (auto-touched). See `.dangeresque/AFK_WORKER_RULES.md` and
+   `.dangeresque/worker-prompt.md` for the format.
+
+The classifier turns both signals into `scope_report` ∈ {in_scope, extended,
+outside} on the run artifact. The reviewer treats `outside` as
+REJECT-unless-justified.
+
 ## Dispatching a Run
 
 ```bash
@@ -165,6 +186,16 @@ and artifact state stay consistent.
 | REFACTOR    | Restructure without behavior change   |
 | TEST        | Write tests for existing behavior     |
 
+## Health Checks
+
+- `dangeresque doctor` — verify the linked binary's `dist/` matches HEAD,
+  the artifact schema is current, `gh` is on PATH, and `.dangeresque/` is
+  initialized. `--strict` exits non-zero on warnings (CI-friendly).
+- `dangeresque migrate` — rewrite older `.dangeresque/runs/issue-*/*.json`
+  artifacts to the current schema version. Idempotent.
+
+Both are detailed in README §Health Checks and §Schema Migration.
+
 ## What NOT to Do
 
 - **Do not `git push` from inside a worktree.** Pushing is hard-blocked at the
@@ -200,6 +231,8 @@ and artifact state stay consistent.
 - Permissions reference — https://github.com/slikk66/dangeresque/blob/main/docs/PERMISSIONS.md (`acceptEdits`, `allowedTools`, `dangeresque allow`)
 - `dangeresque --help` — full command surface
 - `dangeresque stats --glossary` — result / verdict vocabulary
+- `dangeresque doctor` — health/drift check (`--strict` for CI)
+- `dangeresque migrate` — upgrade older run artifacts to the current schema
 
 ---
 

@@ -254,24 +254,114 @@ test("initProject: pointer in .claude/CLAUDE.md satisfies the check (no root CLA
   }
 });
 
-test("initProject: CLAUDE.md exists but missing pointer — warns, does not mutate file", () => {
+test("initProject: CLAUDE.md exists but missing pointer — prepends pointer block, preserves body", () => {
   const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
   const origLog = console.log;
-  const origWarn = console.log;
   console.log = () => {};
   const rootClaude = join(scratch, "CLAUDE.md");
   const existing = "# My project\n\nNo pointer here.\n";
   writeFileSync(rootClaude, existing);
   try {
     initProject(scratch);
+    const after = readFileSync(rootClaude, "utf-8");
+    assert.ok(
+      after.startsWith("<!-- DANGERESQUE-START -->"),
+      "pointer must be prepended to top of file",
+    );
+    assert.ok(after.includes(existing), "original body must be preserved verbatim");
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: stale pointer block in CLAUDE.md is refreshed via regex on re-run", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  const rootClaude = join(scratch, "CLAUDE.md");
+  const stale =
+    "<!-- DANGERESQUE-START -->\nold stale brief text\n<!-- DANGERESQUE-END -->\n# My project\n";
+  writeFileSync(rootClaude, stale);
+  try {
+    initProject(scratch);
+    const after = readFileSync(rootClaude, "utf-8");
+    assert.ok(!after.includes("old stale brief text"), "stale text must be replaced");
+    assert.ok(after.includes("dangeresque brief"), "current pointer text must be present");
+    assert.ok(after.includes("# My project"), "body after pointer must be preserved");
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: engine=claude does NOT touch pre-existing AGENTS.md", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  const agents = join(scratch, "AGENTS.md");
+  const agentsBefore = "# Codex agent rules\n\nNo pointer here.\n";
+  writeFileSync(agents, agentsBefore);
+  try {
+    initProject(scratch);
     assert.equal(
-      readFileSync(rootClaude, "utf-8"),
-      existing,
-      "existing CLAUDE.md must not be modified by init",
+      readFileSync(agents, "utf-8"),
+      agentsBefore,
+      "AGENTS.md must be left untouched when engine is claude",
+    );
+    const claude = readFileSync(join(scratch, "CLAUDE.md"), "utf-8");
+    assert.ok(
+      claude.startsWith("<!-- DANGERESQUE-START -->"),
+      "claude engine must bootstrap CLAUDE.md when no claude file existed",
     );
   } finally {
     console.log = origLog;
-    void origWarn;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: bootstraps AGENTS.md when engine=codex and no agent rules file exists", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  // Pre-seed config.json with engine=codex so init's pointer step picks AGENTS.md.
+  const configDir = join(scratch, ".dangeresque");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(
+    join(configDir, "config.json"),
+    JSON.stringify({ engine: "codex" }, null, 2),
+  );
+  try {
+    initProject(scratch);
+    const agents = join(scratch, "AGENTS.md");
+    assert.ok(existsSync(agents), "AGENTS.md must be bootstrapped for codex engine");
+    assert.ok(
+      readFileSync(agents, "utf-8").startsWith("<!-- DANGERESQUE-START -->"),
+      "AGENTS.md must lead with pointer",
+    );
+    assert.ok(
+      !existsSync(join(scratch, "CLAUDE.md")),
+      "CLAUDE.md must NOT be created when engine=codex",
+    );
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: adds .dangeresque/sessions/ to .gitignore alongside runs/", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    initProject(scratch);
+    const lines = readFileSync(join(scratch, ".gitignore"), "utf-8")
+      .split("\n")
+      .map((l) => l.trim());
+    assert.ok(lines.includes(".dangeresque/runs/"), "runs/ entry expected");
+    assert.ok(lines.includes(".dangeresque/sessions/"), "sessions/ entry expected");
+  } finally {
+    console.log = origLog;
     rmSync(scratch, { recursive: true, force: true });
   }
 });

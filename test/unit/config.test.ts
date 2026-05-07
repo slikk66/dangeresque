@@ -8,7 +8,8 @@ import {
   normalizeScopeOpportunisticConfig,
   validateSetup,
   validateEngineRuntime,
-  claudeMdHasPointer,
+  agentMdHasPointer,
+  ensurePointer,
   projectHash,
   CONFIG_DIR,
   POINTER_BLOCK,
@@ -18,8 +19,9 @@ function makeTmp(): string {
   return mkdtempSync(join(tmpdir(), "dangeresque-test-"));
 }
 
-function seedPointer(projectRoot: string): void {
-  writeFileSync(join(projectRoot, "CLAUDE.md"), POINTER_BLOCK);
+function seedPointer(projectRoot: string, engine: "claude" | "codex" = "claude"): void {
+  const file = engine === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  writeFileSync(join(projectRoot, file), POINTER_BLOCK);
 }
 
 test("loadConfig: no config file → full defaults", () => {
@@ -248,7 +250,7 @@ test("validateEngineRuntime: codex missing auth.json returns error", () => {
   const fakeHome = makeTmp();
   const projectRoot = makeTmp();
   try {
-    seedPointer(projectRoot);
+    seedPointer(projectRoot, "codex");
     const result = validateEngineRuntime("codex", projectRoot, {
       homedirFn: () => fakeHome,
       probeMissing: () => false,
@@ -272,7 +274,7 @@ test("validateEngineRuntime: codex with auth.json + pointer returns valid", () =
   try {
     mkdirSync(join(fakeHome, ".codex"), { recursive: true });
     writeFileSync(join(fakeHome, ".codex", "auth.json"), "{}");
-    seedPointer(projectRoot);
+    seedPointer(projectRoot, "codex");
     const result = validateEngineRuntime("codex", projectRoot, {
       homedirFn: () => fakeHome,
       probeMissing: () => false,
@@ -361,10 +363,10 @@ test("validateEngineRuntime: pointer in .claude/CLAUDE.md (not root) is accepted
   }
 });
 
-test("claudeMdHasPointer: returns found=false with both candidate paths when neither file exists", () => {
+test("agentMdHasPointer claude: returns 2 CLAUDE.md candidates, ignores AGENTS.md", () => {
   const projectRoot = makeTmp();
   try {
-    const result = claudeMdHasPointer(projectRoot);
+    const result = agentMdHasPointer(projectRoot, "claude");
     assert.equal(result.found, false);
     assert.equal(result.matchedPath, null);
     assert.equal(result.checkedPaths.length, 2);
@@ -373,6 +375,66 @@ test("claudeMdHasPointer: returns found=false with both candidate paths when nei
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }
+});
+
+test("agentMdHasPointer codex: returns AGENTS.md as the sole candidate", () => {
+  const projectRoot = makeTmp();
+  try {
+    const result = agentMdHasPointer(projectRoot, "codex");
+    assert.equal(result.found, false);
+    assert.equal(result.checkedPaths.length, 1);
+    assert.ok(result.checkedPaths[0].endsWith("AGENTS.md"));
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("agentMdHasPointer claude: AGENTS.md with pointer does NOT count for claude engine", () => {
+  const projectRoot = makeTmp();
+  try {
+    writeFileSync(join(projectRoot, "AGENTS.md"), POINTER_BLOCK);
+    const result = agentMdHasPointer(projectRoot, "claude");
+    assert.equal(result.found, false);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("agentMdHasPointer codex: finds pointer in AGENTS.md", () => {
+  const projectRoot = makeTmp();
+  try {
+    writeFileSync(join(projectRoot, "AGENTS.md"), POINTER_BLOCK);
+    const result = agentMdHasPointer(projectRoot, "codex");
+    assert.equal(result.found, true);
+    assert.ok(result.matchedPath?.endsWith("AGENTS.md"));
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("ensurePointer: prepends when file lacks anchored block", () => {
+  const before = "# Project Rules\n\nbody\n";
+  const { content, action } = ensurePointer(before);
+  assert.equal(action, "prepended");
+  assert.ok(content.startsWith("<!-- DANGERESQUE-START -->"));
+  assert.ok(content.endsWith("# Project Rules\n\nbody\n"));
+});
+
+test("ensurePointer: replaces drifted anchored block", () => {
+  const before =
+    "<!-- DANGERESQUE-START -->\nstale text\n<!-- DANGERESQUE-END -->\n# Rules\n";
+  const { content, action } = ensurePointer(before);
+  assert.equal(action, "replaced");
+  assert.ok(!content.includes("stale text"));
+  assert.ok(content.includes("dangeresque brief"));
+  assert.ok(content.endsWith("# Rules\n"));
+});
+
+test("ensurePointer: noop when block already current", () => {
+  const before = POINTER_BLOCK + "\n# Rules\n";
+  const { content, action } = ensurePointer(before);
+  assert.equal(action, "noop");
+  assert.equal(content, before);
 });
 
 // --- scope.opportunistic config ---

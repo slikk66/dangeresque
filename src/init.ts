@@ -1,7 +1,21 @@
-import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  copyFileSync,
+  readFileSync,
+  writeFileSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONFIG_DIR, POINTER_BLOCK, claudeMdHasPointer } from "./config.js";
+import {
+  CONFIG_DIR,
+  POINTER_BLOCK,
+  agentMdCandidates,
+  ensurePointer,
+  loadConfig,
+} from "./config.js";
 import { BRIEF_MARKDOWN } from "./brief.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -13,7 +27,11 @@ function getPackageRoot(): string {
   return join(__dirname, "..");
 }
 
-function copyDirRecursive(src: string, dest: string, warnings: string[]): number {
+function copyDirRecursive(
+  src: string,
+  dest: string,
+  warnings: string[],
+): number {
   let copied = 0;
   if (!existsSync(dest)) {
     mkdirSync(dest, { recursive: true });
@@ -50,7 +68,11 @@ export const SPLIT_BASE_NAMES = [
   "AFK_WORKER_RULES.md",
 ] as const;
 
-export type CopyAction = "created" | "upgraded" | "initialized-local" | "customized-warn";
+export type CopyAction =
+  | "created"
+  | "upgraded"
+  | "initialized-local"
+  | "customized-warn";
 
 /**
  * Install or upgrade a canonical/`.local.md` pair under `configDir`.
@@ -77,13 +99,17 @@ export function copyWithLocalOverlay(
     copyFileSync(canonicalSrc, canonicalDest);
     copyFileSync(localSrc, localDest);
     console.log(`  Created  ${CONFIG_DIR}/${baseName}`);
-    console.log(`  Created  ${CONFIG_DIR}/${localName} (empty — add project overrides here)`);
+    console.log(
+      `  Created  ${CONFIG_DIR}/${localName} (empty — add project overrides here)`,
+    );
     return "created";
   }
 
   if (existsSync(localDest)) {
     copyFileSync(canonicalSrc, canonicalDest);
-    console.log(`  Upgraded ${CONFIG_DIR}/${baseName} (canonical refreshed; ${localName} preserved)`);
+    console.log(
+      `  Upgraded ${CONFIG_DIR}/${baseName} (canonical refreshed; ${localName} preserved)`,
+    );
     return "upgraded";
   }
 
@@ -91,7 +117,9 @@ export function copyWithLocalOverlay(
   const shippedBytes = readFileSync(canonicalSrc, "utf-8");
   if (existingBytes === shippedBytes) {
     copyFileSync(localSrc, localDest);
-    console.log(`  Created  ${CONFIG_DIR}/${localName} (empty — add project overrides here)`);
+    console.log(
+      `  Created  ${CONFIG_DIR}/${localName} (empty — add project overrides here)`,
+    );
     return "initialized-local";
   }
 
@@ -105,7 +133,9 @@ export function copyWithLocalOverlay(
       `    Shipped canonical: ${canonicalSrc}\n` +
       `    Your file:         ${canonicalDest}`,
   );
-  console.log(`  Skipped  ${CONFIG_DIR}/${baseName} (customized — see warning below)`);
+  console.log(
+    `  Skipped  ${CONFIG_DIR}/${baseName} (customized — see warning below)`,
+  );
   return "customized-warn";
 }
 
@@ -134,15 +164,23 @@ export function initProject(projectRoot: string): void {
   // overlay for upgrades; everything else stays on the legacy skip-if-exists path.
   // .local.md sources are consumed by their canonical pair, never copied directly.
   const splitBase = new Set<string>(SPLIT_BASE_NAMES);
-  const splitLocal = new Set<string>(SPLIT_BASE_NAMES.map((n) => n.replace(/\.md$/, ".local.md")));
+  const splitLocal = new Set<string>(
+    SPLIT_BASE_NAMES.map((n) => n.replace(/\.md$/, ".local.md")),
+  );
   let configCopied = 0;
   for (const file of readdirSync(templatesDir)) {
     if (file === "claude-settings.json") continue; // handled separately
     if (splitLocal.has(file)) continue; // installed by copyWithLocalOverlay alongside its canonical
 
     if (splitBase.has(file)) {
-      const action = copyWithLocalOverlay(templatesDir, configDir, file, warnings);
-      if (action === "created" || action === "initialized-local") configCopied++;
+      const action = copyWithLocalOverlay(
+        templatesDir,
+        configDir,
+        file,
+        warnings,
+      );
+      if (action === "created" || action === "initialized-local")
+        configCopied++;
       continue;
     }
 
@@ -156,22 +194,38 @@ export function initProject(projectRoot: string): void {
     }
   }
 
-  // 2. Run artifacts live in .dangeresque/runs/ and are GITIGNORED — keeps
-  //    run-internal reasoning out of git history. Workers write them inside the
-  //    worktree; dangeresque mirrors them to the project root on merge.
+  // 2. Local-only dangeresque state lives outside git history:
+  //    - runs/     : structured run artifacts (mirrored across worktree boundaries)
+  //    - sessions/ : engine JSONL transcripts (written by runner.ts:679)
   const gitignorePath = join(projectRoot, ".gitignore");
-  const runsEntry = ".dangeresque/runs/";
-  const variants = new Set([runsEntry, ".dangeresque/runs"]);
+  const gitignoreEntries: { canonical: string; variants: string[] }[] = [
+    {
+      canonical: ".dangeresque/runs/",
+      variants: [".dangeresque/runs/", ".dangeresque/runs"],
+    },
+    {
+      canonical: ".dangeresque/sessions/",
+      variants: [".dangeresque/sessions/", ".dangeresque/sessions"],
+    },
+  ];
   let gitignore = existsSync(gitignorePath)
     ? readFileSync(gitignorePath, "utf-8")
     : "";
-  const hasEntry = gitignore.split("\n").some((l) => variants.has(l.trim()));
-  if (!hasEntry) {
+  const added: string[] = [];
+  for (const entry of gitignoreEntries) {
+    const variantSet = new Set(entry.variants);
+    const present = gitignore
+      .split("\n")
+      .some((l) => variantSet.has(l.trim()));
+    if (present) continue;
     if (gitignore.length > 0 && !gitignore.endsWith("\n")) gitignore += "\n";
-    gitignore += `${runsEntry}\n`;
+    gitignore += `${entry.canonical}\n`;
+    added.push(entry.canonical);
+  }
+  if (added.length > 0) {
     writeFileSync(gitignorePath, gitignore);
     console.log(
-      `\nAdded ${runsEntry} to .gitignore — run results are stored locally, not committed.`,
+      `\nAdded ${added.join(", ")} to .gitignore — local dangeresque state, not committed.`,
     );
   }
 
@@ -195,7 +249,9 @@ export function initProject(projectRoot: string): void {
     } else {
       const existing = JSON.parse(readFileSync(settingsPath, "utf-8"));
       if (JSON.stringify(existing).includes("dangeresque")) {
-        console.log("\nNotification hooks already in .claude/settings.json (skipped)");
+        console.log(
+          "\nNotification hooks already in .claude/settings.json (skipped)",
+        );
       } else {
         // Merge: add our hook events without touching existing ones
         if (!existing.hooks) existing.hooks = {};
@@ -204,7 +260,9 @@ export function initProject(projectRoot: string): void {
             existing.hooks[event] = handlers;
           } else {
             // Event already has hooks — append ours
-            (existing.hooks[event] as unknown[]).push(...(handlers as unknown[]));
+            (existing.hooks[event] as unknown[]).push(
+              ...(handlers as unknown[]),
+            );
           }
         }
         writeFileSync(settingsPath, JSON.stringify(existing, null, 4) + "\n");
@@ -214,41 +272,40 @@ export function initProject(projectRoot: string): void {
   }
 
   // 4. Write canonical DANGERESQUE.md (dangeresque-owned, overwrite every run).
-  //    Plus bootstrap a project-root CLAUDE.md with the pointer block when none exists,
-  //    or warn if one exists but is missing the pointer.
+  //    Then ensure the pointer block is present and current in every existing
+  //    agent-rules file (CLAUDE.md, AGENTS.md, .claude/CLAUDE.md). If none
+  //    exists, bootstrap the engine-correct one (CLAUDE.md for claude,
+  //    AGENTS.md for codex). Existing pointer blocks are refreshed via regex
+  //    on re-run so brief text drift is corrected automatically.
   const dangeresqueMdPath = join(configDir, "DANGERESQUE.md");
   writeFileSync(dangeresqueMdPath, BRIEF_MARKDOWN);
   console.log(`  Wrote    ${CONFIG_DIR}/DANGERESQUE.md`);
 
-  const pointer = claudeMdHasPointer(projectRoot);
-  let claudeMdStatus: "created" | "verified" | "warn-missing";
-  let claudeMdPath: string | null = null;
-  if (pointer.found) {
-    claudeMdStatus = "verified";
-    claudeMdPath = pointer.matchedPath;
-    console.log(`  Verified dangeresque pointer in ${pointer.matchedPath}`);
+  const engine = loadConfig(projectRoot).engine;
+  const candidates = agentMdCandidates(projectRoot, engine);
+  const existing = candidates.filter((p) => existsSync(p));
+  const pointerActions: { path: string; action: string }[] = [];
+
+  if (existing.length === 0) {
+    const target = candidates[0];
+    writeFileSync(
+      target,
+      `${POINTER_BLOCK}\n# Project Rules\n\n<!-- Add your project's build/test/architecture notes here. -->\n`,
+    );
+    pointerActions.push({ path: target, action: "created" });
+    console.log(`\nCreated ${target} with dangeresque pointer.`);
   } else {
-    const anyExists = pointer.checkedPaths.some((p) => existsSync(p));
-    if (!anyExists) {
-      const target = join(projectRoot, "CLAUDE.md");
-      writeFileSync(
-        target,
-        `${POINTER_BLOCK}\n# Project Rules\n\n<!-- Add your project's build/test/architecture notes here. -->\n`,
-      );
-      claudeMdStatus = "created";
-      claudeMdPath = target;
-      console.log(`\nCreated CLAUDE.md with dangeresque pointer.`);
-    } else {
-      claudeMdStatus = "warn-missing";
-      const existingPath = pointer.checkedPaths.find((p) => existsSync(p))!;
-      claudeMdPath = existingPath;
-      warnings.push(
-        `⚠️  CLAUDE.md exists but is missing the dangeresque pointer.\n` +
-          `    Workers and interactive Claude Code sessions will not automatically\n` +
-          `    load the dangeresque workflow rules without it.\n\n` +
-          `    Add this block at the TOP of ${existingPath}:\n\n` +
-          POINTER_BLOCK,
-      );
+    for (const path of existing) {
+      const before = readFileSync(path, "utf-8");
+      const { content: after, action } = ensurePointer(before);
+      if (action === "noop") {
+        console.log(`  Verified dangeresque pointer in ${path}`);
+      } else {
+        writeFileSync(path, after);
+        const verb = action === "prepended" ? "Prepended" : "Refreshed";
+        console.log(`  ${verb} dangeresque pointer in ${path}`);
+      }
+      pointerActions.push({ path, action });
     }
   }
 
@@ -274,17 +331,39 @@ export function initProject(projectRoot: string): void {
   }
 
   console.log("\nDone. Next steps:");
-  if (claudeMdStatus === "created") {
-    console.log(`  1. Flesh out ${claudeMdPath} with your project's build/test/architecture rules`);
-  } else if (claudeMdStatus === "verified") {
-    console.log(`  1. Pointer already present in ${claudeMdPath} — no action needed`);
+  const created = pointerActions.find((a) => a.action === "created");
+  const prepended = pointerActions.find((a) => a.action === "prepended");
+  const refreshed = pointerActions.find((a) => a.action === "replaced");
+  if (created) {
+    console.log(
+      `  1. Flesh out ${created.path} with your project's build/test/architecture rules`,
+    );
+  } else if (prepended) {
+    console.log(
+      `  1. Pointer prepended to ${prepended.path} — review the top of the file`,
+    );
+  } else if (refreshed) {
+    console.log(
+      `  1. Pointer refreshed in ${refreshed.path} — no action needed`,
+    );
   } else {
-    console.log(`  1. Add the dangeresque pointer block to ${claudeMdPath} (see warning above)`);
+    const verified = pointerActions[0]?.path ?? "your agent rules file";
+    console.log(`  1. Pointer already present in ${verified} — no action needed`);
   }
-  console.log("  2. Review .dangeresque/ prompts (*.local.md files are yours to customize)");
-  console.log("  3. Allow the tools your workers need — see https://github.com/slikk66/dangeresque/blob/main/docs/PERMISSIONS.md");
-  console.log("     Quick start:  dangeresque allow mcp        (auto-discover MCP servers)");
+  console.log(
+    "  2. Review .dangeresque/ prompts (*.local.md files are yours to customize)",
+  );
+  console.log(
+    "  3. Allow the tools your workers need — see https://github.com/slikk66/dangeresque/blob/main/docs/PERMISSIONS.md",
+  );
+  console.log(
+    "     Quick start:  dangeresque allow mcp        (auto-discover MCP servers)",
+  );
   console.log('                   dangeresque allow bash "npm install *"');
-  console.log("  4. Create a GitHub Issue, then: dangeresque run --issue <number>");
-  console.log("\nRe-run 'dangeresque init' to refresh skills and canonical prompts from the latest version.");
+  console.log(
+    "  4. Create a GitHub Issue, then: dangeresque run --issue <number>",
+  );
+  console.log(
+    "\nRe-run 'dangeresque init' to refresh skills and canonical prompts from the latest version.",
+  );
 }

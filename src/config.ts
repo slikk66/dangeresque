@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import {
@@ -16,24 +16,43 @@ export const PID_FILE = ".dangeresque.pid";
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
 export const POINTER_ANCHOR = "<!-- DANGERESQUE-START -->";
+export const POINTER_END_ANCHOR = "<!-- DANGERESQUE-END -->";
 export const POINTER_BLOCK = `<!-- DANGERESQUE-START -->
 **\`dangeresque\` is installed in this repo.** Use it — not raw \`git worktree\`, \`kill <pid>\`, or \`cd <worktree>\` — to dispatch AFK AI workers, manage isolated worktrees, and gate merges. Before dispatching or merging, run **\`dangeresque brief\`** (workflow loop + the hard rule). Run **\`dangeresque --help\`** for the full command surface (auto-generated, never stale).
 <!-- DANGERESQUE-END -->
 `;
 
-export function claudeMdCandidates(projectRoot: string): string[] {
+const POINTER_BLOCK_RE =
+  /<!-- DANGERESQUE-START -->[\s\S]*?<!-- DANGERESQUE-END -->/;
+
+/**
+ * Files dangeresque is allowed to install/maintain the pointer in, scoped to
+ * the active engine. claude reads CLAUDE.md (project root and/or .claude/);
+ * codex reads AGENTS.md. We never touch the other engine's file — it may be
+ * authored independently and is not ours to manage.
+ */
+export function agentMdCandidates(
+  projectRoot: string,
+  engine: Engine,
+): string[] {
+  if (engine === "codex") {
+    return [join(projectRoot, "AGENTS.md")];
+  }
   return [
     join(projectRoot, "CLAUDE.md"),
     join(projectRoot, ".claude", "CLAUDE.md"),
   ];
 }
 
-export function claudeMdHasPointer(projectRoot: string): {
+export function agentMdHasPointer(
+  projectRoot: string,
+  engine: Engine,
+): {
   found: boolean;
   matchedPath: string | null;
   checkedPaths: string[];
 } {
-  const checkedPaths = claudeMdCandidates(projectRoot);
+  const checkedPaths = agentMdCandidates(projectRoot, engine);
   for (const p of checkedPaths) {
     if (!existsSync(p)) continue;
     const content = readFileSync(p, "utf-8");
@@ -42,6 +61,25 @@ export function claudeMdHasPointer(projectRoot: string): {
     }
   }
   return { found: false, matchedPath: null, checkedPaths };
+}
+
+/**
+ * Ensure the dangeresque pointer block is present in `content`.
+ * - If anchored block exists, regex-replace it with the current canonical
+ *   POINTER_BLOCK (refreshes drifted text).
+ * - Otherwise prepend POINTER_BLOCK to the top.
+ * Returns the new content plus the action taken.
+ */
+export function ensurePointer(content: string): {
+  content: string;
+  action: "replaced" | "prepended" | "noop";
+} {
+  const replacement = POINTER_BLOCK.replace(/\n$/, "");
+  if (POINTER_BLOCK_RE.test(content)) {
+    const next = content.replace(POINTER_BLOCK_RE, replacement);
+    return { content: next, action: next === content ? "noop" : "replaced" };
+  }
+  return { content: POINTER_BLOCK + "\n" + content, action: "prepended" };
 }
 
 export type Engine = "claude" | "codex";
@@ -350,16 +388,25 @@ export function validateEngineRuntime(
   // Claude stores creds in macOS Keychain on darwin and ~/.claude/.credentials.json on Linux;
   // no reliable cross-platform file signal, so rely on post-spawn failure for auth issues.
 
-  const pointer = claudeMdHasPointer(projectRoot);
+  const pointer = agentMdHasPointer(projectRoot, engine);
   if (!pointer.found) {
+    const labels = pointer.checkedPaths.map((p) => relative(projectRoot, p));
+    const list = formatList(labels);
     errors.push(
-      `dangeresque pointer missing from CLAUDE.md and .claude/CLAUDE.md.\n` +
-        `    Run 'dangeresque init' to create one, or add this block at the top of your CLAUDE.md:\n\n` +
+      `dangeresque pointer missing from ${list}.\n` +
+        `    Run 'dangeresque init' to install one, or add this block at the top of your agent rules file:\n\n` +
         POINTER_BLOCK,
     );
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+function formatList(items: string[]): string {
+  if (items.length === 0) return "";
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 }
 
 function defaultProbeMissing(engine: Engine): boolean {
