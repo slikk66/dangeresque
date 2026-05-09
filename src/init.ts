@@ -68,6 +68,52 @@ export const SPLIT_BASE_NAMES = [
   "AFK_WORKER_RULES.md",
 ] as const;
 
+interface HookEntry {
+  type: string;
+  command: string;
+}
+
+interface HookHandler {
+  matcher?: string;
+  hooks?: HookEntry[];
+}
+
+interface ClaudeSettings {
+  hooks?: Record<string, HookHandler[]>;
+  [key: string]: unknown;
+}
+
+/** A handler is dangeresque-managed if any of its hook commands mention "dangeresque". */
+function isDangeresqueManagedHandler(handler: HookHandler): boolean {
+  if (!handler?.hooks || !Array.isArray(handler.hooks)) return false;
+  return handler.hooks.some(
+    (h) => typeof h?.command === "string" && h.command.includes("dangeresque"),
+  );
+}
+
+/**
+ * Merge template hook events into existing settings, replacing dangeresque-managed
+ * handlers per-event and preserving everything else. Idempotent: re-running with the
+ * same template yields a byte-identical result.
+ */
+export function mergeClaudeHookSettings(
+  existing: ClaudeSettings,
+  template: ClaudeSettings,
+): ClaudeSettings {
+  const result: ClaudeSettings = { ...existing };
+  result.hooks = { ...(existing.hooks ?? {}) };
+
+  for (const [event, templateHandlers] of Object.entries(template.hooks ?? {})) {
+    const existingHandlers = result.hooks[event] ?? [];
+    const userHandlers = existingHandlers.filter(
+      (h) => !isDangeresqueManagedHandler(h),
+    );
+    result.hooks[event] = [...userHandlers, ...templateHandlers];
+  }
+
+  return result;
+}
+
 export type CopyAction =
   | "created"
   | "upgraded"
@@ -229,7 +275,9 @@ export function initProject(projectRoot: string): void {
     );
   }
 
-  // 3. Merge notification hooks into .claude/settings.json
+  // 3. Merge dangeresque hooks into .claude/settings.json (upgrade-aware:
+  //    prior dangeresque-managed entries are replaced wholesale on each init,
+  //    user-added entries in the same event are preserved).
   const hooksTemplate = join(templatesDir, "claude-settings.json");
   const settingsPath = join(projectRoot, ".claude", "settings.json");
 
@@ -240,33 +288,20 @@ export function initProject(projectRoot: string): void {
     }
 
     const templateData = JSON.parse(readFileSync(hooksTemplate, "utf-8"));
-    const newHooks = templateData.hooks ?? {};
 
     if (!existsSync(settingsPath)) {
-      // No settings.json — create with just our hooks
       writeFileSync(settingsPath, JSON.stringify(templateData, null, 4) + "\n");
-      console.log("\nCreated .claude/settings.json with notification hooks");
+      console.log("\nCreated .claude/settings.json with dangeresque hooks");
     } else {
       const existing = JSON.parse(readFileSync(settingsPath, "utf-8"));
-      if (JSON.stringify(existing).includes("dangeresque")) {
-        console.log(
-          "\nNotification hooks already in .claude/settings.json (skipped)",
-        );
+      const before = JSON.stringify(existing);
+      const merged = mergeClaudeHookSettings(existing, templateData);
+      const after = JSON.stringify(merged);
+      if (before === after) {
+        console.log("\nDangeresque hooks already current in .claude/settings.json");
       } else {
-        // Merge: add our hook events without touching existing ones
-        if (!existing.hooks) existing.hooks = {};
-        for (const [event, handlers] of Object.entries(newHooks)) {
-          if (!existing.hooks[event]) {
-            existing.hooks[event] = handlers;
-          } else {
-            // Event already has hooks — append ours
-            (existing.hooks[event] as unknown[]).push(
-              ...(handlers as unknown[]),
-            );
-          }
-        }
-        writeFileSync(settingsPath, JSON.stringify(existing, null, 4) + "\n");
-        console.log("\nMerged notification hooks into .claude/settings.json");
+        writeFileSync(settingsPath, JSON.stringify(merged, null, 4) + "\n");
+        console.log("\nUpgraded dangeresque hooks in .claude/settings.json");
       }
     }
   }

@@ -159,11 +159,24 @@ When a tool call fails, the failure is usually structural, not a parsing acciden
 - Under **codex**, there is no `WebSearch`/`WebFetch` tool. Use the built-in `web_search` tool for search, or shell `curl` for arbitrary URL fetch — shell network egress is enabled for dangeresque codex workers via `sandbox_workspace_write.network_access=true`.
 - Do not hallucinate a `WebSearch` tool call under codex; it will not resolve.
 
+## Path Discipline
+
+All `Write`, `Edit`, and `NotebookEdit` operations MUST target paths inside your worktree. Use absolute paths whose prefix matches your current working directory (the worktree root). Never hardcode an absolute path you remembered from another repo, and never use `..` to climb out.
+
+Why: workers run inside an isolated git worktree under `.claude/worktrees/dangeresque-<name>/`. A Write to a path outside that worktree (e.g. the parent project root) lands a stray file in the operator's main checkout — invisible to your branch's diff, never reviewed, never merged. If the parent repo has a CI watcher (vitest, build pipeline, etc.) it may pick up the stray file and run it before any human review.
+
+Under the **claude** engine, a `PreToolUse` hook rejects `Write`/`Edit`/`NotebookEdit` calls whose `file_path` is not prefixed by your worktree path. Rejection is exit code 2, with a message naming the offending path so you can re-route. The check is intentionally simple — it does NOT resolve symlinks or `..` traversal. The threat model is misrouted-but-well-meaning workers (you), not adversarial evasion.
+
+Under the **codex** engine, the `--full-auto` workspace-write sandbox enforces the same boundary at the engine layer; no additional hook needed.
+
+Your run result file path (`<worktree>/.dangeresque/runs/issue-<N>/…`) is inside your worktree and passes the check. If a Write is rejected, the message is fed back to you — re-route to a worktree-relative absolute path and try again.
+
 ## Critical Rules
 
 - **Read first**: Read files before editing. The world is never as you assume.
 - **Verify after**: Grep/read to confirm your changes landed correctly.
 - **No band-aids**: Every fix must be researched and confirmed correct.
 - **Stay in scope**: Follow the GitHub Issue. If blocked, stop and report.
+- **Stay in your worktree**: `Write`/`Edit`/`NotebookEdit` must target paths inside your worktree only. The `PreToolUse` hook rejects parent-repo paths. See "Path Discipline".
 - **Hands off config**: Do not modify `.dangeresque/` config files (`.dangeresque/*.md`, `config.json`), `.claude/`, or `.gitignore` — these are managed by the human on main. Writing your run result into `.dangeresque/runs/…` is the ONE exception — that's your assignment.
 - **Honest status**: Never say "fixed" or "done". Use the allowed status language.

@@ -21,6 +21,17 @@
                     }
                 ]
             }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "Write|Edit|NotebookEdit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "input=$(cat); cwd=$(echo \"$input\" | jq -r '.cwd'); name=$(basename \"$cwd\"); if echo \"$name\" | grep -q '^dangeresque-'; then fp=$(echo \"$input\" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty'); case \"$fp\" in \"$cwd\"/*|\"\") exit 0;; *) tool=$(echo \"$input\" | jq -r '.tool_name'); echo \"dangeresque: refusing $tool on $fp — outside worktree $cwd. Use a worktree-relative absolute path. (Simple prefix check: ../ traversal and symlinks NOT covered — threat model is misrouted-but-well-meaning workers.)\" >&2; exit 2;; esac; fi"
+                    }
+                ]
+            }
         ]
     }
 }

@@ -48,6 +48,14 @@ Projects may define additional custom modes in their copy of this file.
 - Your worktree branched from `origin/HEAD` at creation time. Other workers may have merged changes to main since then. Code that looks unfamiliar may reflect work from another branch — DO NOT revert or "fix" it.
 - The run result file lives inside your worktree at `.dangeresque/runs/issue-<N>/…` and is gitignored. Do NOT `git add` or `git commit` it — gitignore would block it anyway. Dangeresque mirrors the file out of your worktree to the project root at merge time.
 
+## Worktree Write Fence
+
+- All `Write`, `Edit`, and `NotebookEdit` calls MUST target paths inside your worktree. Compute every absolute path from your current working directory (the worktree root) — never hardcode an absolute path remembered from another repo or use `..` to climb out.
+- Under the **claude** engine, a `PreToolUse` hook rejects parent-repo paths with exit code 2 and a message naming the offending path. Re-route to a worktree-relative absolute path and try again.
+- Under the **codex** engine, the `--full-auto` workspace-write sandbox enforces the same boundary at the engine layer.
+- The check is a simple absolute-path prefix comparison. It does NOT resolve symlinks or `..` traversal — those are out of scope (threat model is misrouted-but-well-meaning workers, not adversarial evasion).
+- See `worker-prompt.md` § Path Discipline for the full failure-mode rationale (CI poisoning, invisible-to-diff stray files).
+
 ## Status Language
 
 Use ONLY these statuses in your run result file:

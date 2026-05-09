@@ -1,9 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { copyWithLocalOverlay, initProject, SPLIT_BASE_NAMES } from "#dist/init.js";
+import {
+  copyWithLocalOverlay,
+  initProject,
+  mergeClaudeHookSettings,
+  SPLIT_BASE_NAMES,
+} from "#dist/init.js";
 import { POINTER_ANCHOR, POINTER_BLOCK } from "#dist/config.js";
 import { BRIEF_MARKDOWN } from "#dist/brief.js";
 
@@ -465,4 +471,307 @@ test("initProject: second invocation does not duplicate pointer blocks in CLAUDE
     console.log = origLog;
     rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+// --- mergeClaudeHookSettings: pure function tests ----------------------------
+
+const TEMPLATE_HOOKS = {
+  hooks: {
+    PreToolUse: [
+      {
+        matcher: "Write|Edit|NotebookEdit",
+        hooks: [{ type: "command", command: "echo dangeresque preToolUse" }],
+      },
+    ],
+    Notification: [
+      {
+        matcher: "",
+        hooks: [{ type: "command", command: "echo dangeresque notify" }],
+      },
+    ],
+    SessionEnd: [
+      {
+        matcher: "",
+        hooks: [{ type: "command", command: "echo dangeresque end" }],
+      },
+    ],
+  },
+};
+
+test("mergeClaudeHookSettings: empty existing — installs all template events", () => {
+  const merged = mergeClaudeHookSettings({}, TEMPLATE_HOOKS);
+  assert.deepEqual(
+    Object.keys(merged.hooks!).sort(),
+    ["Notification", "PreToolUse", "SessionEnd"],
+  );
+  assert.equal(merged.hooks!.PreToolUse.length, 1);
+  assert.equal(merged.hooks!.PreToolUse[0].matcher, "Write|Edit|NotebookEdit");
+});
+
+test("mergeClaudeHookSettings: idempotent — re-applying the template yields a stable result", () => {
+  const once = mergeClaudeHookSettings({}, TEMPLATE_HOOKS);
+  const twice = mergeClaudeHookSettings(once, TEMPLATE_HOOKS);
+  assert.equal(JSON.stringify(once), JSON.stringify(twice));
+});
+
+test("mergeClaudeHookSettings: replaces stale dangeresque-managed handlers per-event", () => {
+  const stale = {
+    hooks: {
+      Notification: [
+        {
+          matcher: "",
+          hooks: [{ type: "command", command: "echo dangeresque OLD VERSION" }],
+        },
+      ],
+    },
+  };
+  const merged = mergeClaudeHookSettings(stale, TEMPLATE_HOOKS);
+  assert.equal(merged.hooks!.Notification.length, 1, "stale dangeresque handler replaced");
+  assert.equal(
+    merged.hooks!.Notification[0].hooks![0].command,
+    "echo dangeresque notify",
+  );
+  assert.ok(merged.hooks!.PreToolUse, "new template event added");
+  assert.ok(merged.hooks!.SessionEnd, "new template event added");
+});
+
+test("mergeClaudeHookSettings: preserves user-added handlers in same event", () => {
+  const userAdded = {
+    hooks: {
+      Notification: [
+        {
+          matcher: "MyTool",
+          hooks: [{ type: "command", command: "echo my-custom-hook" }],
+        },
+        {
+          matcher: "",
+          hooks: [{ type: "command", command: "echo dangeresque old-notify" }],
+        },
+      ],
+    },
+  };
+  const merged = mergeClaudeHookSettings(userAdded, TEMPLATE_HOOKS);
+  assert.equal(merged.hooks!.Notification.length, 2);
+  const userHandler = merged.hooks!.Notification.find(
+    (h) => h.hooks?.[0]?.command === "echo my-custom-hook",
+  );
+  const dangeresqueHandler = merged.hooks!.Notification.find(
+    (h) => h.hooks?.[0]?.command === "echo dangeresque notify",
+  );
+  assert.ok(userHandler, "user handler preserved");
+  assert.ok(dangeresqueHandler, "dangeresque handler refreshed to current template");
+});
+
+test("mergeClaudeHookSettings: preserves non-hook keys in existing settings", () => {
+  const existing = {
+    permissions: { allow: ["Bash(ls)"] },
+    hooks: {},
+  };
+  const merged = mergeClaudeHookSettings(existing, TEMPLATE_HOOKS);
+  assert.deepEqual(merged.permissions, { allow: ["Bash(ls)"] });
+});
+
+// --- initProject: settings.json upgrade path --------------------------------
+
+test("initProject: existing settings.json with notification hooks gets PreToolUse on re-init", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-upgrade-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    const claudeDir = join(scratch, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    const oldSettings = {
+      hooks: {
+        Notification: [
+          {
+            matcher: "",
+            hooks: [
+              { type: "command", command: "echo dangeresque old-notify" },
+            ],
+          },
+        ],
+        SessionEnd: [
+          {
+            matcher: "",
+            hooks: [
+              { type: "command", command: "echo dangeresque old-end" },
+            ],
+          },
+        ],
+      },
+    };
+    writeFileSync(
+      join(claudeDir, "settings.json"),
+      JSON.stringify(oldSettings, null, 4) + "\n",
+    );
+
+    initProject(scratch);
+
+    const after = JSON.parse(
+      readFileSync(join(claudeDir, "settings.json"), "utf-8"),
+    );
+    assert.ok(after.hooks?.PreToolUse, "PreToolUse must be added on re-init");
+    assert.equal(after.hooks.PreToolUse[0].matcher, "Write|Edit|NotebookEdit");
+    assert.ok(after.hooks.Notification, "Notification must remain");
+    assert.ok(after.hooks.SessionEnd, "SessionEnd must remain");
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: preserves user-added handlers alongside dangeresque hooks", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-userhook-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    const claudeDir = join(scratch, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    const userSettings = {
+      hooks: {
+        Notification: [
+          {
+            matcher: "MyTool",
+            hooks: [{ type: "command", command: "echo my-custom-hook" }],
+          },
+        ],
+      },
+    };
+    writeFileSync(
+      join(claudeDir, "settings.json"),
+      JSON.stringify(userSettings, null, 4) + "\n",
+    );
+
+    initProject(scratch);
+
+    const after = JSON.parse(
+      readFileSync(join(claudeDir, "settings.json"), "utf-8"),
+    );
+    const userPreserved = after.hooks.Notification.some(
+      (h: { hooks?: { command?: string }[] }) =>
+        h.hooks?.[0]?.command === "echo my-custom-hook",
+    );
+    assert.ok(userPreserved, "user-added Notification handler must survive init");
+    assert.ok(after.hooks.PreToolUse, "PreToolUse fence must be installed");
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// --- PreToolUse hook command: shell-level integration ----------------------
+
+function getPreToolUseHookCommand(): string {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-hook-extract-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    initProject(scratch);
+    const settings = JSON.parse(
+      readFileSync(join(scratch, ".claude", "settings.json"), "utf-8"),
+    );
+    return settings.hooks.PreToolUse[0].hooks[0].command;
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+function runPreToolUseHook(input: object): {
+  status: number;
+  stderr: string;
+} {
+  const cmd = getPreToolUseHookCommand();
+  const result = spawnSync("bash", ["-c", cmd], {
+    input: JSON.stringify(input),
+    encoding: "utf-8",
+  });
+  return { status: result.status ?? -1, stderr: result.stderr ?? "" };
+}
+
+test("PreToolUse hook: rejects Write to path outside dangeresque worktree (exit 2)", () => {
+  const cwd = "/tmp/dangeresque-fake-worktree-001";
+  const fp = "/etc/poisoned.test.ts";
+  const result = runPreToolUseHook({
+    cwd,
+    tool_name: "Write",
+    tool_input: { file_path: fp },
+  });
+  assert.equal(result.status, 2, "must exit 2 to block tool call");
+  assert.match(result.stderr, /refusing Write/, "stderr names the tool");
+  assert.match(result.stderr, /\/etc\/poisoned\.test\.ts/, "stderr names the offending path");
+  assert.match(result.stderr, /dangeresque-fake-worktree-001/, "stderr names the worktree");
+});
+
+test("PreToolUse hook: allows Write to path inside worktree (exit 0)", () => {
+  const cwd = "/tmp/dangeresque-fake-worktree-002";
+  const result = runPreToolUseHook({
+    cwd,
+    tool_name: "Write",
+    tool_input: { file_path: `${cwd}/src/feature.ts` },
+  });
+  assert.equal(result.status, 0, "must exit 0 to allow");
+  assert.equal(result.stderr, "");
+});
+
+test("PreToolUse hook: allows Write to .dangeresque/runs/ artifact path inside worktree", () => {
+  const cwd = "/tmp/dangeresque-fake-worktree-003";
+  const result = runPreToolUseHook({
+    cwd,
+    tool_name: "Write",
+    tool_input: {
+      file_path: `${cwd}/.dangeresque/runs/issue-78/2026-05-09T22-IMPLEMENT.md`,
+    },
+  });
+  assert.equal(result.status, 0);
+});
+
+test("PreToolUse hook: no-op for non-dangeresque cwd basename", () => {
+  // Interactive operator session at the project root — basename does NOT start
+  // with dangeresque-. Hook must be a complete no-op for them.
+  const cwd = "/Users/dev/myproject";
+  const result = runPreToolUseHook({
+    cwd,
+    tool_name: "Write",
+    tool_input: { file_path: "/anywhere/else.ts" },
+  });
+  assert.equal(result.status, 0, "non-dangeresque cwd must be unfenced");
+  assert.equal(result.stderr, "");
+});
+
+test("PreToolUse hook: rejects NotebookEdit to notebook_path outside worktree", () => {
+  const cwd = "/tmp/dangeresque-fake-worktree-004";
+  const result = runPreToolUseHook({
+    cwd,
+    tool_name: "NotebookEdit",
+    tool_input: {
+      notebook_path: "/etc/poisoned.ipynb",
+      cell_id: "x",
+      new_source: "print('hi')",
+    },
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /refusing NotebookEdit/);
+  assert.match(result.stderr, /poisoned\.ipynb/);
+});
+
+test("PreToolUse hook: rejects Edit to file_path outside worktree", () => {
+  const cwd = "/tmp/dangeresque-fake-worktree-005";
+  const result = runPreToolUseHook({
+    cwd,
+    tool_name: "Edit",
+    tool_input: { file_path: "/etc/passwd", old_string: "x", new_string: "y" },
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /refusing Edit/);
+});
+
+test("PreToolUse hook: allows tool call with no file_path (malformed input passes through)", () => {
+  const cwd = "/tmp/dangeresque-fake-worktree-006";
+  const result = runPreToolUseHook({
+    cwd,
+    tool_name: "Write",
+    tool_input: {}, // neither file_path nor notebook_path
+  });
+  assert.equal(result.status, 0);
 });
