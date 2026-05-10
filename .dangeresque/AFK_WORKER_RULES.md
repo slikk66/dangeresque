@@ -2,19 +2,19 @@
 
 **This file applies to AFK dangeresque runs only, not interactive sessions.**
 
-Read your project's CLAUDE.md first. This file overrides specific directives for bounded AFK execution.
+Read your project's agent-rules file first (e.g., `CLAUDE.md`, `AGENTS.md`, or whatever your project uses to brief AI assistants). This file overrides specific behaviors for bounded AFK execution; everything else from your project rules applies as written.
 
-## Directive Overrides
+## AFK Operating Constraints
 
-These common CLAUDE.md directives are modified for AFK mode:
+These constraints OVERRIDE any project-rule that conflicts with them. Match by behavior, not by name — your project may use different terminology for the same concepts.
 
-| Interactive Directive | AFK Override | Reason |
-|----------------------|-------------|--------|
-| "Discuss with user first" | **STAY-IN-SCOPE** — Follow the GitHub Issue exactly. Do not widen scope. If blocked, stop and write findings instead of guessing. | No human to discuss with during AFK execution. |
-| "Document immediately" | **WRITE-HANDOFF** — Write your run result file (path given in the initial prompt) before ending. This is your primary output. | Handoff artifacts replace live documentation. |
-| "Push back / challenge" | **CHALLENGE-IN-WRITING** — If you disagree with the hypothesis or approach, document your objection in the run result file with evidence. Do not silently comply with a bad plan. | No human to push back against, but objections must be recorded. |
+- **No live discussion.** If your project rules say "discuss with user", "ask before X", "get sign-off", "confirm approach", or equivalent → instead, follow the GitHub Issue exactly. Do not widen scope. If blocked, stop and write findings under "Risks / Uncertainty" in your run result file.
 
-All other CLAUDE.md directives apply as written.
+- **No live documentation.** If your project rules say "update docs immediately", "capture as you go", "document now", or equivalent → instead, write a single handoff artifact at session end. Path provided in your initial prompt. This is your primary output.
+
+- **No live pushback.** If your project rules say "push back / challenge / disagree with the user", or equivalent → instead, document your objection in your run result file with evidence under a `## CHALLENGE-IN-WRITING` heading. Do not silently comply with a bad plan — the documented objection IS how you push back.
+
+All other project-rule directives apply as written unless they conflict with the constraints above.
 
 ## One Mode Per Run
 
@@ -55,6 +55,29 @@ Projects may define additional custom modes in their copy of this file.
 - Under the **codex** engine, the `--full-auto` workspace-write sandbox enforces the same boundary at the engine layer.
 - The check is a simple absolute-path prefix comparison. It does NOT resolve symlinks or `..` traversal — those are out of scope (threat model is misrouted-but-well-meaning workers, not adversarial evasion).
 - See `worker-prompt.md` § Path Discipline for the full failure-mode rationale (CI poisoning, invisible-to-diff stray files).
+
+## Bash Shell Constraints
+
+Multi-operation shell syntax is blocked by the engine **regardless of `allowedTools` config**. A `Bash(grep *)` permission does NOT grant `grep … | head` — the compound shape itself is denied. Blocked operators:
+
+- Pipes: `|`
+- Redirects: `>`, `>>`, `2>&1`, `2>/dev/null`, etc.
+- Semicolons: `;`
+- Chains: `&&`, `||`
+- Process substitution: `<()`, `>()`
+
+When a `Bash` call returns "requires approval", do NOT retry with different flags or fewer pipes — the denial is structural, retrying wastes round-trips. Switch to a builtin tool instead:
+
+| Instead of | Use |
+|---|---|
+| `cat <file>` | **Read** |
+| `grep -r <pattern> <path>` | **Grep** (use `path` + `glob` parameters) |
+| `find <path> -name <glob>` | **Glob** |
+| `cd <path> && <cmd>` | Pass the absolute path directly to `<cmd>`, or run from current cwd |
+| `<cmd> 2>&1 \| head` | Run plain `<cmd>`; the engine will truncate large outputs automatically |
+| `<cmd1> && <cmd2>` | Two separate `Bash` calls (only when both are individually allowed) |
+
+If no builtin tool can express what you need, note the check as unverified in your run result file and move on. Do NOT loop on compound bash retries.
 
 ## Status Language
 
