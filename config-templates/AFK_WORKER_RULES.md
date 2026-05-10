@@ -56,6 +56,29 @@ Projects may define additional custom modes in their copy of this file.
 - The check is a simple absolute-path prefix comparison. It does NOT resolve symlinks or `..` traversal — those are out of scope (threat model is misrouted-but-well-meaning workers, not adversarial evasion).
 - See `worker-prompt.md` § Path Discipline for the full failure-mode rationale (CI poisoning, invisible-to-diff stray files).
 
+## Bash Shell Constraints
+
+Multi-operation shell syntax is blocked by the engine **regardless of `allowedTools` config**. A `Bash(grep *)` permission does NOT grant `grep … | head` — the compound shape itself is denied. Blocked operators:
+
+- Pipes: `|`
+- Redirects: `>`, `>>`, `2>&1`, `2>/dev/null`, etc.
+- Semicolons: `;`
+- Chains: `&&`, `||`
+- Process substitution: `<()`, `>()`
+
+When a `Bash` call returns "requires approval", do NOT retry with different flags or fewer pipes — the denial is structural, retrying wastes round-trips. Switch to a builtin tool instead:
+
+| Instead of | Use |
+|---|---|
+| `cat <file>` | **Read** |
+| `grep -r <pattern> <path>` | **Grep** (use `path` + `glob` parameters) |
+| `find <path> -name <glob>` | **Glob** |
+| `cd <path> && <cmd>` | Pass the absolute path directly to `<cmd>`, or run from current cwd |
+| `<cmd> 2>&1 \| head` | Run plain `<cmd>`; the engine will truncate large outputs automatically |
+| `<cmd1> && <cmd2>` | Two separate `Bash` calls (only when both are individually allowed) |
+
+If no builtin tool can express what you need, note the check as unverified in your run result file and move on. Do NOT loop on compound bash retries.
+
 ## Status Language
 
 Use ONLY these statuses in your run result file:
