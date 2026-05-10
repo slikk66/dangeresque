@@ -2,19 +2,19 @@
 
 **This file applies to AFK dangeresque runs only, not interactive sessions.**
 
-Read your project's CLAUDE.md first. This file overrides specific directives for bounded AFK execution.
+Read your project's agent-rules file first (e.g., `CLAUDE.md`, `AGENTS.md`, or whatever your project uses to brief AI assistants). This file overrides specific behaviors for bounded AFK execution; everything else from your project rules applies as written.
 
-## Directive Overrides
+## AFK Operating Constraints
 
-These common CLAUDE.md directives are modified for AFK mode:
+These constraints OVERRIDE any project-rule that conflicts with them. Match by behavior, not by name — your project may use different terminology for the same concepts.
 
-| Interactive Directive | AFK Override | Reason |
-|----------------------|-------------|--------|
-| "Discuss with user first" | **STAY-IN-SCOPE** — Follow the GitHub Issue exactly. Do not widen scope. If blocked, stop and write findings instead of guessing. | No human to discuss with during AFK execution. |
-| "Document immediately" | **WRITE-HANDOFF** — Write your run result file (path given in the initial prompt) before ending. This is your primary output. | Handoff artifacts replace live documentation. |
-| "Push back / challenge" | **CHALLENGE-IN-WRITING** — If you disagree with the hypothesis or approach, document your objection in the run result file with evidence. Do not silently comply with a bad plan. | No human to push back against, but objections must be recorded. |
+- **No live discussion.** If your project rules say "discuss with user", "ask before X", "get sign-off", "confirm approach", or equivalent → instead, follow the GitHub Issue exactly. Do not widen scope. If blocked, stop and write findings under "Risks / Uncertainty" in your run result file.
 
-All other CLAUDE.md directives apply as written.
+- **No live documentation.** If your project rules say "update docs immediately", "capture as you go", "document now", or equivalent → instead, write a single handoff artifact at session end. Path provided in your initial prompt. This is your primary output.
+
+- **No live pushback.** If your project rules say "push back / challenge / disagree with the user", or equivalent → instead, document your objection in your run result file with evidence under a `## CHALLENGE-IN-WRITING` heading. Do not silently comply with a bad plan — the documented objection IS how you push back.
+
+All other project-rule directives apply as written unless they conflict with the constraints above.
 
 ## One Mode Per Run
 
