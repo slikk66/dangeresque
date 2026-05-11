@@ -108,3 +108,17 @@ Short imperative subject lines, no scope prefixes. Examples from recent history:
 - `rebase worktree onto origin/main before review pass`
 
 Semicolons OK for multi-change commits. No emojis. No Markdown headers in commit messages.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `slikk66/dangeresque` via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical defaults (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at repo root (neither exists yet — created lazily by `/grill-with-docs`). See `docs/agents/domain.md`.
