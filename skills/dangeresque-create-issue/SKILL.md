@@ -18,10 +18,11 @@ Create a well-structured GitHub Issue that dangeresque workers can consume effec
 ### 1. Gather context (from conversation — don't re-ask what you already know)
 
 Only ask what's missing:
+
 - **Mode**: INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, or PLAYTEST
-- **Goal**: What should the worker accomplish?
-- **Hypothesis**: What do you think the root cause is? (INVESTIGATE/IMPLEMENT)
-- **Likely files**: Which files should the worker look at first?
+- **Goal**: What should the worker accomplish? Frame in player/outcome terms, not implementation terms.
+- **Hypothesis (root-cause class)**: What kind of bug is this? E.g., "idempotency-replay" / "missing IAM grant" / "stale-cache divergence" / "wire-protocol mismatch". **Technical-shape hypotheses (interface signatures, return types, library choices, layer assignment) defer to the INVESTIGATE worker — do NOT pre-prescribe them.** Acceptable: `None — open investigation`.
+- **Likely areas**: Which folder/file areas are relevant? Prefer folder-level (`Core/Ledger/ + adjacent`) unless specific paths are grep-confirmed.
 - **Priority**: see Label Vocabulary below — pick exactly one of `P1-now`, `P2-soon`, `P3-later`, `P4-someday`
 
 If the conversation already established these, use what you know. Ask at most 1-2 clarifying questions.
@@ -59,14 +60,22 @@ gh issue create \
 <MODE>
 
 ## Goal
-<what the worker should accomplish>
+<what the worker should accomplish, in player/outcome terms — not implementation terms>
 
 ## Hypothesis
-<what we think is happening and why — or "None" for open investigation>
+<root-cause class — e.g., "idempotency-replay bug" / "missing IAM grant" / "stale-cache divergence" / "wire-protocol mismatch". Technical-shape hypotheses (interface signatures, return types, library choices, layer assignment) defer to the INVESTIGATE worker. Acceptable: `None — open investigation`.>
 
-## Likely Files
-- `path/to/file.ts` — reason
-- `path/to/other.ts` — reason
+## Likely Areas
+- `Core/<folder>/` + adjacent — prefer folder-level over specific files unless grep-confirmed
+- `path/to/file.ts` — only when grep-confirmed AND directly relevant; include the reason
+
+## OUT OF SCOPE
+- <adjacent surface explicitly NOT in this slice> — handled by <other issue> / <future work>
+
+## BIG-PICTURE
+1. **Player walkthrough**: what they SEE / HEAR / EXPECT end-to-end; where does today's behavior fail expectation?
+2. **Adjacent code SHAPE**: where else this pattern lives (same producer-consumer shape, same race condition, same trust-tier asymmetry)?
+3. **Implied features**: what this work implies but doesn't ship (reward → celebration; milestone → unlock; failure → recovery)?
 
 ## Scope (optional — add when the issue touches multiple files or has clear deny-list candidates)
 
@@ -79,11 +88,12 @@ deny:
 ```
 
 ## Reproduction Steps
-<if applicable>
+<observable steps + observable symptom — not inferred internal state>
 
 ## Verification Criteria
-- [ ] criterion 1
-- [ ] criterion 2
+- [ ] <feature/symptom from Goal> works end-to-end
+- [ ] No regression in adjacent surfaces (cite test files / smoketest gate / CI signal)
+- [ ] <ADR-cited contract or invariant if any> preserved
 
 ## Severity
 <P1-now | P2-soon | P3-later | P4-someday> — <one-line justification>
@@ -94,6 +104,7 @@ ISSUE_EOF
 ### 4. Report back
 
 Print:
+
 ```
 Staged issue #<number>: <title>
 Run: dangeresque run --issue <number>
@@ -103,21 +114,23 @@ Run: dangeresque run --issue <number>
 
 Canonical priority labels — pure ladder, no state-mixing (do NOT invent new ones):
 
-| Label | Meaning | Color |
-|---|---|---|
-| `P1-now` | Drop everything; urgent | `B60205` (red) |
-| `P2-soon` | This week; planned | `FBCA04` (amber) |
-| `P3-later` | Backlog with intent; this cycle | `FBE9A6` (light yellow) |
-| `P4-someday` | No intent to do soon; nice-to-have | `C5DEF5` (light blue) |
+| Label        | Meaning                            | Color                   |
+| ------------ | ---------------------------------- | ----------------------- |
+| `P1-now`     | Drop everything; urgent            | `B60205` (red)          |
+| `P2-soon`    | This week; planned                 | `FBCA04` (amber)        |
+| `P3-later`   | Backlog with intent; this cycle    | `FBE9A6` (light yellow) |
+| `P4-someday` | No intent to do soon; nice-to-have | `C5DEF5` (light blue)   |
 
 **No `blocked` label.** Blocked status is volatile and reason-rich — track it in issue comments or by referencing the blocking issue number. A label means duplicate state to manage; comments capture the WHY of the block, which a label cannot.
 
 Type labels (always one):
+
 - `bug` — something broken
 - `enhancement` — new feature or improvement
 - `documentation` — docs-only change
 
 Scope label (always present):
+
 - `dangeresque` — marks the issue as feedable to an AFK worker
 
 ## Rules
@@ -127,7 +140,8 @@ Scope label (always present):
 - Add exactly one type label (`bug` / `enhancement` / `documentation`).
 - Add exactly one priority label from the four canonical names above.
 - Keep titles under 70 characters.
-- Hypothesis can be "None — open investigation" if unknown.
+- Hypothesis can be "None — open investigation" if unknown. **Hypothesis is for root-cause CLASS, not technical SHAPE.** Acceptable: "idempotency-replay" / "missing IAM grant" / "client cache divergence." NOT acceptable: "use Newtonsoft.Json with JsonConverter" / "should return Task<IDisposable>" / "hand-roll on ClientWebSocket." Technical-shape hypotheses defer to INVESTIGATE worker output.
+- **Implementation shape is worker output, not issue-body input.** If you find yourself writing a code block, interface signature, return type, library/substrate name, layer assignment, or wire-protocol detail from your head (not from an ADR / grep / glossary), STOP. Replace with `INVESTIGATE worker decides; constraint: <source cite if any>.` Pattern: orchestrator-from-head technical detail gets corrected via worker CHALLENGE-IN-WRITING with high reliability — wastes a round. Source-citable detail (ADR-line, grep-confirmed path, UL glossary term, scope-fence) STAYS; inferred detail GOES.
 - Use **bold** for ubiquitous language terms per UBIQUITOUS_LANGUAGE.md.
 - Do NOT ask more than 2 clarifying questions — use conversation context.
 - Do NOT invent priority label names (no `P3-blocked`, `P3-eventually`, `P2-medium`, etc.).
