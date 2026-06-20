@@ -8,3 +8,5 @@ HANDOFF.md
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 .claude/skills/
+.agents
+.codex
