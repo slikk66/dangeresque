@@ -16,6 +16,7 @@ import {
   filterWorktrees,
   isPidAlive,
   mirrorIssueRuns,
+  mirrorAllIssueRuns,
   stopWorktree,
   runPreflightChecks,
   type WorktreeInfo,
@@ -27,6 +28,23 @@ test("extractIssueNumber: dangeresque-prefixed branch → number", () => {
 
 test("extractIssueNumber: no trailing number → undefined", () => {
   assert.equal(extractIssueNumber("worktree-foo-bar"), undefined);
+});
+
+test("extractIssueNumber: descriptive slug after number → number (bc#546)", () => {
+  // The merge artifact-mirror bug: a slug suffix used to return undefined,
+  // silently skipping the mirror while reporting success.
+  assert.equal(
+    extractIssueNumber("worktree-dangeresque-investigate-537-dicecursor"),
+    537,
+  );
+  assert.equal(
+    extractIssueNumber("worktree-dangeresque-implement-534-slice1"),
+    534,
+  );
+  assert.equal(
+    extractIssueNumber("worktree-dangeresque-implement-537-p1-fix"),
+    537,
+  );
 });
 
 test("extractMode: dangeresque-prefixed branch", () => {
@@ -468,7 +486,7 @@ test("mergeWorktree: copies gitignored runs/issue-N/ from worktree to project ro
   }
 });
 
-test("mergeWorktree: branch without issue number → no copy attempted, merge still succeeds", () => {
+test("mergeWorktree: branch with no run artifacts → merge succeeds, no false mirror claim", () => {
   const dir = makeRepo();
   try {
     addWorktree(dir, "no-issue", "worktree-no-issue");
@@ -477,10 +495,103 @@ test("mergeWorktree: branch without issue number → no copy attempted, merge st
     assert.equal(
       existsSync(join(dir, ".dangeresque", "runs")),
       false,
-      "no runs/ dir should be created when branch has no issue number",
+      "no runs/ dir should be created when there are no artifacts",
     );
+    // The success line must not claim a mirror that didn't happen.
+    assert.doesNotMatch(result.message, /Mirrored run artifacts/);
+    assert.match(result.message, /No run artifacts to mirror/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: slug-suffixed branch with gitignored artifact → still mirrors (bc#546 regression)", () => {
+  // The exact shape that broke: branch ends in `-dicecursor`, not `-537`.
+  // Old extractIssueNumber returned undefined → mirror skipped → artifacts lost
+  // while merge reported success.
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-investigate-537-dicecursor",
+      "worktree-dangeresque-investigate-537-dicecursor",
+      { advance: false },
+    );
+    const wtArtifactDir = join(worktreePath, ".dangeresque", "runs", "issue-537");
+    mkdirSync(wtArtifactDir, { recursive: true });
+    writeFileSync(
+      join(wtArtifactDir, "2026-06-19T23-04-14-IMPLEMENT.md"),
+      "<!-- SUMMARY -->\nMode: IMPLEMENT | Status: implemented\n<!-- /SUMMARY -->\n",
+    );
+    writeFileSync(
+      join(wtArtifactDir, "2026-06-19T23-04-14-IMPLEMENT.json"),
+      '{"schema_version":"3"}\n',
+    );
+
+    const result = mergeWorktree(
+      dir,
+      "worktree-dangeresque-investigate-537-dicecursor",
+    );
+    assert.equal(result.success, true);
+    assert.equal(existsSync(worktreePath), false);
+
+    // BOTH the .md and the .json eval sidecar must land at the project root.
+    const projectIssueDir = join(dir, ".dangeresque", "runs", "issue-537");
+    assert.ok(
+      existsSync(join(projectIssueDir, "2026-06-19T23-04-14-IMPLEMENT.md")),
+      ".md mirrored despite slug-suffixed branch",
+    );
+    assert.ok(
+      existsSync(join(projectIssueDir, "2026-06-19T23-04-14-IMPLEMENT.json")),
+      ".json eval sidecar mirrored despite slug-suffixed branch",
+    );
+    // And the success line names what it actually mirrored.
+    assert.match(result.message, /Mirrored run artifacts \(issue-537\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- mirrorAllIssueRuns: name-independent copy of every issue-* dir ---
+
+test("mirrorAllIssueRuns: src runs dir missing → [] , no error", () => {
+  const src = mkdtempSync(join(tmpdir(), "dangeresque-mirror-all-src-"));
+  const dest = mkdtempSync(join(tmpdir(), "dangeresque-mirror-all-dest-"));
+  try {
+    assert.deepEqual(mirrorAllIssueRuns(src, dest), []);
+    assert.equal(existsSync(join(dest, ".dangeresque", "runs")), false);
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+    rmSync(dest, { recursive: true, force: true });
+  }
+});
+
+test("mirrorAllIssueRuns: copies every issue-* dir, returns their names", () => {
+  const src = mkdtempSync(join(tmpdir(), "dangeresque-mirror-all-src-"));
+  const dest = mkdtempSync(join(tmpdir(), "dangeresque-mirror-all-dest-"));
+  try {
+    const runs = join(src, ".dangeresque", "runs");
+    mkdirSync(join(runs, "issue-7"), { recursive: true });
+    writeFileSync(join(runs, "issue-7", "a.md"), "7\n");
+    mkdirSync(join(runs, "issue-8"), { recursive: true });
+    writeFileSync(join(runs, "issue-8", "b.json"), "{}\n");
+    // A stray non-issue dir must be ignored.
+    mkdirSync(join(runs, "scratch"), { recursive: true });
+
+    const copied = mirrorAllIssueRuns(src, dest).sort();
+    assert.deepEqual(copied, ["issue-7", "issue-8"]);
+
+    const destRuns = join(dest, ".dangeresque", "runs");
+    assert.ok(existsSync(join(destRuns, "issue-7", "a.md")));
+    assert.ok(existsSync(join(destRuns, "issue-8", "b.json")));
+    assert.equal(existsSync(join(destRuns, "scratch")), false);
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+    rmSync(dest, { recursive: true, force: true });
   }
 });
 

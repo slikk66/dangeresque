@@ -307,6 +307,38 @@ export function mirrorIssueRuns(
 }
 
 /**
+ * Copy EVERY `issue-*` run directory found under srcRoot's runs dir to destRoot.
+ * Used on merge to carry a worktree's gitignored run artifacts back to the
+ * project root. Unlike mirrorIssueRuns this takes no issue number: the runs are
+ * keyed by the real issue number at write time, independent of the branch name,
+ * so the dirs on disk are the source of truth. Parsing the number out of the
+ * branch name instead silently lost artifacts whenever the name carried a slug
+ * suffix (e.g. `-dicecursor`) — see the merge call site. Returns the issue
+ * directory names copied (e.g. ["issue-537"]); empty when there's nothing to
+ * mirror.
+ */
+export function mirrorAllIssueRuns(
+  srcRoot: string,
+  destRoot: string,
+): string[] {
+  const srcRunsDir = getRunsDir(srcRoot);
+  if (!existsSync(srcRunsDir)) return [];
+  const issueDirs = readdirSync(srcRunsDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && e.name.startsWith("issue-"))
+    .map((e) => e.name);
+  if (issueDirs.length === 0) return [];
+  const destRunsDir = getRunsDir(destRoot);
+  mkdirSync(destRunsDir, { recursive: true });
+  for (const name of issueDirs) {
+    cpSync(join(srcRunsDir, name), join(destRunsDir, name), {
+      recursive: true,
+      force: true,
+    });
+  }
+  return issueDirs;
+}
+
+/**
  * List run result files for an issue, sorted chronologically (oldest first).
  */
 export function listArchivedRuns(
@@ -438,9 +470,16 @@ export function cleanArchivedRuns(
 /**
  * Extract issue number from branch name.
  * worktree-dangeresque-investigate-63 → 63
+ * Tolerates a descriptive slug after the number (used to disambiguate
+ * multiple runs on one issue): worktree-dangeresque-investigate-63-dicecursor → 63.
+ * The number is the segment immediately after the mode word, so it's matched
+ * there rather than anchored to the end of the string.
  */
 export function extractIssueNumber(branch: string): number | undefined {
-  const match = branch.match(/-(\d+)$/);
+  const stripped = branch
+    .replace(/^worktree-/, "")
+    .replace(/^dangeresque-/, "");
+  const match = stripped.match(/^[a-z]+-(\d+)(?:-.*)?$/);
   return match ? parseInt(match[1], 10) : undefined;
 }
 
@@ -563,28 +602,54 @@ export function mergeWorktree(
     : `Merge succeeded — main is now at ${headAfter.slice(0, 8)} (was ${headBefore.slice(0, 8)})`;
 
   // Phase 2: worktree cleanup (worktreePath already resolved at top of function).
-  // Mirror gitignored run artifacts out of the worktree before removing it,
-  // so per-run history persists at the project root after merge.
+  // Mirror gitignored run artifacts out of the worktree before removing it, so
+  // per-run history persists at the project root after merge. Driven by the
+  // issue-* dirs actually present in the worktree (the source of truth) rather
+  // than a number parsed from the branch name — a descriptive branch slug like
+  // `-dicecursor` used to make extractIssueNumber return undefined, which
+  // silently skipped this whole step while still reporting success. Verified
+  // after copy and failed loud if anything didn't land — the success line must
+  // never claim a mirror that didn't happen.
+  let mirrorNote = "";
   if (existsSync(worktreePath)) {
-    const issueNumber = extractIssueNumber(branch);
-    if (issueNumber !== undefined) {
-      try {
-        mirrorIssueRuns(worktreePath, projectRoot, issueNumber);
-      } catch (err) {
-        return {
-          success: false,
-          phase: "cleanup",
-          headAdvanced: !noopMerge,
-          headBefore,
-          headAfter,
-          message:
-            `${mergeOutcome}. ` +
-            `Mirroring run artifacts to project root failed: ${err instanceof Error ? err.message : String(err)}. ` +
-            `Worktree NOT removed at ${worktreePath} — copy ${worktreePath}/.dangeresque/runs/issue-${issueNumber}/ ` +
-            `to ${projectRoot}/.dangeresque/runs/issue-${issueNumber}/, then 'dangeresque discard ${branch}' to clean up.`,
-        };
-      }
+    let mirrored: string[];
+    try {
+      mirrored = mirrorAllIssueRuns(worktreePath, projectRoot);
+    } catch (err) {
+      return {
+        success: false,
+        phase: "cleanup",
+        headAdvanced: !noopMerge,
+        headBefore,
+        headAfter,
+        message:
+          `${mergeOutcome}. ` +
+          `Mirroring run artifacts to project root failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Worktree NOT removed at ${worktreePath} — copy ${worktreePath}/.dangeresque/runs/ ` +
+          `to ${projectRoot}/.dangeresque/runs/, then 'dangeresque discard ${branch}' to clean up.`,
+      };
     }
+    const missing = mirrored.filter(
+      (dir) => !existsSync(join(getRunsDir(projectRoot), dir)),
+    );
+    if (missing.length > 0) {
+      return {
+        success: false,
+        phase: "cleanup",
+        headAdvanced: !noopMerge,
+        headBefore,
+        headAfter,
+        message:
+          `${mergeOutcome}. ` +
+          `Run artifacts failed to land at project root (${missing.join(", ")}). ` +
+          `Worktree NOT removed at ${worktreePath} — copy ${worktreePath}/.dangeresque/runs/ ` +
+          `to ${projectRoot}/.dangeresque/runs/, then 'dangeresque discard ${branch}' to clean up.`,
+      };
+    }
+    mirrorNote =
+      mirrored.length > 0
+        ? `Mirrored run artifacts (${mirrored.join(", ")}) to project root and removed worktree.`
+        : `No run artifacts to mirror; removed worktree.`;
     try {
       execSync(`git worktree remove "${worktreePath}"`, {
         cwd: projectRoot,
@@ -640,8 +705,8 @@ export function mergeWorktree(
     headBefore,
     headAfter,
     message: noopMerge
-      ? `Merged ${branch}: no code changes (HEAD unchanged at ${headBefore.slice(0, 7)}). Mirrored run artifacts to project root and removed worktree.`
-      : `Merged ${branch} into main. Main: ${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}.`,
+      ? `Merged ${branch}: no code changes (HEAD unchanged at ${headBefore.slice(0, 7)}). ${mirrorNote}`.trim()
+      : `Merged ${branch} into main. Main: ${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}. ${mirrorNote}`.trim(),
   };
 }
 
