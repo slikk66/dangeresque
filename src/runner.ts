@@ -125,7 +125,19 @@ export function commitWorkerChanges(
   mode: string
 ): void {
   try {
-    execSync(`git add -A -- ':(exclude).dangeresque/runs' ':(exclude)${CODEX_RULES_RELPATH}'`, {
+    // Bare `git add -A` (no pathspec): with an explicit pathspec — even an
+    // exclude-only one — git treats matched IGNORED dirs as named targets and
+    // hard-fails ("paths are ignored by one of your .gitignore files", exit 1;
+    // advice.addIgnoredFile=false silences the hint but keeps the failure —
+    // verified empirically 2026-07-04, first live codex run, bc#603). Bare -A
+    // never touches ignored+untracked paths, so `.dangeresque/runs` stays out
+    // on current repos. The reset below covers what the excludes used to:
+    // the injected codex session state (.codex/) and any pre-existing TRACKED
+    // entries under .dangeresque/runs (migration-window repos).
+    execSync(`git add -A`, {
+      cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
+    });
+    execSync(`git reset -q -- .codex .dangeresque/runs`, {
       cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
     });
     const staged = execSync("git diff --cached --name-only", {
