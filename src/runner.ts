@@ -2,7 +2,7 @@ import { spawn, execSync, spawnSync, type ChildProcess } from "node:child_proces
 import { randomUUID } from "node:crypto";
 import { constants as osConstants } from "node:os";
 import { join, dirname, relative } from "node:path";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, rmSync } from "node:fs";
 import {
   type DangeresqueConfig,
   CONFIG_DIR,
@@ -140,6 +140,11 @@ export function commitWorkerChanges(
     execSync(`git reset -q -- .codex .dangeresque/runs`, {
       cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
     });
+    // Delete the codex session-state dir outright: left untracked, it blocks
+    // the merge path's non-force `git worktree remove` (first live IMPLEMENT
+    // run, bc#603 — merge landed but cleanup failed). The run artifact lives
+    // in .dangeresque/runs (mirrored by merge), so nothing of value is lost.
+    rmSync(join(worktreePath, ".codex"), { recursive: true, force: true });
     const staged = execSync("git diff --cached --name-only", {
       cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
     }).trim();
