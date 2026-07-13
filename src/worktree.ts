@@ -3,6 +3,7 @@ import {
   cpSync,
   existsSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
   mkdirSync,
   readdirSync,
@@ -63,6 +64,12 @@ export interface WorktreeInfo {
   commitEpoch: number;
   pidInfo?: PidInfo;
   running: boolean;
+  /**
+   * Lock reason when the worktree is locked, "" when locked without one,
+   * undefined when unlocked. Engines lock the worktrees they open (see
+   * unlockIfStale).
+   */
+  lockReason?: string;
 }
 
 export type WorktreeFilter = "all" | "running" | "finished";
@@ -76,6 +83,38 @@ export function filterWorktrees(
   return worktrees.filter((w) => !w.running);
 }
 
+interface WorktreePorcelainEntry {
+  path: string;
+  branch?: string;
+  head?: string;
+  /** Lock reason; "" when locked with no reason; undefined when unlocked. */
+  lockReason?: string;
+}
+
+function parseWorktreePorcelain(output: string): WorktreePorcelainEntry[] {
+  const entries: WorktreePorcelainEntry[] = [];
+
+  for (const block of output.trim().split("\n\n")) {
+    const lines = block.split("\n");
+    const pathLine = lines.find((l: string) => l.startsWith("worktree "));
+    if (!pathLine) continue;
+    const branchLine = lines.find((l: string) => l.startsWith("branch "));
+    const headLine = lines.find((l: string) => l.startsWith("HEAD "));
+    const lockLine = lines.find(
+      (l: string) => l === "locked" || l.startsWith("locked "),
+    );
+
+    entries.push({
+      path: pathLine.replace("worktree ", ""),
+      branch: branchLine?.replace("branch refs/heads/", ""),
+      head: headLine?.replace("HEAD ", ""),
+      lockReason: lockLine === undefined ? undefined : lockLine.slice("locked".length).trim(),
+    });
+  }
+
+  return entries;
+}
+
 export function listWorktrees(projectRoot: string): WorktreeInfo[] {
   const output = execSync("git worktree list --porcelain", {
     cwd: projectRoot,
@@ -83,19 +122,13 @@ export function listWorktrees(projectRoot: string): WorktreeInfo[] {
   });
 
   const worktrees: WorktreeInfo[] = [];
-  const blocks = output.trim().split("\n\n");
 
-  for (const block of blocks) {
-    const lines = block.split("\n");
-    const pathLine = lines.find((l: string) => l.startsWith("worktree "));
-    const branchLine = lines.find((l: string) => l.startsWith("branch "));
-    const headLine = lines.find((l: string) => l.startsWith("HEAD "));
+  for (const entry of parseWorktreePorcelain(output)) {
+    if (!entry.branch) continue;
 
-    if (!pathLine || !branchLine) continue;
-
-    const path = pathLine.replace("worktree ", "");
-    const branch = branchLine.replace("branch refs/heads/", "");
-    const head = headLine?.replace("HEAD ", "") ?? "";
+    const path = entry.path;
+    const branch = entry.branch;
+    const head = entry.head ?? "";
 
     // Include all dangeresque worktrees (they live under .claude/worktrees/)
     if (path.includes(".claude/worktrees/")) {
@@ -113,7 +146,15 @@ export function listWorktrees(projectRoot: string): WorktreeInfo[] {
 
       // Check PID file for running state
       const { pidInfo, running } = readPidState(path);
-      worktrees.push({ path, branch, head, commitEpoch, pidInfo, running });
+      worktrees.push({
+        path,
+        branch,
+        head,
+        commitEpoch,
+        pidInfo,
+        running,
+        lockReason: entry.lockReason,
+      });
     }
   }
 
@@ -169,6 +210,73 @@ export function isPidAlive(pid: number | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Git prints resolved paths in `worktree list --porcelain`, while dangeresque
+ * builds worktree paths by joining projectRoot — on macOS those differ (/tmp
+ * vs /private/tmp). Compare both through realpath so the lock lookup matches.
+ */
+function realpathOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+function readWorktreeLock(
+  projectRoot: string,
+  worktreePath: string,
+): string | undefined {
+  const target = realpathOrSelf(worktreePath);
+  const output = execSync("git worktree list --porcelain", {
+    cwd: projectRoot,
+    encoding: "utf-8",
+    stdio: "pipe",
+  });
+  for (const entry of parseWorktreePorcelain(output)) {
+    if (realpathOrSelf(entry.path) === target) return entry.lockReason;
+  }
+  return undefined;
+}
+
+/**
+ * Claude Code locks every worktree a session opens, with reason
+ * `claude session <name> (pid <N> start <T>)`, and does not release it on
+ * headless exit — so a *successful* run reliably leaves a lock whose pid is
+ * dead. Git then refuses `worktree remove` (even with a single --force; it
+ * wants `-f -f`), which turned landed merges into exit-1 failures (#84).
+ *
+ * Clear a lock whose owning process is gone. Refuse loudly otherwise: a live
+ * pid means a real session is working in there, and a lock we cannot attribute
+ * to a process was put there deliberately by someone else.
+ */
+export function unlockIfStale(projectRoot: string, worktreePath: string): void {
+  const reason = readWorktreeLock(projectRoot, worktreePath);
+  if (reason === undefined) return;
+
+  const pid = Number(reason.match(/\(pid (\d+)\b/)?.[1]);
+
+  if (!pid) {
+    throw new Error(
+      `worktree is locked with a reason dangeresque cannot attribute to a process ` +
+        `("${reason || "no reason given"}"). Refusing to unlock it. If the lock is stale and safe ` +
+        `to drop: git worktree unlock "${worktreePath}"`,
+    );
+  }
+  if (isPidAlive(pid)) {
+    throw new Error(
+      `worktree is locked by a live process ("${reason}"). Refusing to unlock it — ` +
+        `a session is still working in ${worktreePath}. Stop it first, then retry.`,
+    );
+  }
+
+  execSync(`git worktree unlock "${worktreePath}"`, {
+    cwd: projectRoot,
+    encoding: "utf-8",
+    stdio: "pipe",
+  });
 }
 
 function formatElapsedMs(ms: number): string {
@@ -651,6 +759,7 @@ export function mergeWorktree(
         ? `Mirrored run artifacts (${mirrored.join(", ")}) to project root and removed worktree.`
         : `No run artifacts to mirror; removed worktree.`;
     try {
+      unlockIfStale(projectRoot, worktreePath);
       execSync(`git worktree remove "${worktreePath}"`, {
         cwd: projectRoot,
         encoding: "utf-8",
@@ -667,7 +776,8 @@ export function mergeWorktree(
           `${mergeOutcome}. ` +
           `Worktree cleanup failed: ${err instanceof Error ? err.message : String(err)}. ` +
           `Recovery: (1) inspect ${worktreePath} for uncommitted work, ` +
-          `(2) 'git worktree remove --force "${worktreePath}"' if safe, ` +
+          `(2) 'git worktree unlock "${worktreePath}"' if it is still locked, then ` +
+          `'git worktree remove --force "${worktreePath}"' if safe, ` +
           `(3) 'git branch -D ${branch}'.`,
       };
     }
@@ -763,6 +873,7 @@ export async function discardWorktree(
   // Phase 1: worktree cleanup
   if (existsSync(worktreePath)) {
     try {
+      unlockIfStale(projectRoot, worktreePath);
       execSync(`git worktree remove --force "${worktreePath}"`, {
         cwd: projectRoot,
         encoding: "utf-8",
@@ -776,7 +887,8 @@ export async function discardWorktree(
         message:
           `Worktree cleanup failed: ${err instanceof Error ? err.message : String(err)}. ` +
           `Recovery: (1) inspect ${worktreePath}, ` +
-          `(2) 'git worktree remove --force "${worktreePath}"', ` +
+          `(2) 'git worktree unlock "${worktreePath}"' if it is still locked, then ` +
+          `'git worktree remove --force "${worktreePath}"', ` +
           `(3) 'git branch -D ${branch}'.`,
       };
     }

@@ -15,6 +15,8 @@ import {
   discardWorktree,
   filterWorktrees,
   isPidAlive,
+  listWorktrees,
+  unlockIfStale,
   mirrorIssueRuns,
   mirrorAllIssueRuns,
   stopWorktree,
@@ -1221,5 +1223,128 @@ test("runPreflightChecks: lists every failing gate in one refusal message", () =
   } finally {
     rmSync(local, { recursive: true, force: true });
     rmSync(remote, { recursive: true, force: true });
+  }
+});
+
+// --- stale worktree locks (#84) ---
+//
+// Claude Code locks each worktree it opens (`claude session <name> (pid <N>
+// start <T>)`) and does not release it on headless exit, so a successful run
+// leaves a lock whose pid is dead. Git then refuses `worktree remove`.
+
+/** Capture a pid that is guaranteed dead by the time this resolves. */
+async function deadPid(): Promise<number> {
+  const corpse = spawn("node", ["-e", "process.exit(0)"], { stdio: "ignore" });
+  await new Promise<void>((r) => corpse.once("exit", () => r()));
+  return corpse.pid!;
+}
+
+function lockWorktree(repo: string, worktreePath: string, reason: string): void {
+  execSync(`git worktree lock --reason "${reason}" "${worktreePath}"`, env(repo));
+}
+
+function lockReasonOf(repo: string, worktreePath: string): string | undefined {
+  const info = listWorktrees(repo).find((w) => w.path.endsWith(worktreePath.split("/").pop()!));
+  return info?.lockReason;
+}
+
+test("listWorktrees: surfaces the lock reason of a locked worktree", async () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "locked-list", "worktree-locked-list");
+    assert.equal(lockReasonOf(dir, worktreePath), undefined);
+
+    lockWorktree(dir, worktreePath, "claude session locked-list (pid 4242 start now)");
+    assert.equal(
+      lockReasonOf(dir, worktreePath),
+      "claude session locked-list (pid 4242 start now)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("unlockIfStale: unlocked worktree → no-op", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "unlocked", "worktree-unlocked");
+    assert.doesNotThrow(() => unlockIfStale(dir, worktreePath));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("unlockIfStale: lock with no attributable pid → refuses, lock kept", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "human-lock", "worktree-human-lock");
+    lockWorktree(dir, worktreePath, "do not touch, salvaging work by hand");
+
+    assert.throws(
+      () => unlockIfStale(dir, worktreePath),
+      /cannot attribute to a process/,
+    );
+    assert.equal(lockReasonOf(dir, worktreePath), "do not touch, salvaging work by hand");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: stale claude session lock (dead pid) → merge lands and worktree is cleaned up", async () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "stale-lock", "worktree-stale-lock");
+    const pid = await deadPid();
+    lockWorktree(dir, worktreePath, `claude session stale-lock (pid ${pid} start Mon Jul 13 03:33:14 2026)`);
+
+    const result = mergeWorktree(dir, "worktree-stale-lock");
+
+    assert.equal(result.success, true, `expected success, got: ${result.message}`);
+    assert.equal(result.headAdvanced, true);
+    assert.equal(existsSync(worktreePath), false);
+    assert.equal(branchExists(dir, "worktree-stale-lock"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: lock held by a live pid → cleanup refuses, worktree kept", async () => {
+  const dir = makeRepo();
+  let child: ChildProcess | undefined;
+  try {
+    const worktreePath = addWorktree(dir, "live-lock", "worktree-live-lock");
+    child = spawnLongRunningChild();
+    lockWorktree(dir, worktreePath, `claude session live-lock (pid ${child.pid} start now)`);
+
+    const result = mergeWorktree(dir, "worktree-live-lock");
+
+    assert.equal(result.success, false);
+    assert.equal(result.phase, "cleanup");
+    assert.equal(result.headAdvanced, true, "merge itself must still have landed");
+    assert.match(result.message, /locked by a live process/);
+    assert.equal(existsSync(worktreePath), true, "live worktree must not be yanked");
+  } finally {
+    if (child?.pid) {
+      child.kill("SIGKILL");
+      await awaitDead(child.pid);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discardWorktree: stale claude session lock (dead pid) → discards cleanly", async () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "stale-lock-discard", "worktree-stale-lock-discard");
+    const pid = await deadPid();
+    lockWorktree(dir, worktreePath, `claude session stale-lock-discard (pid ${pid} start now)`);
+
+    const result = await discardWorktree(dir, "worktree-stale-lock-discard");
+
+    assert.equal(result.success, true, `expected success, got: ${result.message}`);
+    assert.equal(existsSync(worktreePath), false);
+    assert.equal(branchExists(dir, "worktree-stale-lock-discard"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
