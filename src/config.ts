@@ -126,7 +126,55 @@ export interface DangeresqueConfig {
   verify?: VerifyConfig;
   /** Scope subsystem config (allow-list policy + opportunistic-fix budget). */
   scope?: ScopeConfig;
+  /** Pre-worker enforcement gate. Absent block = gate off; opt-in via config. */
+  dispatchGate?: DispatchGateConfig;
+  /** Pre-merge enforcement gate. Absent block = gate off; opt-in via config. */
+  mergeGate?: MergeGateConfig;
 }
+
+/**
+ * Pre-worker enforcement gate. Runs before `runWorker` for configured modes;
+ * blocking failure refuses the dispatch with exit 2. Independent of any
+ * model/reviewer output — this is the physical enforcement point.
+ */
+export interface DispatchGateConfig {
+  /** Master switch. Default false (opt-in). */
+  enabled: boolean;
+  /** Modes that trigger the gate. Default: all supported modes. */
+  modes: string[];
+  /** Built-in: IMPLEMENT refuses if no prior INVESTIGATE artifact exists. `--force` bypasses. */
+  requireInvestigateBeforeImplement: boolean;
+  /** Project-configured shell commands run in projectRoot with DANGERESQUE_ISSUE/MODE env vars. */
+  commands: VerifyCommand[];
+}
+
+/**
+ * Pre-merge enforcement gate. Runs before the `git merge` in `mergeWorktree`
+ * for configured modes; blocking failure refuses the merge with exit 2.
+ */
+export interface MergeGateConfig {
+  /** Master switch. Default false (opt-in). */
+  enabled: boolean;
+  /** Merged-worktree modes that trigger the gate. Default: code-changing modes only. */
+  modes: string[];
+  /** Built-in: require latest IMPLEMENT artifact to show review.skipped=false + reviewer_verdict="accept". `--force` bypasses (not currently exposed for merge). */
+  requireAcceptedImplement: boolean;
+  /** Project-configured shell commands run in projectRoot with DANGERESQUE_ISSUE/MODE/MERGE=1 env vars. */
+  commands: VerifyCommand[];
+}
+
+export const DEFAULT_DISPATCH_GATE_MODES = [
+  "INVESTIGATE",
+  "IMPLEMENT",
+  "REFACTOR",
+  "TEST",
+  "VERIFY",
+];
+
+// Duplicates CODE_CHANGING_MODES in src/artifact.ts and src/runner.ts (drift-
+// tolerance rationale: each consumer can drift independently if future modes
+// change semantics). A shared export would couple three unrelated call sites.
+export const DEFAULT_MERGE_GATE_MODES = ["IMPLEMENT", "REFACTOR", "TEST"];
 
 export interface ScopeOpportunisticConfig {
   enabled: boolean;
@@ -225,6 +273,8 @@ export function loadConfig(projectRoot: string): DangeresqueConfig {
   );
   merged.verify = normalizeVerifyConfig(raw.verify);
   merged.scope = normalizeScopeConfig(raw.scope);
+  merged.dispatchGate = normalizeDispatchGateConfig(raw.dispatchGate);
+  merged.mergeGate = normalizeMergeGateConfig(raw.mergeGate);
   return merged;
 }
 
@@ -275,6 +325,11 @@ export function normalizeScopeOpportunisticConfig(
   return { enabled, maxFiles, maxLines, denyGlobs };
 }
 
+// Diverges from normalizeDispatchGateConfig / normalizeMergeGateConfig, which
+// eager-throw on any malformed entry (gates are enforcement points — a silently-
+// dropped rule is a silently-lost guarantee). `verify` keeps silent-drop for
+// backwards-compat with pre-#85 configs; changing it belongs in a separate
+// issue that owns the impact assessment on existing operators.
 function normalizeVerifyConfig(raw: unknown): VerifyConfig {
   if (!raw || typeof raw !== "object") {
     return { ...DEFAULT_VERIFY_CONFIG };
@@ -308,6 +363,183 @@ function normalizeVerifyConfig(raw: unknown): VerifyConfig {
     });
   }
   return { enabled, modes, commands };
+}
+
+// Allowed shape for a gate command entry. Any other key on a raw command
+// object triggers a fail-closed throw at load time (matches the eager-throw
+// stance for gate config: unknown key = quiet typo = silently-lost guarantee).
+const GATE_COMMAND_KEYS = new Set(["name", "cmd", "on_failure", "timeout_ms"]);
+
+/**
+ * Fail-closed parser for a gate block's `commands` array. Throws on any
+ * malformed entry — missing fields, wrong types, invalid enums, unknown
+ * keys. Intentionally loud: a silently-dropped gate command is a silently-
+ * lost enforcement guarantee (issue #85). Caller passes a stable block
+ * label ("dispatchGate" or "mergeGate") for error messages.
+ */
+function normalizeGateCommands(raw: unknown, blockLabel: string): VerifyCommand[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      `${blockLabel}.commands must be an array of command objects, got ${typeof raw}`,
+    );
+  }
+  const commands: VerifyCommand[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const entry = raw[i];
+    if (!entry || typeof entry !== "object") {
+      throw new Error(
+        `${blockLabel}.commands[${i}] must be an object with {name, cmd, on_failure, timeout_ms}, got ${entry === null ? "null" : typeof entry}`,
+      );
+    }
+    const c = entry as Record<string, unknown>;
+    if (typeof c.name !== "string" || c.name.length === 0) {
+      throw new Error(
+        `${blockLabel}.commands[${i}] is missing required non-empty string field 'name'`,
+      );
+    }
+    if (typeof c.cmd !== "string" || c.cmd.length === 0) {
+      throw new Error(
+        `${blockLabel}.commands[${i}] (${c.name}) is missing required non-empty string field 'cmd'`,
+      );
+    }
+    let policy: VerifyFailurePolicy = "block";
+    if (c.on_failure !== undefined) {
+      if (c.on_failure !== "block" && c.on_failure !== "warn") {
+        throw new Error(
+          `${blockLabel}.commands[${i}] (${c.name}) has invalid on_failure "${String(c.on_failure)}", expected "block" or "warn"`,
+        );
+      }
+      policy = c.on_failure;
+    }
+    let timeout = DEFAULT_VERIFY_TIMEOUT_MS;
+    if (c.timeout_ms !== undefined) {
+      if (typeof c.timeout_ms !== "number" || !isFinite(c.timeout_ms) || c.timeout_ms <= 0) {
+        throw new Error(
+          `${blockLabel}.commands[${i}] (${c.name}) has invalid timeout_ms ${String(c.timeout_ms)}, expected positive finite number`,
+        );
+      }
+      timeout = c.timeout_ms;
+    }
+    for (const key of Object.keys(c)) {
+      if (!GATE_COMMAND_KEYS.has(key)) {
+        throw new Error(
+          `${blockLabel}.commands[${i}] (${c.name}) has unknown field '${key}' — allowed: ${[...GATE_COMMAND_KEYS].join(", ")}`,
+        );
+      }
+    }
+    commands.push({ name: c.name, cmd: c.cmd, on_failure: policy, timeout_ms: timeout });
+  }
+  return commands;
+}
+
+const DISPATCH_GATE_KEYS = new Set([
+  "enabled",
+  "modes",
+  "requireInvestigateBeforeImplement",
+  "commands",
+]);
+
+const MERGE_GATE_KEYS = new Set([
+  "enabled",
+  "modes",
+  "requireAcceptedImplement",
+  "commands",
+]);
+
+/**
+ * Parse the optional `dispatchGate` config block. Returns `undefined` when
+ * absent (gate off, unchanged behavior). Throws on any malformed field so the
+ * operator gets a loud startup failure instead of a silently-relaxed gate.
+ */
+export function normalizeDispatchGateConfig(raw: unknown): DispatchGateConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`dispatchGate must be an object, got ${Array.isArray(raw) ? "array" : typeof raw}`);
+  }
+  const obj = raw as Record<string, unknown>;
+
+  for (const key of Object.keys(obj)) {
+    if (!DISPATCH_GATE_KEYS.has(key)) {
+      throw new Error(
+        `dispatchGate has unknown field '${key}' — allowed: ${[...DISPATCH_GATE_KEYS].join(", ")}`,
+      );
+    }
+  }
+
+  let enabled = false;
+  if (obj.enabled !== undefined) {
+    if (typeof obj.enabled !== "boolean") {
+      throw new Error(`dispatchGate.enabled must be a boolean, got ${typeof obj.enabled}`);
+    }
+    enabled = obj.enabled;
+  }
+
+  let modes = [...DEFAULT_DISPATCH_GATE_MODES];
+  if (obj.modes !== undefined) {
+    if (!Array.isArray(obj.modes) || !obj.modes.every((m) => typeof m === "string")) {
+      throw new Error(`dispatchGate.modes must be an array of strings`);
+    }
+    modes = (obj.modes as string[]).map((m) => m.toUpperCase());
+  }
+
+  let requireInvestigateBeforeImplement = true;
+  if (obj.requireInvestigateBeforeImplement !== undefined) {
+    if (typeof obj.requireInvestigateBeforeImplement !== "boolean") {
+      throw new Error(`dispatchGate.requireInvestigateBeforeImplement must be a boolean`);
+    }
+    requireInvestigateBeforeImplement = obj.requireInvestigateBeforeImplement;
+  }
+
+  const commands = normalizeGateCommands(obj.commands, "dispatchGate");
+  return { enabled, modes, requireInvestigateBeforeImplement, commands };
+}
+
+/**
+ * Parse the optional `mergeGate` config block. Returns `undefined` when
+ * absent (gate off, unchanged behavior). Throws on any malformed field.
+ */
+export function normalizeMergeGateConfig(raw: unknown): MergeGateConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`mergeGate must be an object, got ${Array.isArray(raw) ? "array" : typeof raw}`);
+  }
+  const obj = raw as Record<string, unknown>;
+
+  for (const key of Object.keys(obj)) {
+    if (!MERGE_GATE_KEYS.has(key)) {
+      throw new Error(
+        `mergeGate has unknown field '${key}' — allowed: ${[...MERGE_GATE_KEYS].join(", ")}`,
+      );
+    }
+  }
+
+  let enabled = false;
+  if (obj.enabled !== undefined) {
+    if (typeof obj.enabled !== "boolean") {
+      throw new Error(`mergeGate.enabled must be a boolean, got ${typeof obj.enabled}`);
+    }
+    enabled = obj.enabled;
+  }
+
+  let modes = [...DEFAULT_MERGE_GATE_MODES];
+  if (obj.modes !== undefined) {
+    if (!Array.isArray(obj.modes) || !obj.modes.every((m) => typeof m === "string")) {
+      throw new Error(`mergeGate.modes must be an array of strings`);
+    }
+    modes = (obj.modes as string[]).map((m) => m.toUpperCase());
+  }
+
+  let requireAcceptedImplement = true;
+  if (obj.requireAcceptedImplement !== undefined) {
+    if (typeof obj.requireAcceptedImplement !== "boolean") {
+      throw new Error(`mergeGate.requireAcceptedImplement must be a boolean`);
+    }
+    requireAcceptedImplement = obj.requireAcceptedImplement;
+  }
+
+  const commands = normalizeGateCommands(obj.commands, "mergeGate");
+  return { enabled, modes, requireAcceptedImplement, commands };
 }
 
 function mergeStringList(defaults: string[], userValue: unknown): string[] {

@@ -10,8 +10,9 @@ import {
   rmSync,
 } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_DIR, RUNS_DIR, PID_FILE } from "./config.js";
+import { CONFIG_DIR, RUNS_DIR, PID_FILE, type MergeGateConfig } from "./config.js";
 import { jsonPathForArchive, type RunArtifact } from "./artifact.js";
+import { applyMergeGate } from "./gates.js";
 
 /**
  * Resolve the ref reviewers should diff against. Worktrees branch from
@@ -594,13 +595,18 @@ export function extractIssueNumber(branch: string): number | undefined {
 /**
  * Extract mode from branch name.
  * worktree-dangeresque-investigate-63 → INVESTIGATE
+ * Tolerates a descriptive slug after the issue number (used to disambiguate
+ * multiple runs on one issue): worktree-dangeresque-implement-42-round2 →
+ * IMPLEMENT. Mirrors extractIssueNumber's slug tolerance (commit 185f488):
+ * without this, gates keyed on the mode fail open on any slug-suffixed
+ * branch, silently letting merges through.
  */
 export function extractMode(branch: string): string {
   // Remove worktree- and dangeresque- prefixes, then take the part before the issue number
   const stripped = branch
     .replace(/^worktree-/, "")
     .replace(/^dangeresque-/, "");
-  const modeMatch = stripped.match(/^([a-z]+)-\d+$/);
+  const modeMatch = stripped.match(/^([a-z]+)-\d+(?:-.*)?$/);
   return modeMatch ? modeMatch[1].toUpperCase() : "UNKNOWN";
 }
 
@@ -625,6 +631,7 @@ export interface WorktreeOpResult {
 export function mergeWorktree(
   projectRoot: string,
   branch: string,
+  mergeGate?: MergeGateConfig,
 ): WorktreeOpResult {
   // Gate: refuse if worker (engine or parent CLI) is still running. Without
   // this check git happily merges a branch whose worktree is mid-edit, then
@@ -649,6 +656,27 @@ export function mergeWorktree(
     }
   }
 
+  // mergeGate: project-owned pre-merge enforcement. Runs after the running-
+  // worker gate and before the git merge. Refusal → gateRefusal exit 2.
+  // Absent config = no-op. See src/gates.ts for the check semantics.
+  if (mergeGate) {
+    const gate = applyMergeGate({
+      projectRoot,
+      worktreePath,
+      issueNumber: extractIssueNumber(branch),
+      mode: extractMode(branch),
+      config: mergeGate,
+    });
+    if (!gate.ok) {
+      return {
+        success: false,
+        phase: "gate",
+        gateRefusal: true,
+        message: gate.message ?? "mergeGate refused (no message).",
+      };
+    }
+  }
+
   let headBefore: string;
   try {
     headBefore = execSync("git rev-parse HEAD", {
@@ -665,12 +693,14 @@ export function mergeWorktree(
     };
   }
 
-  // Phase 1: merge
+  // Phase 1: merge. DANGERESQUE_MERGE=1 is exported so consumer git hooks
+  // can distinguish a dangeresque-orchestrated merge from a direct commit.
   try {
     execSync(`git merge ${branch}`, {
       cwd: projectRoot,
       encoding: "utf-8",
       stdio: "pipe",
+      env: { ...process.env, DANGERESQUE_MERGE: "1" },
     });
   } catch (err) {
     return {

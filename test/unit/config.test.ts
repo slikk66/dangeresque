@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   loadConfig,
   normalizeScopeOpportunisticConfig,
+  normalizeDispatchGateConfig,
+  normalizeMergeGateConfig,
   validateSetup,
   validateEngineRuntime,
   agentMdHasPointer,
@@ -13,6 +15,8 @@ import {
   projectHash,
   CONFIG_DIR,
   POINTER_BLOCK,
+  DEFAULT_DISPATCH_GATE_MODES,
+  DEFAULT_MERGE_GATE_MODES,
 } from "#dist/config.js";
 
 function makeTmp(): string {
@@ -554,4 +558,236 @@ test("normalizeScopeOpportunisticConfig: null/undefined → defaults", () => {
   assert.equal(b.maxFiles, 1);
   assert.equal(a.maxLines, 20);
   assert.ok(a.denyGlobs.length > 0);
+});
+
+// --- dispatchGate / mergeGate config parsing (fail-closed) ---
+
+test("normalizeDispatchGateConfig: absent (undefined/null) → undefined (gate off)", () => {
+  assert.equal(normalizeDispatchGateConfig(undefined), undefined);
+  assert.equal(normalizeDispatchGateConfig(null), undefined);
+});
+
+test("normalizeDispatchGateConfig: empty object → defaults (enabled=false, all modes, requireInvestigate=true, no commands)", () => {
+  const cfg = normalizeDispatchGateConfig({})!;
+  assert.equal(cfg.enabled, false);
+  assert.deepEqual(cfg.modes, DEFAULT_DISPATCH_GATE_MODES);
+  assert.equal(cfg.requireInvestigateBeforeImplement, true);
+  assert.deepEqual(cfg.commands, []);
+});
+
+test("normalizeDispatchGateConfig: full valid block round-trips", () => {
+  const cfg = normalizeDispatchGateConfig({
+    enabled: true,
+    modes: ["implement", "REFACTOR"],
+    requireInvestigateBeforeImplement: false,
+    commands: [
+      { name: "policy", cmd: "true", on_failure: "block", timeout_ms: 5000 },
+      { name: "advisory", cmd: "false", on_failure: "warn" },
+    ],
+  })!;
+  assert.equal(cfg.enabled, true);
+  assert.deepEqual(cfg.modes, ["IMPLEMENT", "REFACTOR"]);
+  assert.equal(cfg.requireInvestigateBeforeImplement, false);
+  assert.equal(cfg.commands.length, 2);
+  assert.equal(cfg.commands[0].on_failure, "block");
+  assert.equal(cfg.commands[0].timeout_ms, 5000);
+  assert.equal(cfg.commands[1].on_failure, "warn");
+  assert.ok(cfg.commands[1].timeout_ms > 0, "timeout_ms defaults to positive");
+});
+
+test("normalizeDispatchGateConfig: non-object → throws", () => {
+  assert.throws(() => normalizeDispatchGateConfig("hi"), /must be an object/);
+  assert.throws(() => normalizeDispatchGateConfig([]), /must be an object.*array/);
+});
+
+test("normalizeDispatchGateConfig: enabled non-boolean → throws", () => {
+  assert.throws(
+    () => normalizeDispatchGateConfig({ enabled: "yes" }),
+    /dispatchGate\.enabled must be a boolean/,
+  );
+});
+
+test("normalizeDispatchGateConfig: modes not string[] → throws", () => {
+  assert.throws(
+    () => normalizeDispatchGateConfig({ modes: [1, 2] }),
+    /dispatchGate\.modes must be an array of strings/,
+  );
+});
+
+test("normalizeDispatchGateConfig: command missing name → throws with index", () => {
+  assert.throws(
+    () =>
+      normalizeDispatchGateConfig({
+        commands: [{ cmd: "true", on_failure: "block" }],
+      }),
+    /dispatchGate\.commands\[0\] is missing required non-empty string field 'name'/,
+  );
+});
+
+test("normalizeDispatchGateConfig: command missing cmd → throws referencing name", () => {
+  assert.throws(
+    () =>
+      normalizeDispatchGateConfig({
+        commands: [{ name: "policy", on_failure: "block" }],
+      }),
+    /dispatchGate\.commands\[0\] \(policy\) is missing required non-empty string field 'cmd'/,
+  );
+});
+
+test("normalizeDispatchGateConfig: invalid on_failure → throws", () => {
+  assert.throws(
+    () =>
+      normalizeDispatchGateConfig({
+        commands: [{ name: "x", cmd: "y", on_failure: "explode" }],
+      }),
+    /has invalid on_failure "explode"/,
+  );
+});
+
+test("normalizeDispatchGateConfig: invalid timeout_ms → throws", () => {
+  assert.throws(
+    () =>
+      normalizeDispatchGateConfig({
+        commands: [{ name: "x", cmd: "y", timeout_ms: 0 }],
+      }),
+    /has invalid timeout_ms 0/,
+  );
+  assert.throws(
+    () =>
+      normalizeDispatchGateConfig({
+        commands: [{ name: "x", cmd: "y", timeout_ms: "5s" }],
+      }),
+    /has invalid timeout_ms 5s/,
+  );
+});
+
+test("normalizeDispatchGateConfig: unknown top-level field → throws (strict-key check)", () => {
+  assert.throws(
+    () => normalizeDispatchGateConfig({ enabled: true, typo: "oops" }),
+    /dispatchGate has unknown field 'typo'/,
+  );
+});
+
+test("normalizeDispatchGateConfig: unknown command field → throws (strict-key check)", () => {
+  assert.throws(
+    () =>
+      normalizeDispatchGateConfig({
+        commands: [{ name: "x", cmd: "y", retries: 3 }],
+      }),
+    /dispatchGate\.commands\[0\] \(x\) has unknown field 'retries'/,
+  );
+});
+
+test("normalizeMergeGateConfig: absent → undefined", () => {
+  assert.equal(normalizeMergeGateConfig(undefined), undefined);
+  assert.equal(normalizeMergeGateConfig(null), undefined);
+});
+
+test("normalizeMergeGateConfig: empty object → defaults (mergeGate modes = IMPLEMENT/REFACTOR/TEST)", () => {
+  const cfg = normalizeMergeGateConfig({})!;
+  assert.equal(cfg.enabled, false);
+  assert.deepEqual(cfg.modes, DEFAULT_MERGE_GATE_MODES);
+  assert.equal(cfg.requireAcceptedImplement, true);
+  assert.deepEqual(cfg.commands, []);
+});
+
+test("normalizeMergeGateConfig: enabled non-boolean → throws", () => {
+  assert.throws(
+    () => normalizeMergeGateConfig({ enabled: 1 }),
+    /mergeGate\.enabled must be a boolean/,
+  );
+});
+
+test("normalizeMergeGateConfig: requireAcceptedImplement non-boolean → throws", () => {
+  assert.throws(
+    () => normalizeMergeGateConfig({ requireAcceptedImplement: "no" }),
+    /mergeGate\.requireAcceptedImplement must be a boolean/,
+  );
+});
+
+test("normalizeMergeGateConfig: valid block round-trips", () => {
+  const cfg = normalizeMergeGateConfig({
+    enabled: true,
+    modes: ["IMPLEMENT"],
+    requireAcceptedImplement: false,
+    commands: [{ name: "guard", cmd: "true", on_failure: "block", timeout_ms: 10000 }],
+  })!;
+  assert.equal(cfg.enabled, true);
+  assert.deepEqual(cfg.modes, ["IMPLEMENT"]);
+  assert.equal(cfg.requireAcceptedImplement, false);
+  assert.equal(cfg.commands.length, 1);
+});
+
+test("normalizeMergeGateConfig: unknown top-level field → throws (strict-key check)", () => {
+  assert.throws(
+    () => normalizeMergeGateConfig({ enabled: true, ttl: 60 }),
+    /mergeGate has unknown field 'ttl'/,
+  );
+});
+
+test("normalizeMergeGateConfig: unknown command field → throws (strict-key check)", () => {
+  assert.throws(
+    () =>
+      normalizeMergeGateConfig({
+        commands: [{ name: "guard", cmd: "true", extra: "?" }],
+      }),
+    /mergeGate\.commands\[0\] \(guard\) has unknown field 'extra'/,
+  );
+});
+
+test("loadConfig: dispatchGate + mergeGate blocks merged from JSON", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({
+        dispatchGate: {
+          enabled: true,
+          commands: [{ name: "policy", cmd: "true" }],
+        },
+        mergeGate: {
+          enabled: true,
+          modes: ["IMPLEMENT"],
+        },
+      }),
+    );
+    const cfg = loadConfig(tmp);
+    assert.equal(cfg.dispatchGate?.enabled, true);
+    assert.equal(cfg.dispatchGate?.commands.length, 1);
+    assert.equal(cfg.dispatchGate?.commands[0].on_failure, "block", "on_failure defaults to block when omitted");
+    assert.equal(cfg.mergeGate?.enabled, true);
+    assert.deepEqual(cfg.mergeGate?.modes, ["IMPLEMENT"]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: absent gate blocks → both undefined (backwards-compat, gates off)", () => {
+  const tmp = makeTmp();
+  try {
+    const cfg = loadConfig(tmp);
+    assert.equal(cfg.dispatchGate, undefined);
+    assert.equal(cfg.mergeGate, undefined);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: malformed dispatchGate → throws at load time (fail closed)", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({
+        dispatchGate: {
+          commands: [{ name: "no-cmd" }],
+        },
+      }),
+    );
+    assert.throws(() => loadConfig(tmp), /dispatchGate\.commands\[0\] \(no-cmd\) is missing required non-empty string field 'cmd'/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

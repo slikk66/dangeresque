@@ -16,6 +16,7 @@ import {
 } from "./artifact.js";
 import { normalizeSummaryFileCount } from "./summary.js";
 import { runVerification, shouldRunVerify, type VerificationOutcome } from "./verify.js";
+import { applyDispatchGate } from "./gates.js";
 import {
   listWorktrees,
   mergeWorktree,
@@ -448,6 +449,24 @@ async function cmdRun(args: string[]) {
     const preflight = runPreflightChecks(projectRoot, issueNumber, effectiveMode, { force });
     if (!preflight.ok) {
       console.error(preflight.message);
+      process.exit(2);
+    }
+  }
+
+  // dispatchGate: project-owned enforcement point between preflight and the
+  // actual worker spawn. Refusal exits 2 (fail closed). Only runs when the
+  // block is present + enabled; absent = no-op. Consumer scripts see the
+  // issue and mode via DANGERESQUE_ISSUE / DANGERESQUE_MODE env vars.
+  if (issueNumber !== undefined && config.dispatchGate) {
+    const gate = applyDispatchGate({
+      projectRoot,
+      issueNumber,
+      mode: effectiveMode,
+      config: config.dispatchGate,
+      force,
+    });
+    if (!gate.ok) {
+      console.error(gate.message ?? "dispatchGate refused (no message).");
       process.exit(2);
     }
   }
@@ -992,7 +1011,8 @@ async function cmdMerge(args: string[]) {
   try {
     assertInMainCheckout(projectRoot, "merge");
     const resolved = resolveBranch(projectRoot, chosen);
-    const result = mergeWorktree(projectRoot, resolved);
+    const config = loadConfig(projectRoot);
+    const result = mergeWorktree(projectRoot, resolved, config.mergeGate);
 
     if (result.success) {
       console.log(result.message);

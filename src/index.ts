@@ -2,10 +2,24 @@ export {
   loadConfig,
   validateSetup,
   resolveProjectRoot,
+  normalizeDispatchGateConfig,
+  normalizeMergeGateConfig,
   type DangeresqueConfig,
+  type DispatchGateConfig,
+  type MergeGateConfig,
   type ValidationResult,
   CONFIG_DIR,
+  DEFAULT_DISPATCH_GATE_MODES,
+  DEFAULT_MERGE_GATE_MODES,
 } from "./config.js";
+
+export {
+  applyDispatchGate,
+  applyMergeGate,
+  type GateResult,
+  type ApplyDispatchGateOptions,
+  type ApplyMergeGateOptions,
+} from "./gates.js";
 
 export {
   runWorker,

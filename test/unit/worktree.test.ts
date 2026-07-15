@@ -61,6 +61,24 @@ test("extractMode: unparseable branch → UNKNOWN", () => {
   assert.equal(extractMode("random-branch"), "UNKNOWN");
 });
 
+test("extractMode: descriptive slug after issue number → mode (mirror of extractIssueNumber fix)", () => {
+  // Twin of the extractIssueNumber slug-tolerance fix (commit 185f488). Before
+  // this fix, slug-suffixed branches returned UNKNOWN, silently disabling
+  // gates keyed on the mode (mergeGate).
+  assert.equal(
+    extractMode("worktree-dangeresque-implement-42-round2"),
+    "IMPLEMENT",
+  );
+  assert.equal(
+    extractMode("worktree-dangeresque-investigate-537-dicecursor"),
+    "INVESTIGATE",
+  );
+  assert.equal(
+    extractMode("worktree-dangeresque-refactor-88-p1-cleanup"),
+    "REFACTOR",
+  );
+});
+
 test("parseSummaryBlock: valid block extracted", () => {
   const content = [
     "<!-- SUMMARY -->",
@@ -1344,6 +1362,227 @@ test("discardWorktree: stale claude session lock (dead pid) → discards cleanly
     assert.equal(result.success, true, `expected success, got: ${result.message}`);
     assert.equal(existsSync(worktreePath), false);
     assert.equal(branchExists(dir, "worktree-stale-lock-discard"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- mergeGate integration (#85) ---
+
+function seedImplementAcceptArtifact(
+  worktreePath: string,
+  issueNumber: number,
+  stamp: string,
+  overrides: { reviewer_verdict?: string; skipped?: boolean } = {},
+): void {
+  const dir = join(worktreePath, ".dangeresque", "runs", `issue-${issueNumber}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${stamp}-IMPLEMENT.md`), "# implement body\n");
+  const artifact = {
+    schema_version: "6",
+    mode: "IMPLEMENT",
+    review: overrides.skipped
+      ? { skipped: true, skip_reason: "test", started_at: "", ended_at: "", duration_ms: 0, exit_code: 0 }
+      : { skipped: false, started_at: "", ended_at: "", duration_ms: 0, exit_code: 0 },
+    reviewer_verdict: overrides.reviewer_verdict ?? "accept",
+  };
+  writeFileSync(join(dir, `${stamp}-IMPLEMENT.json`), JSON.stringify(artifact));
+}
+
+test("mergeWorktree: mergeGate refuses IMPLEMENT merge when review was skipped (fail closed)", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-101",
+      "worktree-dangeresque-implement-101",
+    );
+    seedImplementAcceptArtifact(worktreePath, 101, "2026-06-01T00-00-00", {
+      skipped: true,
+      reviewer_verdict: "skipped",
+    });
+
+    const result = mergeWorktree(dir, "worktree-dangeresque-implement-101", {
+      enabled: true,
+      modes: ["IMPLEMENT", "REFACTOR", "TEST"],
+      requireAcceptedImplement: true,
+      commands: [],
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.phase, "gate");
+    assert.equal(result.gateRefusal, true);
+    assert.match(result.message, /mergeGate refuses/);
+    assert.match(result.message, /review\.skipped=true/);
+    assert.equal(existsSync(worktreePath), true, "worktree preserved on gate refusal");
+    assert.equal(branchExists(dir, "worktree-dangeresque-implement-101"), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: mergeGate allows IMPLEMENT merge when review verdict=accept", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-102",
+      "worktree-dangeresque-implement-102",
+    );
+    seedImplementAcceptArtifact(worktreePath, 102, "2026-06-01T00-00-00");
+
+    const result = mergeWorktree(dir, "worktree-dangeresque-implement-102", {
+      enabled: true,
+      modes: ["IMPLEMENT", "REFACTOR", "TEST"],
+      requireAcceptedImplement: true,
+      commands: [],
+    });
+
+    assert.equal(result.success, true, `expected success, got: ${result.message}`);
+    assert.equal(existsSync(worktreePath), false);
+    assert.equal(branchExists(dir, "worktree-dangeresque-implement-102"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: mergeGate lets INVESTIGATE no-op merge pass through (mode not in modes)", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-investigate-103",
+      "worktree-dangeresque-investigate-103",
+      { advance: false },
+    );
+    const runsDir = join(worktreePath, ".dangeresque", "runs", "issue-103");
+    mkdirSync(runsDir, { recursive: true });
+    writeFileSync(join(runsDir, "2026-06-01T00-00-00-INVESTIGATE.md"), "# body\n");
+
+    const result = mergeWorktree(dir, "worktree-dangeresque-investigate-103", {
+      enabled: true,
+      modes: ["IMPLEMENT", "REFACTOR", "TEST"],
+      requireAcceptedImplement: true,
+      commands: [],
+    });
+
+    assert.equal(result.success, true, `expected success, got: ${result.message}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: absent mergeGate config is a no-op (existing behavior preserved)", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(dir, "no-gate", "worktree-no-gate");
+    const result = mergeWorktree(dir, "worktree-no-gate");
+    assert.equal(result.success, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: mergeGate blocking command failure → gateRefusal", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-104",
+      "worktree-dangeresque-implement-104",
+    );
+    seedImplementAcceptArtifact(worktreePath, 104, "2026-06-01T00-00-00");
+
+    const result = mergeWorktree(dir, "worktree-dangeresque-implement-104", {
+      enabled: true,
+      modes: ["IMPLEMENT", "REFACTOR", "TEST"],
+      requireAcceptedImplement: true,
+      commands: [
+        { name: "guard", cmd: "exit 7", on_failure: "block", timeout_ms: 5000 },
+      ],
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.gateRefusal, true);
+    assert.equal(result.phase, "gate");
+    assert.match(result.message, /command "guard" \(exit=7\)/);
+    assert.equal(existsSync(worktreePath), true);
+    assert.equal(branchExists(dir, "worktree-dangeresque-implement-104"), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: git merge sees DANGERESQUE_MERGE=1 in its environment (post-merge hook captures it)", () => {
+  const dir = makeRepo();
+  try {
+    // Point core.hooksPath at a test hooks dir. post-merge fires for any
+    // successful `git merge` (including fast-forward), so the capture proves
+    // the merge child inherited DANGERESQUE_MERGE=1 from mergeWorktree's env.
+    const hooksDir = join(dir, ".git-hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    const captureFile = join(dir, "env-capture.txt");
+    const hookPath = join(hooksDir, "post-merge");
+    writeFileSync(
+      hookPath,
+      `#!/bin/sh\nprintf 'DANGERESQUE_MERGE=%s' "$DANGERESQUE_MERGE" > "${captureFile}"\n`,
+    );
+    execSync(`chmod +x "${hookPath}"`, env(dir));
+    execSync(`git config core.hooksPath "${hooksDir}"`, env(dir));
+
+    addWorktree(dir, "env-merge", "worktree-env-merge");
+    const result = mergeWorktree(dir, "worktree-env-merge");
+    assert.equal(result.success, true, `expected success, got: ${result.message}`);
+    assert.equal(existsSync(captureFile), true, "post-merge hook must have fired");
+    assert.equal(readFileSync(captureFile, "utf-8"), "DANGERESQUE_MERGE=1");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: mergeGate refuses slug-suffixed IMPLEMENT branch when accept missing (extractMode slug regression guard)", () => {
+  // Regression guard for the extractMode fail-open hole (#85 review reject):
+  // before the extractMode + applyMergeGate fixes, this branch name resolved
+  // to mode=UNKNOWN, the modes-in-list check returned early, and the merge
+  // slipped through silently. With the fix, extractMode returns IMPLEMENT
+  // AND applyMergeGate would fail closed even if it returned UNKNOWN.
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-201-round2",
+      "worktree-dangeresque-implement-201-round2",
+    );
+    // No IMPLEMENT artifact seeded — mergeGate's built-in check must refuse.
+    const result = mergeWorktree(dir, "worktree-dangeresque-implement-201-round2", {
+      enabled: true,
+      modes: ["IMPLEMENT", "REFACTOR", "TEST"],
+      requireAcceptedImplement: true,
+      commands: [],
+    });
+
+    assert.equal(result.success, false, "slug-suffixed IMPLEMENT branch must be gated");
+    assert.equal(result.phase, "gate");
+    assert.equal(result.gateRefusal, true);
+    assert.match(result.message, /mergeGate refuses to merge \(IMPLEMENT\)/);
+    assert.match(result.message, /issue #201/);
+    assert.equal(existsSync(worktreePath), true, "worktree preserved on gate refusal");
+    assert.equal(branchExists(dir, "worktree-dangeresque-implement-201-round2"), true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

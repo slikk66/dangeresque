@@ -78,11 +78,14 @@ export function shouldRunVerify(mode: string, config: VerifyConfig): boolean {
  * Run a single verification command synchronously in `worktreePath`.
  * Captures stdout/stderr (last `maxLogBytes` bytes), exit code, duration,
  * and a `timed_out` flag. Never throws; failures are recorded in the result.
+ * Optional `env` is merged on top of `process.env` (gates use it to inject
+ * DANGERESQUE_ISSUE / DANGERESQUE_MODE / DANGERESQUE_MERGE for consumer scripts).
  */
 export function runSingleCommand(
   command: VerifyCommand,
   worktreePath: string,
   maxLogBytes: number,
+  env?: Record<string, string>,
 ): VerificationResult {
   const startedAt = Date.now();
   const proc = spawnSync(command.cmd, {
@@ -93,6 +96,7 @@ export function runSingleCommand(
     killSignal: "SIGKILL",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
+    env: env ? { ...process.env, ...env } : process.env,
   });
   const endedAt = Date.now();
 

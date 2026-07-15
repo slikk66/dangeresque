@@ -30,6 +30,8 @@
 | `notifications`   | boolean  | `true`               | Enable macOS notification hooks                                                                    |
 | `verify`          | object   | _(empty commands)_   | Pre-review verification hook — see the [Verification](#verification-pre-review-hook) section below |
 | `scope`           | object   | _(see Opportunistic)_ | Scope subsystem policy. `scope.opportunistic` controls the per-project drive-by budget — see [Opportunistic Drive-by Fixes in `docs/SCOPE.md`](SCOPE.md#opportunistic-drive-by-fixes) |
+| `dispatchGate`    | object   | _(absent → off)_     | Pre-worker enforcement gate — see the [Gates](#gates-dispatch--merge) section below |
+| `mergeGate`       | object   | _(absent → off)_     | Pre-merge enforcement gate — see the [Gates](#gates-dispatch--merge) section below |
 
 ## Engines (claude vs codex)
 
@@ -123,3 +125,110 @@ Operator escape hatches:
 - Drop the offending command from `commands`.
 
 Empty `commands` array (the default) means no-op; opt in by listing commands.
+
+## Gates (dispatch + merge)
+
+Dangeresque exposes two optional fail-closed enforcement points that a consumer project can wire up to physically block pipeline actions when its own checks say no. Unlike `verify` (which advises the reviewer), gates run at the surfaces where dispatch and merge actually execute — they cannot be bypassed by a reviewer verdict or by direct commits.
+
+Both blocks share the `verify`-command shape (`{name, cmd, on_failure: "block"|"warn", timeout_ms}`) and both are absent by default (no behavior change unless configured).
+
+**Fail-closed parsing.** Malformed gate config (missing `cmd`, invalid `on_failure`, non-boolean `enabled`, unknown field name, …) throws at `loadConfig` — every `dangeresque` command refuses to start until the config is fixed. This diverges intentionally from `verify`'s silent-drop behavior: a silently-dropped gate rule is a silently-lost enforcement guarantee.
+
+**Exit codes.** Any blocking gate failure produces exit code `2` (workflow refusal), distinct from `1` (real error). Consumers can distinguish "fix workflow and retry" from "something crashed."
+
+**Env vars for gate commands.** Each gate command is spawned with these variables merged into `process.env`:
+
+| Variable                  | dispatchGate     | mergeGate           | Meaning                                    |
+| ------------------------- | ---------------- | ------------------- | ------------------------------------------ |
+| `DANGERESQUE_ISSUE`       | issue number     | issue number (or "") | The issue this action is scoped to         |
+| `DANGERESQUE_MODE`        | dispatched mode  | merged branch mode  | e.g. `IMPLEMENT`, `INVESTIGATE`            |
+| `DANGERESQUE_MERGE`       | _(not set)_      | `1`                 | Marker that this is a mergeGate invocation |
+
+The `git merge` command itself also gets `DANGERESQUE_MERGE=1` — a consumer git hook (`pre-merge-commit`, `post-merge`, etc.) can distinguish a dangeresque-orchestrated merge from a direct commit via `[ -n "$DANGERESQUE_MERGE" ]`.
+
+### dispatchGate (pre-worker)
+
+Runs before `runWorker`. Refusal → exit 2, no worktree created, no engine spawned.
+
+```json
+{
+  "dispatchGate": {
+    "enabled": true,
+    "modes": ["INVESTIGATE", "IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
+    "requireInvestigateBeforeImplement": true,
+    "commands": [
+      {
+        "name": "issue-policy",
+        "cmd": "./scripts/dangeresque/check-issue.sh",
+        "on_failure": "block",
+        "timeout_ms": 30000
+      }
+    ]
+  }
+}
+```
+
+Fields:
+
+- `enabled` (boolean, default `false`) — master switch.
+- `modes` (string[], default: all supported modes) — which dispatched modes trigger the gate.
+- `requireInvestigateBeforeImplement` (boolean, default `true`) — built-in policy. Refuses a `--mode IMPLEMENT` dispatch when no prior `-INVESTIGATE.md` artifact exists under `projectRoot`'s `.dangeresque/runs/issue-<N>/`. `--force` bypasses.
+- `commands` — project-configured commands, run in `projectRoot`, in order. First `on_failure: "block"` failure refuses; `on_failure: "warn"` records but continues. `--force` does NOT bypass these (an operator wanting to relax them should set `on_failure: "warn"`).
+
+### mergeGate (pre-merge)
+
+Runs inside `mergeWorktree` between the running-worker check and the `git merge`. Refusal → exit 2, no merge attempted.
+
+```json
+{
+  "mergeGate": {
+    "enabled": true,
+    "modes": ["IMPLEMENT", "REFACTOR", "TEST"],
+    "requireAcceptedImplement": true,
+    "commands": [
+      {
+        "name": "release-notes-present",
+        "cmd": "./scripts/dangeresque/check-release-notes.sh",
+        "on_failure": "block",
+        "timeout_ms": 30000
+      }
+    ]
+  }
+}
+```
+
+Fields:
+
+- `enabled` (boolean, default `false`).
+- `modes` (string[], default `["IMPLEMENT", "REFACTOR", "TEST"]`) — merged-branch modes that trigger the gate. INVESTIGATE / VERIFY are no-op merges (they mirror artifacts but produce no code changes) and pass through by default. An UNKNOWN mode (e.g. an unparseable branch name) fails closed when the gate is enabled — defense in depth against silent branch-name drift.
+- `requireAcceptedImplement` (boolean, default `true`) — built-in policy. Refuses unless the latest `-IMPLEMENT.json` artifact for the issue shows `review.skipped === false` and `reviewer_verdict === "accept"`. Reads the worktree first (fresh IMPLEMENT being merged has its artifact there), falls back to `projectRoot` (for REFACTOR/TEST merges where an earlier IMPLEMENT was already merged). Missing / unreadable / skipped / non-accept → refuses (fail closed).
+- `commands` — project-configured commands, run in `projectRoot`, in order. Same semantics as `dispatchGate.commands`.
+
+### `--force` scope (dispatchGate)
+
+`dangeresque run --force` bypasses ONLY the built-in policy (`requireInvestigateBeforeImplement`), NOT the project-configured commands. This preserves the fail-closed guarantee for project-owned policy while giving operators an escape hatch for the built-in workflow rule.
+
+`dangeresque merge` does not currently expose a `--force`. If your mergeGate rejects a legitimate merge, either fix the underlying artifact state or temporarily set `mergeGate.requireAcceptedImplement: false` in config.
+
+### End-to-end example
+
+A minimal project-side config that requires (1) a prior INVESTIGATE for every IMPLEMENT, (2) a custom pre-dispatch script, and (3) an accepted-review + release-notes check before merge:
+
+```json
+{
+  "dispatchGate": {
+    "enabled": true,
+    "commands": [
+      { "name": "sanity", "cmd": "./scripts/precheck.sh", "on_failure": "block", "timeout_ms": 15000 }
+    ]
+  },
+  "mergeGate": {
+    "enabled": true,
+    "commands": [
+      { "name": "release-notes", "cmd": "./scripts/require-notes.sh", "on_failure": "block", "timeout_ms": 15000 }
+    ]
+  }
+}
+```
+
+The consumer scripts see `DANGERESQUE_ISSUE`, `DANGERESQUE_MODE`, and (for merge) `DANGERESQUE_MERGE=1` in their environment.

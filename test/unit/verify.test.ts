@@ -269,6 +269,38 @@ test("runSingleCommand: cwd is honored", () => {
   }
 });
 
+test("runSingleCommand: env parameter passes vars to the child process", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-verify-test-"));
+  try {
+    const capture = join(dir, "env.txt");
+    const cmd: VerifyCommand = {
+      name: "env-check",
+      cmd: `printf '%s|%s' "$DANGERESQUE_ISSUE" "$DANGERESQUE_MODE" > "${capture}"`,
+      on_failure: "block",
+      timeout_ms: 5000,
+    };
+    const result = runSingleCommand(cmd, dir, 8192, {
+      DANGERESQUE_ISSUE: "77",
+      DANGERESQUE_MODE: "IMPLEMENT",
+    });
+    assert.equal(result.exit_code, 0);
+    assert.equal(readFileSync(capture, "utf-8"), "77|IMPLEMENT");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSingleCommand: without env parameter, child inherits process.env (no override)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-verify-test-"));
+  try {
+    const cmd: VerifyCommand = { name: "ok", cmd: "true", on_failure: "block", timeout_ms: 5000 };
+    const result = runSingleCommand(cmd, dir, 8192);
+    assert.equal(result.exit_code, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runSingleCommand: timeout marks timed_out", () => {
   const dir = mkdtempSync(join(tmpdir(), "dangeresque-verify-test-"));
   try {
