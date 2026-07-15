@@ -36,6 +36,32 @@ test("parseVerdictFromMarkdown: missing verdict line → unknown", () => {
   assert.equal(parseVerdictFromMarkdown("no verdict anywhere"), "unknown");
 });
 
+test("parseVerdictFromMarkdown: bold verdict word (bc#624 receipt)", () => {
+  assert.equal(
+    parseVerdictFromMarkdown("- **Verdict:** **ACCEPT** — every gate passes"),
+    "accept",
+  );
+});
+
+test("parseVerdictFromMarkdown: plain unformatted label", () => {
+  assert.equal(parseVerdictFromMarkdown("Verdict: REJECT"), "reject");
+});
+
+test("parseVerdictFromMarkdown: colon outside bold", () => {
+  assert.equal(parseVerdictFromMarkdown("**Verdict**: ACCEPT"), "accept");
+});
+
+test("parseVerdictFromMarkdown: backticked verdict word", () => {
+  assert.equal(parseVerdictFromMarkdown("**Verdict:** `NEEDS_HUMAN_REVIEW`"), "needs_human_review");
+});
+
+test("parseVerdictFromMarkdown: prose 'accept' without Verdict label → unknown", () => {
+  assert.equal(
+    parseVerdictFromMarkdown("the reviewer chose to accept the change"),
+    "unknown",
+  );
+});
+
 test("parseGitRemoteSlug: ssh remote", () => {
   assert.equal(parseGitRemoteSlug("git@github.com:acme/widgets.git"), "acme/widgets");
 });
