@@ -113,16 +113,17 @@ export interface ApplyMergeGateOptions {
  * `gateRefusal: true`, which the CLI maps to exit 2.
  *
  * Order:
- *  1. Built-in policy: require the latest -IMPLEMENT.json artifact to show
+ *  1. Built-in policy: require the latest `-${mode}.json` artifact for the
+ *     merged branch's own mode M (as resolved by extractMode) to show
  *     review.skipped=false AND reviewer_verdict === "accept". Reads the
- *     worktree first (fresh IMPLEMENT being merged has its artifact there
+ *     worktree first (fresh mode-M run being merged has its artifact there
  *     but not yet at projectRoot), then falls back to projectRoot ONLY when
- *     the worktree has ZERO IMPLEMENT artifacts (for REFACTOR/TEST merges
- *     where the accepting IMPLEMENT was merged earlier). Any check failure
- *     on a root's latest artifact is TERMINAL — an older accepted artifact
- *     at projectRoot cannot override a rejected/skipped latest artifact in
- *     the worktree. Missing/unreadable/skipped/rejected → fail closed.
- *     `--force` bypasses.
+ *     the worktree has ZERO mode-M artifacts (e.g. a REFACTOR merge on an
+ *     issue that also had an earlier REFACTOR run mirrored to projectRoot).
+ *     Any check failure on a root's latest artifact is TERMINAL — an older
+ *     accepted artifact at projectRoot cannot override a rejected/skipped
+ *     latest artifact in the worktree. Missing/unreadable/skipped/rejected
+ *     → fail closed. `--force` bypasses.
  *  2. Project-configured commands: run each sequentially in projectRoot with
  *     DANGERESQUE_ISSUE / DANGERESQUE_MODE / DANGERESQUE_MERGE=1 env vars.
  */
@@ -158,7 +159,7 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
           `- cannot determine issue number from branch name (fail closed).`,
       };
     }
-    const check = findAcceptedImplementArtifact(worktreePath, projectRoot, issueNumber);
+    const check = findAcceptedArtifactForMode(worktreePath, projectRoot, issueNumber, mode);
     if (!check.ok) {
       return {
         ok: false,
@@ -166,7 +167,7 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
           `ERROR: mergeGate refuses to merge (${mode}) for issue #${issueNumber} because -\n` +
           `- ${check.reason}\n\n` +
           `Fix one of these:\n` +
-          `  dangeresque run --issue ${issueNumber} --mode IMPLEMENT\n` +
+          `  dangeresque run --issue ${issueNumber} --mode ${mode}\n` +
           `  (ensure the review pass runs and the reviewer returns ACCEPT)`,
       };
     }
@@ -253,18 +254,18 @@ function buildCommandFailureMessage(
   );
 }
 
-interface AcceptedImplementCheck {
+interface AcceptedArtifactCheck {
   ok: boolean;
   reason?: string;
 }
 
 /**
- * Locate the latest `-IMPLEMENT.json` artifact and check that review ran
- * with an "accept" verdict. Tries the worktree first (fresh IMPLEMENT being
- * merged has its artifact there but not yet at projectRoot), and falls back
- * to projectRoot ONLY when the worktree has ZERO IMPLEMENT artifacts (for
- * REFACTOR/TEST merges where the accepting IMPLEMENT landed at projectRoot
- * from an earlier merge).
+ * Locate the latest `-${mode}.json` artifact for the merged branch's own mode
+ * M (as resolved by extractMode) and check that review ran with an "accept"
+ * verdict. Tries the worktree first (fresh mode-M run being merged has its
+ * artifact there but not yet at projectRoot), and falls back to projectRoot
+ * ONLY when the worktree has ZERO mode-M artifacts (e.g. a repeat REFACTOR
+ * merge on an issue whose earlier REFACTOR was mirrored to projectRoot).
  *
  * Fail-closed: any check failure on a root's latest artifact is TERMINAL
  * — an older accepted artifact at projectRoot cannot silently override a
@@ -272,14 +273,16 @@ interface AcceptedImplementCheck {
  * fail-open hole where mirrorIssueRuns had copied round-1 artifacts into
  * a round-2 worktree, letting an old accept mask a new reject.
  */
-function findAcceptedImplementArtifact(
+function findAcceptedArtifactForMode(
   worktreePath: string,
   projectRoot: string,
   issueNumber: number,
-): AcceptedImplementCheck {
+  mode: string,
+): AcceptedArtifactCheck {
   const roots = worktreePath === projectRoot ? [projectRoot] : [worktreePath, projectRoot];
+  const suffix = `-${mode}.md`;
   for (const root of roots) {
-    const files = listArchivedRuns(root, issueNumber).filter((f) => f.endsWith("-IMPLEMENT.md"));
+    const files = listArchivedRuns(root, issueNumber).filter((f) => f.endsWith(suffix));
     if (files.length === 0) continue;
     const latest = files[files.length - 1];
     const mdPath = join(root, CONFIG_DIR, RUNS_DIR, `issue-${issueNumber}`, latest);
@@ -287,7 +290,7 @@ function findAcceptedImplementArtifact(
     if (!existsSync(jsonPath)) {
       return {
         ok: false,
-        reason: `latest IMPLEMENT artifact ${latest} has no sibling JSON at ${jsonPath}`,
+        reason: `latest ${mode} artifact ${latest} has no sibling JSON at ${jsonPath}`,
       };
     }
     let artifact: Partial<RunArtifact>;
@@ -296,33 +299,33 @@ function findAcceptedImplementArtifact(
     } catch (err) {
       return {
         ok: false,
-        reason: `latest IMPLEMENT artifact JSON unreadable (${jsonPath}): ${err instanceof Error ? err.message : String(err)}`,
+        reason: `latest ${mode} artifact JSON unreadable (${jsonPath}): ${err instanceof Error ? err.message : String(err)}`,
       };
     }
     const review = artifact.review;
     if (!review) {
       return {
         ok: false,
-        reason: `latest IMPLEMENT artifact has no review phase (${jsonPath})`,
+        reason: `latest ${mode} artifact has no review phase (${jsonPath})`,
       };
     }
     if (review.skipped) {
       return {
         ok: false,
-        reason: `latest IMPLEMENT artifact has review.skipped=true (${jsonPath}) — merge blocked by mergeGate.requireAcceptedImplement`,
+        reason: `latest ${mode} artifact has review.skipped=true (${jsonPath}) — merge blocked by mergeGate.requireAcceptedImplement`,
       };
     }
     if (artifact.reviewer_verdict !== "accept") {
       return {
         ok: false,
-        reason: `latest IMPLEMENT artifact reviewer_verdict is "${artifact.reviewer_verdict ?? "unknown"}", expected "accept" (${jsonPath})`,
+        reason: `latest ${mode} artifact reviewer_verdict is "${artifact.reviewer_verdict ?? "unknown"}", expected "accept" (${jsonPath})`,
       };
     }
     return { ok: true };
   }
   return {
     ok: false,
-    reason: `no IMPLEMENT artifact found for issue #${issueNumber} in worktree or project root`,
+    reason: `no ${mode} artifact found for issue #${issueNumber} in worktree or project root`,
   };
 }
 

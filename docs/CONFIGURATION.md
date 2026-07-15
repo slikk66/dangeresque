@@ -201,7 +201,7 @@ Fields:
 
 - `enabled` (boolean, default `false`).
 - `modes` (string[], default `["IMPLEMENT", "REFACTOR", "TEST"]`) — merged-branch modes that trigger the gate. INVESTIGATE / VERIFY are no-op merges (they mirror artifacts but produce no code changes) and pass through by default. An UNKNOWN mode (e.g. an unparseable branch name) fails closed when the gate is enabled — defense in depth against silent branch-name drift.
-- `requireAcceptedImplement` (boolean, default `true`) — built-in policy. Refuses unless the latest `-IMPLEMENT.json` artifact for the issue shows `review.skipped === false` and `reviewer_verdict === "accept"`. Reads the worktree first (fresh IMPLEMENT being merged has its artifact there), falls back to `projectRoot` (for REFACTOR/TEST merges where an earlier IMPLEMENT was already merged). Missing / unreadable / skipped / non-accept → refuses (fail closed).
+- `requireAcceptedImplement` (boolean, default `true`) — built-in policy. Refuses unless the latest `-${MODE}.json` artifact matching the merged branch's own mode M (as resolved by extractMode) shows `review.skipped === false` and `reviewer_verdict === "accept"`. Reads the worktree first (fresh mode-M run being merged has its artifact there), falls back to `projectRoot` ONLY when the worktree has zero mode-M artifacts (e.g. a repeat REFACTOR round on an issue whose earlier REFACTOR was mirrored to projectRoot). Missing / unreadable / skipped / non-accept → refuses (fail closed). Name is retained for config compatibility even though semantics are now mode-agnostic.
 - `commands` — project-configured commands, run in `projectRoot`, in order. Same semantics as `dispatchGate.commands`.
 
 ### `--force` scope (dispatchGate)

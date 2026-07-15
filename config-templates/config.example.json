@@ -46,7 +46,7 @@
     "enabled": false,
     "_doc_modes": "Merged-worktree modes that trigger the gate. Default = code-changing modes only; INVESTIGATE/VERIFY are no-op merges and pass through.",
     "modes": ["IMPLEMENT", "REFACTOR", "TEST"],
-    "_doc_requireAcceptedImplement": "Built-in: require latest -IMPLEMENT.json to show review.skipped=false AND reviewer_verdict='accept'. Reads worktree first (fresh IMPLEMENT), then projectRoot (REFACTOR/TEST modes). Missing / unreadable / skipped / non-accept → refuse (fail closed).",
+    "_doc_requireAcceptedImplement": "Built-in: require the latest -${MODE}.json artifact matching the merged branch's own mode (as resolved by extractMode) to show review.skipped=false AND reviewer_verdict='accept'. Reads worktree first (fresh mode-M run), then projectRoot ONLY when worktree has zero mode-M artifacts (e.g. repeat REFACTOR round on same issue). Missing / unreadable / skipped / non-accept → refuse (fail closed). Field name retained for config compatibility even though semantics are now mode-agnostic.",
     "requireAcceptedImplement": true,
     "commands": [
       { "name": "release-notes-present", "cmd": "./scripts/dangeresque/check-release-notes.sh", "on_failure": "block", "timeout_ms": 30000 }

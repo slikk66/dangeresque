@@ -157,7 +157,7 @@ export interface MergeGateConfig {
   enabled: boolean;
   /** Merged-worktree modes that trigger the gate. Default: code-changing modes only. */
   modes: string[];
-  /** Built-in: require latest IMPLEMENT artifact to show review.skipped=false + reviewer_verdict="accept". `--force` bypasses (not currently exposed for merge). */
+  /** Built-in: require the latest artifact matching the merged branch's own mode M (as resolved by extractMode) to show review.skipped=false + reviewer_verdict="accept". `--force` bypasses (not currently exposed for merge). */
   requireAcceptedImplement: boolean;
   /** Project-configured shell commands run in projectRoot with DANGERESQUE_ISSUE/MODE/MERGE=1 env vars. */
   commands: VerifyCommand[];

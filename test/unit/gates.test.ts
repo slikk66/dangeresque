@@ -32,9 +32,10 @@ function seedRun(
   return path;
 }
 
-function seedImplementArtifact(
+function seedRunArtifact(
   root: string,
   issueNumber: number,
+  mode: string,
   overrides: {
     reviewer_verdict?: string;
     review?: { skipped: boolean; skip_reason?: string } | null;
@@ -44,14 +45,14 @@ function seedImplementArtifact(
   } = {},
 ): void {
   const stamp = overrides.stamp ?? "2026-06-01T00-00-00";
-  seedRun(root, issueNumber, `${stamp}-IMPLEMENT.md`, "# implement body\n");
+  seedRun(root, issueNumber, `${stamp}-${mode}.md`, `# ${mode.toLowerCase()} body\n`);
   if (overrides.missingJson) return;
   const path = join(
     root,
     ".dangeresque",
     "runs",
     `issue-${issueNumber}`,
-    `${stamp}-IMPLEMENT.json`,
+    `${stamp}-${mode}.json`,
   );
   if (overrides.unreadableJson) {
     writeFileSync(path, "{not valid", "utf-8");
@@ -59,7 +60,7 @@ function seedImplementArtifact(
   }
   const artifact = {
     schema_version: "6",
-    mode: "IMPLEMENT",
+    mode,
     review:
       overrides.review === undefined
         ? { skipped: false, started_at: "", ended_at: "", duration_ms: 0, exit_code: 0 }
@@ -67,6 +68,14 @@ function seedImplementArtifact(
     reviewer_verdict: overrides.reviewer_verdict ?? "accept",
   };
   writeFileSync(path, JSON.stringify(artifact), "utf-8");
+}
+
+function seedImplementArtifact(
+  root: string,
+  issueNumber: number,
+  overrides: Parameters<typeof seedRunArtifact>[3] = {},
+): void {
+  seedRunArtifact(root, issueNumber, "IMPLEMENT", overrides);
 }
 
 function makeDispatchGateConfig(
@@ -378,11 +387,11 @@ test("applyMergeGate: IMPLEMENT with verdict=accept in worktree → passes", () 
   }
 });
 
-test("applyMergeGate: REFACTOR — accepted IMPLEMENT lives at projectRoot from prior merge → passes", () => {
+test("applyMergeGate: REFACTOR — accepted REFACTOR lives at projectRoot from prior merge → passes", () => {
   const tmp = makeTmp("dangeresque-gate-");
   const worktree = makeTmp("dangeresque-gate-wt-");
   try {
-    seedImplementArtifact(tmp, 42, { reviewer_verdict: "accept" });
+    seedRunArtifact(tmp, 42, "REFACTOR", { reviewer_verdict: "accept" });
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
@@ -734,16 +743,16 @@ test("applyMergeGate: unreadable-JSON latest in worktree + accepted at projectRo
   }
 });
 
-test("applyMergeGate: worktree has zero IMPLEMENT artifacts → projectRoot fallback still works (unchanged)", () => {
+test("applyMergeGate: worktree has zero REFACTOR artifacts → projectRoot fallback still works (unchanged)", () => {
   // Positive test to prove the fallback still functions when it should:
-  // REFACTOR/TEST merges from a worktree with no IMPLEMENT artifact of
-  // its own must still fall back to the projectRoot's accepted IMPLEMENT
-  // from an earlier merge.
+  // a REFACTOR merge from a worktree with no mode-M artifact of its own
+  // must still fall back to the projectRoot's accepted REFACTOR from an
+  // earlier merge (e.g. a repeat REFACTOR round on the same issue).
   const tmp = makeTmp("dangeresque-gate-");
   const worktree = makeTmp("dangeresque-gate-wt-");
   try {
-    seedImplementArtifact(tmp, 504, { reviewer_verdict: "accept" });
-    // worktree intentionally has no IMPLEMENT artifact.
+    seedRunArtifact(tmp, 504, "REFACTOR", { reviewer_verdict: "accept" });
+    // worktree intentionally has no REFACTOR artifact.
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
@@ -752,6 +761,158 @@ test("applyMergeGate: worktree has zero IMPLEMENT artifacts → projectRoot fall
       config: makeMergeGateConfig(),
     });
     assert.equal(result.ok, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+// --- applyMergeGate: mode-M semantics — REFACTOR must NOT piggyback on IMPLEMENT ---
+
+test("applyMergeGate: REFACTOR merge with only IMPLEMENT artifact anywhere → refuses (mode-M, no piggyback)", () => {
+  // Regression guard for the fix that made mergeGate mode-aware: under the
+  // old semantics, a REFACTOR merge would silently satisfy the gate as long
+  // as any accepted IMPLEMENT existed on the issue. That masked whether the
+  // REFACTOR branch itself was ever reviewed. Under mode-M semantics, the
+  // gate must locate a REFACTOR artifact specifically.
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedRunArtifact(tmp, 60, "IMPLEMENT", { reviewer_verdict: "accept" });
+    // No REFACTOR artifact seeded anywhere.
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 60,
+      mode: "REFACTOR",
+      config: makeMergeGateConfig(),
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /no REFACTOR artifact found for issue #60/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+// --- applyMergeGate: TEST-mode (#86 primary repro + mirrors of the IMPLEMENT suite) ---
+
+test("applyMergeGate: TEST with verdict=accept in worktree → passes (#86 primary repro)", () => {
+  // Exact reproduction from issue #86 § Reproduction: on an issue with no
+  // IMPLEMENT run, a reviewed-and-accepted TEST branch must be allowed to
+  // merge. Before the mode-M fix, the gate looked only for `-IMPLEMENT.md`
+  // artifacts and refused.
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedRunArtifact(worktree, 86, "TEST", { reviewer_verdict: "accept" });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 86,
+      mode: "TEST",
+      config: makeMergeGateConfig(),
+    });
+    assert.equal(result.ok, true, `expected pass, got: ${result.message}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate: TEST with no artifact anywhere → refuses (fail closed, no-artifact wording)", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 86,
+      mode: "TEST",
+      config: makeMergeGateConfig(),
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /no TEST artifact found for issue #86/);
+    // The remediation hint must suggest the merged branch's mode, not IMPLEMENT.
+    assert.match(result.message!, /dangeresque run --issue 86 --mode TEST/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate: TEST with review skipped → refuses", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedRunArtifact(worktree, 86, "TEST", {
+      review: { skipped: true, skip_reason: "--no-review" },
+      reviewer_verdict: "skipped",
+    });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 86,
+      mode: "TEST",
+      config: makeMergeGateConfig(),
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /latest TEST artifact has review\.skipped=true/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate: TEST with verdict=reject → refuses", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedRunArtifact(worktree, 86, "TEST", { reviewer_verdict: "reject" });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 86,
+      mode: "TEST",
+      config: makeMergeGateConfig(),
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /latest TEST artifact reviewer_verdict is "reject"/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate: TEST — rejected latest in worktree + accepted older TEST at projectRoot → refuses (mode-M fail-open fallback closed)", () => {
+  // Direct mirror of the IMPLEMENT round-2 conflict test above, parameterized
+  // for TEST. The reject on the latest mode-M artifact in the worktree must be
+  // terminal — the older accepted mode-M artifact at projectRoot cannot mask it.
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedRunArtifact(tmp, 600, "TEST", {
+      stamp: "2026-05-01T00-00-00",
+      reviewer_verdict: "accept",
+    });
+    seedRunArtifact(worktree, 600, "TEST", {
+      stamp: "2026-06-01T00-00-00",
+      reviewer_verdict: "reject",
+    });
+
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 600,
+      mode: "TEST",
+      config: makeMergeGateConfig(),
+    });
+    assert.equal(
+      result.ok,
+      false,
+      "must refuse — reject in worktree cannot be masked by older accept at projectRoot",
+    );
+    assert.match(result.message!, /latest TEST artifact reviewer_verdict is "reject"/);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
     rmSync(worktree, { recursive: true, force: true });
