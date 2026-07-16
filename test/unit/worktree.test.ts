@@ -278,12 +278,23 @@ test("mergeWorktree: merge conflict → phase=merge, headAdvanced=false, main un
     assert.equal(result.phase, "merge");
     assert.equal(result.headAdvanced, false);
     assert.match(result.message, /did not occur|main is unchanged/i);
+    assert.match(result.message, /merge aborted — working tree restored/i);
+    assert.match(result.message, /conflict\.txt/);
 
     const headAfterCall = execSync("git rev-parse HEAD", env(dir)).toString().trim();
     assert.equal(headAfterCall, headBeforeCall);
     assert.equal(existsSync(worktreePath), true);
+
+    // #88: no MERGE_HEAD, no conflict markers — main checkout fully restored
+    assert.throws(() => execSync("git rev-parse -q --verify MERGE_HEAD", env(dir)));
+    assert.equal(execSync("git status --porcelain --untracked-files=no", env(dir)).toString().trim(), "");
+    assert.equal(readFileSync(join(dir, "conflict.txt"), "utf-8"), "main-version\n");
+
+    // subsequent merge attempt must not die on leftover merge state
+    const retry = mergeWorktree(dir, "worktree-charlie");
+    assert.equal(retry.success, false);
+    assert.doesNotMatch(retry.message, /unresolved conflict/i);
   } finally {
-    try { execSync("git merge --abort", env(dir)); } catch { /* ignore */ }
     rmSync(dir, { recursive: true, force: true });
   }
 });

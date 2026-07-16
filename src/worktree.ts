@@ -703,12 +703,80 @@ export function mergeWorktree(
       env: { ...process.env, DANGERESQUE_MERGE: "1" },
     });
   } catch (err) {
+    const mergeErr = err instanceof Error ? err.message : String(err);
+
+    // A conflicting merge leaves MERGE_HEAD + conflict markers in the main
+    // checkout even though the ref never moved — every later merge then dies
+    // with "unresolved conflict" until someone aborts (#88). Abort here so
+    // "Main is unchanged" is true of the working tree, not just the ref.
+    let midMerge = false;
+    try {
+      execSync("git rev-parse -q --verify MERGE_HEAD", {
+        cwd: projectRoot,
+        stdio: "pipe",
+      });
+      midMerge = true;
+    } catch {
+      // no MERGE_HEAD — merge never started, tree untouched
+    }
+
+    if (!midMerge) {
+      return {
+        success: false,
+        phase: "merge",
+        headAdvanced: false,
+        headBefore,
+        message: `Merge did not occur: ${mergeErr}. Main is unchanged at ${headBefore.slice(0, 8)}.`,
+      };
+    }
+
+    // List conflicts before aborting — the abort clears them.
+    let conflictNote = "";
+    try {
+      const conflicted = execSync("git diff --name-only --diff-filter=U", {
+        cwd: projectRoot,
+        encoding: "utf-8",
+        stdio: "pipe",
+      }).trim();
+      if (conflicted) {
+        conflictNote = `\nConflicting files:\n${conflicted
+          .split("\n")
+          .map((f) => `  ${f}`)
+          .join("\n")}`;
+      }
+    } catch {
+      // conflict listing is best-effort
+    }
+
+    try {
+      execSync("git merge --abort", {
+        cwd: projectRoot,
+        stdio: "pipe",
+      });
+    } catch (abortErr) {
+      return {
+        success: false,
+        phase: "merge",
+        headAdvanced: false,
+        headBefore,
+        message:
+          `Merge failed: ${mergeErr}\n` +
+          `Automatic 'git merge --abort' ALSO failed: ${abortErr instanceof Error ? abortErr.message : String(abortErr)}\n` +
+          `Main working tree is mid-merge. Recover manually:\n` +
+          `  git merge --abort` +
+          conflictNote,
+      };
+    }
+
     return {
       success: false,
       phase: "merge",
       headAdvanced: false,
       headBefore,
-      message: `Merge did not occur: ${err instanceof Error ? err.message : String(err)}. Main is unchanged at ${headBefore.slice(0, 8)}.`,
+      message:
+        `Merge did not occur: ${mergeErr}\n` +
+        `In-progress merge aborted — working tree restored. Main is unchanged at ${headBefore.slice(0, 8)}.` +
+        conflictNote,
     };
   }
 
