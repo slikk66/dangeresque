@@ -27,6 +27,23 @@ export type ReviewerVerdict =
   | "skipped"
   | "unknown";
 
+export interface SentinelCommit {
+  sha: string;
+  subject: string;
+}
+
+/**
+ * Written to the run artifact when `dangeresque merge --rescue` merges over a
+ * reviewed reject / needs_human_review verdict on the strength of a USER-
+ * approved micro-fix (bubble-craps CLAUDE.md 'MICRO-FIX LANE'). The audit trail
+ * lives WITH the run, not just in git log.
+ */
+export interface RescueRecord {
+  overridden_verdict: ReviewerVerdict;
+  sentinel_commits: SentinelCommit[];
+  rescued_at: string;
+}
+
 export type FailureCategory =
   | "worker_nonzero_exit"
   | "review_nonzero_exit"
@@ -88,6 +105,8 @@ export interface RunArtifact {
   scope_declaration?: ScopeDeclarationEntry[];
   scope_report?: ScopeReport;
   migrated_from_version?: number;
+  /** Set only by a `dangeresque merge --rescue`. Absent on every normal run. */
+  rescue?: RescueRecord;
 }
 
 export interface BuilderInit {
@@ -468,4 +487,37 @@ export function writeArtifact(artifact: RunArtifact, projectRoot: string): strin
 
 export function jsonPathForArchive(archivePath: string): string {
   return archivePath.replace(/\.md$/, ".json");
+}
+
+/**
+ * Annotate a run artifact (JSON + MD) with a RESCUE record after a
+ * `dangeresque merge --rescue`. Writes the structured record into the JSON and
+ * appends a human-readable RESCUE section to the MD, so the "what/who/which
+ * commits" audit lives with the run and survives the worktree teardown (the
+ * caller runs this BEFORE mirrorAllIssueRuns copies the artifact to the project
+ * root). Idempotent overwrite of `.rescue`.
+ */
+export function appendRescueRecord(
+  jsonPath: string,
+  mdPath: string,
+  record: RescueRecord,
+): void {
+  const artifact = JSON.parse(readFileSync(jsonPath, "utf-8")) as RunArtifact;
+  artifact.rescue = record;
+  writeFileSync(jsonPath, JSON.stringify(artifact, null, 2) + "\n", "utf-8");
+
+  const commitLines = record.sentinel_commits
+    .map((c) => `  - \`${c.sha.slice(0, 8)}\` ${c.subject}`)
+    .join("\n");
+  const section =
+    `\n## RESCUE — USER-approved micro-fix merge\n\n` +
+    `Merged over a \`${record.overridden_verdict}\` review verdict via ` +
+    `\`dangeresque merge --rescue\`. Verification gates still ran; only the ` +
+    `round-2 worker round-trip was waived.\n\n` +
+    `- Overridden verdict: \`${record.overridden_verdict}\`\n` +
+    `- Rescued at: ${record.rescued_at}\n` +
+    `- Sentinel commits (USER-approved):\n${commitLines}\n`;
+  const existing = existsSync(mdPath) ? readFileSync(mdPath, "utf-8") : "";
+  const sep = existing.length === 0 || existing.endsWith("\n") ? "" : "\n";
+  writeFileSync(mdPath, existing + sep + section, "utf-8");
 }

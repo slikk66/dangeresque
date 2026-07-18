@@ -12,13 +12,25 @@ import {
 // the CLI ever dispatches — the merge-side fail-closed check must recognize
 // every legitimate mode, not just merge-gated ones.
 import { listArchivedRuns } from "./worktree.js";
-import { jsonPathForArchive, type RunArtifact } from "./artifact.js";
+import {
+  jsonPathForArchive,
+  type RunArtifact,
+  type ReviewerVerdict,
+  type SentinelCommit,
+} from "./artifact.js";
 import {
   runSingleCommand,
   DEFAULT_VERIFY_LOG_BYTES,
   type VerifyCommand,
   type VerificationResult,
 } from "./verify.js";
+
+/**
+ * Commit-message sentinel a USER-approved micro-fix carries so `merge --rescue`
+ * can recognize it. Same literal string bubble-craps CLAUDE.md's MICRO-FIX LANE
+ * mandates and the #633 pre-commit hook keys on — ONE definition, shared.
+ */
+export const MICRO_FIX_SENTINEL = "[micro-fix: USER-approved]";
 
 /**
  * Result of applying a gate. `ok: false` maps to CLI exit 2 (gate refusal),
@@ -28,6 +40,19 @@ import {
 export interface GateResult {
   ok: boolean;
   message?: string;
+  /**
+   * Set only when a `merge --rescue` was approved: the review verdict that was
+   * overridden plus the artifact paths the caller must annotate with a RESCUE
+   * record. Absent on every non-rescue pass.
+   */
+  rescue?: MergeRescueDecision;
+}
+
+export interface MergeRescueDecision {
+  overriddenVerdict: ReviewerVerdict;
+  sentinelCommits: SentinelCommit[];
+  jsonPath: string;
+  mdPath: string;
 }
 
 export interface ApplyDispatchGateOptions {
@@ -105,6 +130,20 @@ export interface ApplyMergeGateOptions {
    * Not currently exposed by `dangeresque merge`; reserved for API symmetry.
    */
   force?: boolean;
+  /**
+   * `--rescue` allows a merge over a reviewed `reject` / `needs_human_review`
+   * verdict IFF `sentinelCommits` is non-empty. Strictly narrower than `force`:
+   * it does NOT bypass a missing / skipped / unreadable / unknown review — only
+   * a real non-accept verdict from a review that actually ran. Verification
+   * commands still run regardless (the round-2 worker round-trip is the only
+   * thing waived). Encodes bubble-craps CLAUDE.md 'MICRO-FIX LANE'.
+   */
+  rescue?: boolean;
+  /**
+   * Commits on the merged branch carrying MICRO_FIX_SENTINEL, discovered by the
+   * caller (which owns git). Empty/absent ⇒ no sentinel ⇒ rescue refused.
+   */
+  sentinelCommits?: SentinelCommit[];
 }
 
 /**
@@ -128,7 +167,8 @@ export interface ApplyMergeGateOptions {
  *     DANGERESQUE_ISSUE / DANGERESQUE_MODE / DANGERESQUE_MERGE=1 env vars.
  */
 export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
-  const { projectRoot, worktreePath, issueNumber, mode, config, force } = opts;
+  const { projectRoot, worktreePath, issueNumber, mode, config, force, rescue } = opts;
+  const sentinelCommits = opts.sentinelCommits ?? [];
   if (!config.enabled) return { ok: true };
   // Unrecognized mode (e.g. extractMode returned "UNKNOWN" for a malformed
   // branch name) MUST fail closed when the gate is enabled — the modes-in-
@@ -150,6 +190,7 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
   }
   if (!config.modes.includes(mode)) return { ok: true };
 
+  let rescueDecision: MergeRescueDecision | undefined;
   if (!force && config.requireAcceptedImplement) {
     if (issueNumber === undefined) {
       return {
@@ -161,15 +202,58 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
     }
     const check = findAcceptedArtifactForMode(worktreePath, projectRoot, issueNumber, mode);
     if (!check.ok) {
-      return {
-        ok: false,
-        message:
-          `ERROR: mergeGate refuses to merge (${mode}) for issue #${issueNumber} because -\n` +
-          `- ${check.reason}\n\n` +
-          `Fix one of these:\n` +
-          `  dangeresque run --issue ${issueNumber} --mode ${mode}\n` +
-          `  (ensure the review pass runs and the reviewer returns ACCEPT)`,
-      };
+      const header =
+        `ERROR: mergeGate refuses to merge (${mode}) for issue #${issueNumber} because -\n`;
+      if (rescue) {
+        // Rescue is strictly narrower than force: it only overrides a review
+        // that RAN and returned a non-accept judgment on otherwise-good work.
+        const eligible =
+          check.verdict === "reject" || check.verdict === "needs_human_review";
+        if (!eligible) {
+          return {
+            ok: false,
+            message:
+              header +
+              `- --rescue applies only to a review that ran and returned reject or ` +
+              `needs_human_review; latest ${mode} artifact state is ` +
+              `"${check.verdict ?? "no readable artifact"}" (${check.reason}).\n` +
+              `  Rescue cannot substitute for a missing, skipped, or unparseable ` +
+              `review — run the normal path.`,
+          };
+        }
+        if (sentinelCommits.length === 0) {
+          return {
+            ok: false,
+            message:
+              header +
+              `- --rescue requires a USER-approved micro-fix commit carrying the ` +
+              `sentinel "${MICRO_FIX_SENTINEL}" on the branch, but none was found.\n` +
+              `  Commit the approved fix with that sentinel in its message, then ` +
+              `merge --rescue.`,
+          };
+        }
+        // Approved. Fall through to the command gate — verification is NEVER
+        // waived by rescue; only the r2 worker round-trip is.
+        rescueDecision = {
+          overriddenVerdict: check.verdict!,
+          sentinelCommits,
+          jsonPath: check.jsonPath!,
+          mdPath: check.mdPath!,
+        };
+      } else {
+        return {
+          ok: false,
+          message:
+            header +
+            `- ${check.reason}\n\n` +
+            `Fix one of these:\n` +
+            `  dangeresque run --issue ${issueNumber} --mode ${mode}\n` +
+            `  (ensure the review pass runs and the reviewer returns ACCEPT)\n` +
+            `  dangeresque merge --rescue <branch>\n` +
+            `  (only after a USER-approved micro-fix commit on the branch;\n` +
+            `   applies to reject/needs_human_review verdicts, not skipped/missing reviews)`,
+        };
+      }
     }
   }
 
@@ -186,7 +270,7 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
       message: buildCommandFailureMessage("mergeGate", blocked, mode, issueNumber),
     };
   }
-  return { ok: true };
+  return rescueDecision ? { ok: true, rescue: rescueDecision } : { ok: true };
 }
 
 // Union of the two default mode lists so mergeGate's fail-closed check
@@ -257,6 +341,11 @@ function buildCommandFailureMessage(
 interface AcceptedArtifactCheck {
   ok: boolean;
   reason?: string;
+  /** The verdict read from the located artifact, when one was found & parsed. */
+  verdict?: ReviewerVerdict;
+  /** Paths to the located artifact — set whenever an artifact was found & parsed. */
+  jsonPath?: string;
+  mdPath?: string;
 }
 
 /**
@@ -313,15 +402,21 @@ function findAcceptedArtifactForMode(
       return {
         ok: false,
         reason: `latest ${mode} artifact has review.skipped=true (${jsonPath}) — merge blocked by mergeGate.requireAcceptedImplement`,
+        verdict: artifact.reviewer_verdict,
+        jsonPath,
+        mdPath,
       };
     }
     if (artifact.reviewer_verdict !== "accept") {
       return {
         ok: false,
         reason: `latest ${mode} artifact reviewer_verdict is "${artifact.reviewer_verdict ?? "unknown"}", expected "accept" (${jsonPath})`,
+        verdict: artifact.reviewer_verdict,
+        jsonPath,
+        mdPath,
       };
     }
-    return { ok: true };
+    return { ok: true, verdict: "accept", jsonPath, mdPath };
   }
   return {
     ok: false,

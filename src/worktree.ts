@@ -11,8 +11,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR, RUNS_DIR, PID_FILE, type MergeGateConfig } from "./config.js";
-import { jsonPathForArchive, type RunArtifact } from "./artifact.js";
-import { applyMergeGate } from "./gates.js";
+import {
+  jsonPathForArchive,
+  appendRescueRecord,
+  type RunArtifact,
+  type SentinelCommit,
+} from "./artifact.js";
+import { applyMergeGate, MICRO_FIX_SENTINEL, type MergeRescueDecision } from "./gates.js";
 
 /**
  * Resolve the ref reviewers should diff against. Worktrees branch from
@@ -610,6 +615,34 @@ export function extractMode(branch: string): string {
   return modeMatch ? modeMatch[1].toUpperCase() : "UNKNOWN";
 }
 
+/**
+ * Commits on `branch` not reachable from HEAD (the main checkout) whose message
+ * carries MICRO_FIX_SENTINEL — the USER-approved micro-fixes that authorize a
+ * `merge --rescue`. Message-content match in JS (not `git log --grep`) so the
+ * bracketed sentinel needs no shell/regex escaping. Best-effort: a git failure
+ * yields [] (⇒ rescue refuses, fail closed).
+ */
+export function findSentinelCommits(projectRoot: string, branch: string): SentinelCommit[] {
+  let raw: string;
+  try {
+    raw = execSync(
+      `git log --no-color --format=%H%x1f%s%x1f%b%x1e HEAD..${branch}`,
+      { cwd: projectRoot, encoding: "utf-8", stdio: "pipe", maxBuffer: 32 * 1024 * 1024 },
+    );
+  } catch {
+    return [];
+  }
+  const commits: SentinelCommit[] = [];
+  for (const record of raw.split("\x1e")) {
+    if (!record.trim()) continue;
+    const [sha = "", subject = "", body = ""] = record.replace(/^\n/, "").split("\x1f");
+    if (`${subject}\n${body}`.includes(MICRO_FIX_SENTINEL)) {
+      commits.push({ sha: sha.trim(), subject: subject.trim() });
+    }
+  }
+  return commits;
+}
+
 export type WorktreePhase = "merge" | "cleanup" | "branch-delete" | "noop" | "gate";
 
 export interface WorktreeOpResult {
@@ -632,6 +665,7 @@ export function mergeWorktree(
   projectRoot: string,
   branch: string,
   mergeGate?: MergeGateConfig,
+  rescue = false,
 ): WorktreeOpResult {
   // Gate: refuse if worker (engine or parent CLI) is still running. Without
   // this check git happily merges a branch whose worktree is mid-edit, then
@@ -659,6 +693,7 @@ export function mergeWorktree(
   // mergeGate: project-owned pre-merge enforcement. Runs after the running-
   // worker gate and before the git merge. Refusal → gateRefusal exit 2.
   // Absent config = no-op. See src/gates.ts for the check semantics.
+  let rescueDecision: MergeRescueDecision | undefined;
   if (mergeGate) {
     const gate = applyMergeGate({
       projectRoot,
@@ -666,6 +701,8 @@ export function mergeWorktree(
       issueNumber: extractIssueNumber(branch),
       mode: extractMode(branch),
       config: mergeGate,
+      rescue,
+      sentinelCommits: rescue ? findSentinelCommits(projectRoot, branch) : undefined,
     });
     if (!gate.ok) {
       return {
@@ -675,6 +712,7 @@ export function mergeWorktree(
         message: gate.message ?? "mergeGate refused (no message).",
       };
     }
+    rescueDecision = gate.rescue;
   }
 
   let headBefore: string;
@@ -807,6 +845,26 @@ export function mergeWorktree(
     ? `No commits merged (HEAD unchanged at ${headBefore.slice(0, 8)})`
     : `Merge succeeded — main is now at ${headAfter.slice(0, 8)} (was ${headBefore.slice(0, 8)})`;
 
+  // Rescue audit: the merge landed over a reviewed non-accept verdict on a
+  // USER-approved micro-fix. Annotate the run artifact with a RESCUE record
+  // BEFORE mirroring so the copy at projectRoot carries the audit trail. Best-
+  // effort: the merge already succeeded, so an annotation failure warns rather
+  // than fails the operation.
+  let rescueNote = "";
+  if (rescueDecision) {
+    try {
+      appendRescueRecord(rescueDecision.jsonPath, rescueDecision.mdPath, {
+        overridden_verdict: rescueDecision.overriddenVerdict,
+        sentinel_commits: rescueDecision.sentinelCommits,
+        rescued_at: new Date().toISOString(),
+      });
+      const shas = rescueDecision.sentinelCommits.map((c) => c.sha.slice(0, 7)).join(", ");
+      rescueNote = ` RESCUE: merged over "${rescueDecision.overriddenVerdict}" verdict on USER-approved micro-fix (${shas}); verification gates still ran.`;
+    } catch (err) {
+      rescueNote = ` RESCUE: merged over "${rescueDecision.overriddenVerdict}" verdict, but writing the RESCUE audit record to ${rescueDecision.jsonPath} FAILED: ${err instanceof Error ? err.message : String(err)} — record it manually.`;
+    }
+  }
+
   // Phase 2: worktree cleanup (worktreePath already resolved at top of function).
   // Mirror gitignored run artifacts out of the worktree before removing it, so
   // per-run history persists at the project root after merge. Driven by the
@@ -913,8 +971,8 @@ export function mergeWorktree(
     headBefore,
     headAfter,
     message: noopMerge
-      ? `Merged ${branch}: no code changes (HEAD unchanged at ${headBefore.slice(0, 7)}). ${mirrorNote}`.trim()
-      : `Merged ${branch} into main. Main: ${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}. ${mirrorNote}`.trim(),
+      ? `Merged ${branch}: no code changes (HEAD unchanged at ${headBefore.slice(0, 7)}). ${mirrorNote}${rescueNote}`.trim()
+      : `Merged ${branch} into main. Main: ${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}. ${mirrorNote}${rescueNote}`.trim(),
   };
 }
 

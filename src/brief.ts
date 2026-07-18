@@ -106,6 +106,7 @@ workflow loop:
 | \`dangeresque results --issue <N>\`   | Read the latest archived run for an issue                |
 | \`dangeresque stage <N>\`             | Post a \`[staged]\` comment to steer the next worker       |
 | \`dangeresque merge <branch>\`        | Merge worktree into main; **KEEPS the run report**       |
+| \`dangeresque merge --rescue\`        | Merge over a reject/needs_human_review verdict on a USER-approved \`[micro-fix: USER-approved]\` commit; verify gates STILL run |
 | \`dangeresque discard <branch>\`      | Drop worktree + branch; **DELETES the run report**       |
 | \`dangeresque stop <branch>\`         | Stop a running worker; leaves the worktree intact        |
 | \`dangeresque logs <branch>\`         | Snapshot or follow worker (or review) transcript         |

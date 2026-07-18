@@ -918,3 +918,200 @@ test("applyMergeGate: TEST — rejected latest in worktree + accepted older TEST
     rmSync(worktree, { recursive: true, force: true });
   }
 });
+
+// --- applyMergeGate: --rescue lane (dangeresque#87) ---
+
+const SENTINEL = [
+  { sha: "abc1234def", subject: "fix: clamp odds [micro-fix: USER-approved]" },
+];
+
+test("applyMergeGate --rescue: verdict=reject + sentinel present → passes, carries rescue record", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, { reviewer_verdict: "reject" });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+      rescue: true,
+      sentinelCommits: SENTINEL,
+    });
+    assert.equal(result.ok, true);
+    assert.ok(result.rescue, "rescue record must be present on an approved rescue");
+    assert.equal(result.rescue!.overriddenVerdict, "reject");
+    assert.deepEqual(result.rescue!.sentinelCommits, SENTINEL);
+    assert.match(result.rescue!.jsonPath, /issue-42\/.*-IMPLEMENT\.json$/);
+    assert.match(result.rescue!.mdPath, /issue-42\/.*-IMPLEMENT\.md$/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate --rescue: verdict=needs_human_review + sentinel present → passes", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, { reviewer_verdict: "needs_human_review" });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+      rescue: true,
+      sentinelCommits: SENTINEL,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.rescue!.overriddenVerdict, "needs_human_review");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate --rescue: verdict=reject but NO sentinel → refuses (fail closed)", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, { reviewer_verdict: "reject" });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+      rescue: true,
+      sentinelCommits: [],
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /--rescue requires a USER-approved micro-fix commit/);
+    assert.match(result.message!, /\[micro-fix: USER-approved\]/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate --rescue: review skipped (not a reviewed verdict) → refuses even with sentinel", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, {
+      reviewer_verdict: "skipped",
+      review: { skipped: true, skip_reason: "no-review" },
+    });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+      rescue: true,
+      sentinelCommits: SENTINEL,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /--rescue applies only to a review that ran/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate --rescue: no artifact at all → refuses even with sentinel (rescue is not force)", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+      rescue: true,
+      sentinelCommits: SENTINEL,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /--rescue applies only to a review that ran/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate --rescue: verification is NEVER waived — blocking command still refuses", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, { reviewer_verdict: "reject" });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig({
+        commands: [
+          {
+            name: "guard",
+            cmd: "printf 'verify failed\\n' >&2; exit 3",
+            on_failure: "block",
+            timeout_ms: 5000,
+          },
+        ],
+      }),
+      rescue: true,
+      sentinelCommits: SENTINEL,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /command "guard" \(exit=3\)/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate --rescue: verdict=accept → passes with NO rescue record (nothing to override)", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, { reviewer_verdict: "accept" });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+      rescue: true,
+      sentinelCommits: SENTINEL,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.rescue, undefined);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate: verdict=reject without --rescue → refusal now surfaces the rescue option", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, { reviewer_verdict: "reject" });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /reviewer_verdict is "reject"/);
+    assert.match(result.message!, /dangeresque merge --rescue/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});

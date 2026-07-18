@@ -21,6 +21,7 @@ import {
   mirrorAllIssueRuns,
   stopWorktree,
   runPreflightChecks,
+  findSentinelCommits,
   type WorktreeInfo,
 } from "#dist/worktree.js";
 
@@ -1594,6 +1595,109 @@ test("mergeWorktree: mergeGate refuses slug-suffixed IMPLEMENT branch when accep
     assert.match(result.message, /issue #201/);
     assert.equal(existsSync(worktreePath), true, "worktree preserved on gate refusal");
     assert.equal(branchExists(dir, "worktree-dangeresque-implement-201-round2"), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- findSentinelCommits + merge --rescue (dangeresque#87) ---
+
+const MICRO_FIX_SENTINEL = "[micro-fix: USER-approved]";
+
+test("findSentinelCommits: returns only branch commits carrying the sentinel", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "s1", "worktree-s1"); // 1 non-sentinel commit
+    writeFileSync(join(worktreePath, "fix.txt"), "patch\n");
+    execSync("git add fix.txt", env(worktreePath));
+    execSync(`git commit -m "fix: clamp odds ${MICRO_FIX_SENTINEL}"`, env(worktreePath));
+
+    const commits = findSentinelCommits(dir, "worktree-s1");
+    assert.equal(commits.length, 1, "only the sentinel-bearing commit counts");
+    assert.match(commits[0].subject, /clamp odds/);
+    assert.match(commits[0].sha, /^[0-9a-f]{40}$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("findSentinelCommits: branch with no sentinel commit → empty", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(dir, "s2", "worktree-s2");
+    assert.deepEqual(findSentinelCommits(dir, "worktree-s2"), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree --rescue: reject verdict + sentinel commit → merges, artifact gets RESCUE record", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const branch = "worktree-dangeresque-implement-777";
+    const worktreePath = addWorktree(dir, "dangeresque-implement-777", branch);
+    seedImplementAcceptArtifact(worktreePath, 777, "2026-06-01T00-00-00", {
+      reviewer_verdict: "reject",
+    });
+    // USER-approved micro-fix commit on the branch.
+    writeFileSync(join(worktreePath, "clamp.txt"), "clamp\n");
+    execSync("git add clamp.txt", env(worktreePath));
+    execSync(
+      `git commit -m "fix: clamp odds boundary ${MICRO_FIX_SENTINEL}"`,
+      env(worktreePath),
+    );
+
+    const result = mergeWorktree(
+      dir,
+      branch,
+      { enabled: true, modes: ["IMPLEMENT", "REFACTOR", "TEST"], requireAcceptedImplement: true, commands: [] },
+      true,
+    );
+
+    assert.equal(result.success, true, result.message);
+    assert.match(result.message, /RESCUE/);
+
+    const projectIssueDir = join(dir, ".dangeresque", "runs", "issue-777");
+    const md = readFileSync(join(projectIssueDir, "2026-06-01T00-00-00-IMPLEMENT.md"), "utf-8");
+    assert.match(md, /## RESCUE/);
+    const artifact = JSON.parse(
+      readFileSync(join(projectIssueDir, "2026-06-01T00-00-00-IMPLEMENT.json"), "utf-8"),
+    );
+    assert.equal(artifact.rescue.overridden_verdict, "reject");
+    assert.equal(artifact.rescue.sentinel_commits.length, 1);
+    assert.match(artifact.rescue.sentinel_commits[0].subject, /clamp odds boundary/);
+    assert.ok(artifact.rescue.rescued_at, "rescued_at timestamp recorded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree --rescue: reject verdict but NO sentinel commit → gate refuses (fail closed)", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const branch = "worktree-dangeresque-implement-778";
+    const worktreePath = addWorktree(dir, "dangeresque-implement-778", branch);
+    seedImplementAcceptArtifact(worktreePath, 778, "2026-06-01T00-00-00", {
+      reviewer_verdict: "reject",
+    });
+
+    const result = mergeWorktree(
+      dir,
+      branch,
+      { enabled: true, modes: ["IMPLEMENT", "REFACTOR", "TEST"], requireAcceptedImplement: true, commands: [] },
+      true,
+    );
+
+    assert.equal(result.success, false);
+    assert.equal(result.gateRefusal, true);
+    assert.match(result.message, /--rescue requires a USER-approved micro-fix commit/);
+    assert.equal(existsSync(worktreePath), true, "worktree preserved on refusal");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

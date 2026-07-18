@@ -993,6 +993,7 @@ function cmdStatus() {
 
 async function cmdMerge(args: string[]) {
   const projectRoot = resolveProjectRoot();
+  const rescue = args.includes("--rescue");
   const positional = args.find((a) => !a.startsWith("-"));
   const worktrees = listWorktrees(projectRoot);
 
@@ -1003,7 +1004,7 @@ async function cmdMerge(args: string[]) {
     "Select a worktree to merge",
   );
   if (!chosen) {
-    console.error("Usage: dangeresque merge <branch>");
+    console.error("Usage: dangeresque merge <branch> [--rescue]");
     console.error("Run 'dangeresque status' to see active worktrees");
     process.exit(1);
   }
@@ -1012,7 +1013,7 @@ async function cmdMerge(args: string[]) {
     assertInMainCheckout(projectRoot, "merge");
     const resolved = resolveBranch(projectRoot, chosen);
     const config = loadConfig(projectRoot);
-    const result = mergeWorktree(projectRoot, resolved, config.mergeGate);
+    const result = mergeWorktree(projectRoot, resolved, config.mergeGate, rescue);
 
     if (result.success) {
       console.log(result.message);

@@ -21,7 +21,7 @@ Commands:
   results --issue <N> [--all]          Show archived results for an issue
   stage <number> --comment "text"      Add context comment to an issue
   status                               List active dangeresque worktrees
-  merge <branch>                       Merge a reviewed worktree
+  merge <branch> [--rescue]            Merge a reviewed worktree (--rescue: merge over a reject/needs_human_review verdict on a USER-approved micro-fix commit; verify gates still run)
   discard <branch> [--force]           Remove a worktree (--force kills running worker first)
   stop <branch>                        Stop a running worker; leave worktree intact
   clean --issue <N>                    Delete archived runs for an issue
