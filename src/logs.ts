@@ -20,6 +20,21 @@ function truncate(s: string, max = 200): string {
   return oneLine.length > max ? oneLine.slice(0, max) + "..." : oneLine;
 }
 
+/**
+ * Decide which phase's log to tail. `--review` forces review. Otherwise auto-select
+ * review when the review pass is the thing running: claude marks it with
+ * reviewSessionId, codex with reviewLogPath — check both so codex runs mid-review
+ * resolve to the review log instead of falling back to a nonexistent worker session.
+ */
+export function selectLogPhase(
+  pidInfo: PidInfo,
+  opts: { forceReview: boolean; running: boolean },
+): "worker" | "review" {
+  if (opts.forceReview) return "review";
+  const reviewActive = Boolean(pidInfo.reviewSessionId || pidInfo.reviewLogPath);
+  return reviewActive && opts.running ? "review" : "worker";
+}
+
 export function resolveSessionPath(
   pidInfo: PidInfo,
   phase: "worker" | "review",

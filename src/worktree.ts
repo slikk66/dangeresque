@@ -61,6 +61,15 @@ export interface PidInfo {
   reviewLogPath?: string;
   /** Absolute path to the run's archive file inside the worktree */
   archivePath?: string;
+  /** Model driving the current phase (worker or review). */
+  model?: string;
+  /** Effort level for the current phase; absent for codex (which ignores it). */
+  effort?: string;
+  /**
+   * Current run phase: the mode (INVESTIGATE/IMPLEMENT/TEST/REFACTOR) while the
+   * worker runs, "REVIEW" during the review pass. Reflects what is executing now.
+   */
+  phase?: string;
 }
 
 export interface WorktreeInfo {

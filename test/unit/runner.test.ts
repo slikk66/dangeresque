@@ -17,6 +17,8 @@ import {
   buildCodexReviewArgs,
   buildClaudeWorkerArgs,
   buildClaudeReviewArgs,
+  workerModelEffort,
+  reviewModelEffort,
   readPromptWithLocal,
   exitCodeFromCloseEvent,
   CODEX_RULES_RELPATH,
@@ -749,4 +751,56 @@ test("exitCodeFromCloseEvent: signal takes precedence over a non-null code", () 
   // beats an explicit code. This locks in the documented contract.
   assert.equal(exitCodeFromCloseEvent(0, null), 0);
   assert.equal(exitCodeFromCloseEvent(0, "SIGTERM"), 0);
+});
+
+const cfg = (partial: Partial<DangeresqueConfig>): DangeresqueConfig =>
+  partial as DangeresqueConfig;
+
+test("workerModelEffort(claude): carries model + effort", () => {
+  assert.deepEqual(
+    workerModelEffort(cfg({ engine: "claude", model: "opus", effort: "xhigh" })),
+    { model: "opus", effort: "xhigh" },
+  );
+});
+
+test("workerModelEffort(codex): model only, no effort, prefers codexModel", () => {
+  assert.deepEqual(
+    workerModelEffort(cfg({ engine: "codex", model: "fallback", codexModel: "gpt-5.4", effort: "max" })),
+    { model: "gpt-5.4" },
+  );
+  // codexModel unset → falls back to model
+  assert.deepEqual(
+    workerModelEffort(cfg({ engine: "codex", model: "fallback", effort: "max" })),
+    { model: "fallback" },
+  );
+});
+
+test("reviewModelEffort(claude): review overrides win, fall back to worker values", () => {
+  assert.deepEqual(
+    reviewModelEffort(cfg({ engine: "claude", model: "opus", effort: "max", reviewModel: "sonnet", reviewEffort: "high" })),
+    { model: "sonnet", effort: "high" },
+  );
+  assert.deepEqual(
+    reviewModelEffort(cfg({ engine: "claude", model: "opus", effort: "max" })),
+    { model: "opus", effort: "max" },
+  );
+});
+
+test("reviewModelEffort(codex): 4-deep fallback chain, no effort", () => {
+  assert.deepEqual(
+    reviewModelEffort(cfg({ engine: "codex", model: "m", codexModel: "cm", reviewModel: "rm", codexReviewModel: "crm", reviewEffort: "high" })),
+    { model: "crm" },
+  );
+  assert.deepEqual(
+    reviewModelEffort(cfg({ engine: "codex", model: "m", codexModel: "cm", reviewModel: "rm" })),
+    { model: "cm" },
+  );
+  assert.deepEqual(
+    reviewModelEffort(cfg({ engine: "codex", model: "m", reviewModel: "rm" })),
+    { model: "rm" },
+  );
+  assert.deepEqual(
+    reviewModelEffort(cfg({ engine: "codex", model: "m" })),
+    { model: "m" },
+  );
 });

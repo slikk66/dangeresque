@@ -40,7 +40,7 @@ import { printBrief } from "./brief.js";
 import { usageForEngine } from "./usage.js";
 import { allowMcp, allowBash, type AllowResult } from "./allow.js";
 import { stageComment } from "./stage.js";
-import { resolveSessionPath, tailLog } from "./logs.js";
+import { resolveSessionPath, selectLogPhase, tailLog } from "./logs.js";
 import {
   gatherArtifacts,
   computeStats,
@@ -763,6 +763,7 @@ async function cmdRun(args: string[]) {
       workerResult.worktreeName,
       workerResult.archivePath,
       workerResult.workerSessionId,
+      workerResult.workerLogPath,
       verificationOutcome,
     );
     const reviewEndedAtMs = Date.now();
@@ -885,9 +886,10 @@ async function cmdLogs(args: string[]) {
     process.exit(1);
   }
 
-  // Auto-select review phase if review is running (PID file has review PID)
-  const autoReview = !review && pidInfo.reviewSessionId && target.running;
-  const phase = review || autoReview ? "review" : "worker";
+  const phase = selectLogPhase(pidInfo, {
+    forceReview: review,
+    running: target.running,
+  });
   const sessionPath = resolveSessionPath(pidInfo, phase, target.path);
   if (!sessionPath) {
     console.error(`No ${phase} session ID tracked for this run`);
@@ -987,6 +989,13 @@ function cmdStatus() {
     console.log(`  Branch: ${wt.branch}  ${state}`);
     console.log(`  Path:   ${wt.path}`);
     console.log(`  HEAD:   ${wt.head.slice(0, 8)}`);
+    if (wt.pidInfo?.model) {
+      const eff = wt.pidInfo.effort ? ` / ${wt.pidInfo.effort}` : "";
+      console.log(`  Model:  ${wt.pidInfo.model}${eff}`);
+    }
+    if (wt.pidInfo?.phase) {
+      console.log(`  Phase:  ${wt.pidInfo.phase}`);
+    }
     console.log();
   }
 }

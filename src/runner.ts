@@ -82,6 +82,8 @@ export interface RunResult {
   branch: string;
   exitCode: number;
   workerSessionId?: string;
+  /** Codex worker's log path, threaded into the review pass (codex has no session id). */
+  workerLogPath?: string;
   /** Absolute path to the run's archive file inside the worktree */
   archivePath: string;
 }
@@ -390,6 +392,38 @@ export function readPromptWithLocal(configDir: string, baseName: string): string
   return canonical;
 }
 
+/**
+ * Resolve the model/effort that actually drive a phase, so the same values feed
+ * both the engine args and the PID file's status fields (single source of truth).
+ * Codex ignores `--effort`, so effort is omitted for it.
+ */
+export function workerModelEffort(
+  config: DangeresqueConfig,
+): { model: string; effort?: string } {
+  if (config.engine === "codex") {
+    return { model: config.codexModel ?? config.model };
+  }
+  return { model: config.model, effort: config.effort };
+}
+
+export function reviewModelEffort(
+  config: DangeresqueConfig,
+): { model: string; effort?: string } {
+  if (config.engine === "codex") {
+    return {
+      model:
+        config.codexReviewModel ??
+        config.codexModel ??
+        config.reviewModel ??
+        config.model,
+    };
+  }
+  return {
+    model: config.reviewModel ?? config.model,
+    effort: config.reviewEffort ?? config.effort,
+  };
+}
+
 export function buildClaudeWorkerArgs(
   opts: RunOptions,
   worktreeName: string,
@@ -405,10 +439,11 @@ export function buildClaudeWorkerArgs(
     args.push("-p");
   }
 
+  const { model, effort } = workerModelEffort(config);
   args.push("--worktree", worktreeName);
-  args.push("--model", config.model);
-  if (config.effort) {
-    args.push("--effort", config.effort);
+  args.push("--model", model);
+  if (effort) {
+    args.push("--effort", effort);
   }
 
   args.push("--permission-mode", config.permissionMode);
@@ -445,8 +480,7 @@ export function buildClaudeReviewArgs(
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
   const headless = config.headless;
-  const reviewModel = config.reviewModel ?? config.model;
-  const reviewEffort = config.reviewEffort ?? config.effort;
+  const { model: reviewModel, effort: reviewEffort } = reviewModelEffort(config);
 
   const args: string[] = [];
 
@@ -582,7 +616,7 @@ export function buildCodexWorkerArgs(
     "exec",
     "--json",
     "--full-auto",
-    "--model", opts.config.codexModel ?? opts.config.model,
+    "--model", workerModelEffort(opts.config).model,
     "-c", "sandbox_workspace_write.network_access=true",
     "--cd", worktreePath,
     "-",
@@ -608,11 +642,7 @@ export function buildCodexReviewArgs(
     diffStat = "(could not capture diff stat)";
   }
 
-  const reviewModel =
-    opts.config.codexReviewModel ??
-    opts.config.codexModel ??
-    opts.config.reviewModel ??
-    opts.config.model;
+  const reviewModel = reviewModelEffort(opts.config).model;
   const reviewEffort = opts.config.reviewEffort ?? opts.config.effort;
   const configDir = join(opts.projectRoot, CONFIG_DIR);
   const reviewPromptContent = readPromptWithLocal(configDir, opts.config.reviewPrompt);
@@ -768,6 +798,8 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
           projectHash: hash,
           workerLogPath: logPath,
           archivePath,
+          ...workerModelEffort(opts.config),
+          phase: opts.mode ?? "INVESTIGATE",
         });
       }
 
@@ -788,7 +820,7 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
             opts.mode ?? "INVESTIGATE"
           );
         }
-        resolve({ worktreeName, branch, exitCode, archivePath });
+        resolve({ worktreeName, branch, exitCode, archivePath, workerLogPath: logPath });
       });
     });
   }
@@ -829,6 +861,8 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
           projectHash: hash,
           engine: "claude",
           archivePath,
+          ...workerModelEffort(opts.config),
+          phase: opts.mode ?? "INVESTIGATE",
         });
       } catch {
         /* worktree not ready yet — ok */
@@ -859,6 +893,7 @@ export function runReview(
   worktreeName: string,
   archivePath: string,
   workerSessionId?: string,
+  workerLogPath?: string,
   verification?: VerificationOutcome | null,
 ): Promise<RunResult> {
   const branch = `worktree-${worktreeName}`;
@@ -899,9 +934,11 @@ export function runReview(
           cliPid: process.pid,
           engine: "codex",
           projectHash: hash,
-          workerLogPath: existing?.workerLogPath,
+          workerLogPath: workerLogPath ?? existing?.workerLogPath,
           reviewLogPath: logPath,
           archivePath,
+          ...reviewModelEffort(opts.config),
+          phase: "REVIEW",
         });
       }
 
@@ -947,6 +984,8 @@ export function runReview(
         projectHash: hash,
         engine: "claude",
         archivePath,
+        ...reviewModelEffort(opts.config),
+        phase: "REVIEW",
       });
     }
 
