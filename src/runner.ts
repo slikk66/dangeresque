@@ -497,12 +497,17 @@ export function buildClaudeReviewArgs(
   args.push("--permission-mode", "acceptEdits");
 
   if (headless) {
-    args.push(
-      "--allowed-tools",
+    // Reviewer needs the project's allowedTools too: verification commands
+    // (make targets, test runners) live there, and a reviewer that cannot
+    // re-run the gates it is auditing silently degrades to source-reading
+    // (slikk66/dangeresque#94).
+    const reviewerTools = [
       "Read", "Edit", "Write", "Grep", "Glob",
       "Bash(git status *)", "Bash(git diff *)", "Bash(git log *)",
-      "Bash(git add *)", "Bash(git commit *)"
-    );
+      "Bash(git add *)", "Bash(git commit *)",
+      ...config.allowedTools,
+    ];
+    args.push("--allowed-tools", ...new Set(reviewerTools));
     args.push("--disallowed-tools", ...config.disallowedTools);
   }
 
