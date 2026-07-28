@@ -5,6 +5,7 @@ import { join, dirname, relative } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, rmSync } from "node:fs";
 import {
   type DangeresqueConfig,
+  type ValidationResult,
   CONFIG_DIR,
   RUNS_DIR,
   projectHash,
@@ -395,33 +396,137 @@ export function readPromptWithLocal(configDir: string, baseName: string): string
 /**
  * Resolve the model/effort that actually drive a phase, so the same values feed
  * both the engine args and the PID file's status fields (single source of truth).
- * Codex ignores `--effort`, so effort is omitted for it.
  */
 export function workerModelEffort(
   config: DangeresqueConfig,
-): { model: string; effort?: string } {
+): { model: string; effort: string } {
   if (config.engine === "codex") {
-    return { model: config.codexModel ?? config.model };
+    return {
+      model: config.codexModel ?? config.model,
+      effort: config.codexEffort ?? config.effort,
+    };
   }
   return { model: config.model, effort: config.effort };
 }
 
 export function reviewModelEffort(
   config: DangeresqueConfig,
-): { model: string; effort?: string } {
+): { model: string; effort: string } {
   if (config.engine === "codex") {
     return {
       model:
         config.codexReviewModel ??
-        config.codexModel ??
         config.reviewModel ??
+        config.codexModel ??
         config.model,
+      effort:
+        config.codexReviewEffort ??
+        config.reviewEffort ??
+        config.codexEffort ??
+        config.effort,
     };
   }
   return {
     model: config.reviewModel ?? config.model,
     effort: config.reviewEffort ?? config.effort,
   };
+}
+
+export type CodexEffortCatalog = Record<string, string[]>;
+
+function loadCodexEffortCatalog(): CodexEffortCatalog {
+  const result = spawnSync("codex", ["debug", "models", "--bundled"], {
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 5 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message ?? result.stderr.trim() ?? `exit ${result.status}`;
+    throw new Error(
+      `could not read installed Codex model catalog: ${detail}. Upgrade Codex CLI and retry.`,
+    );
+  }
+
+  let parsed: {
+    models?: Array<{
+      slug?: unknown;
+      supported_reasoning_levels?: Array<{ effort?: unknown }>;
+    }>;
+  };
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch (err) {
+    throw new Error(
+      `could not parse installed Codex model catalog: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (!Array.isArray(parsed.models)) {
+    throw new Error("installed Codex model catalog has no models array");
+  }
+
+  const catalog: CodexEffortCatalog = {};
+  for (const model of parsed.models) {
+    if (typeof model.slug !== "string") continue;
+    catalog[model.slug] = (model.supported_reasoning_levels ?? [])
+      .map((level) => level.effort)
+      .filter((effort): effort is string => typeof effort === "string");
+  }
+  return catalog;
+}
+
+export function validateCodexModelEfforts(
+  config: DangeresqueConfig,
+  catalog?: CodexEffortCatalog,
+): ValidationResult {
+  if (config.engine !== "codex") return { valid: true, errors: [] };
+
+  let resolvedCatalog: CodexEffortCatalog;
+  try {
+    resolvedCatalog = catalog ?? loadCodexEffortCatalog();
+  } catch (err) {
+    return {
+      valid: false,
+      errors: [err instanceof Error ? err.message : String(err)],
+    };
+  }
+
+  const errors: string[] = [];
+  const checked = new Set<string>();
+  for (const [phase, selection] of [
+    ["Worker", workerModelEffort(config)],
+    ["Review", reviewModelEffort(config)],
+  ] as const) {
+    const pair = `${selection.model}\0${selection.effort}`;
+    if (checked.has(pair)) continue;
+    checked.add(pair);
+
+    if (selection.effort === "ultra") {
+      errors.push(
+        `${phase} Codex effort 'ultra' enables multi-agent delegation and is not supported by dangeresque.`,
+      );
+      continue;
+    }
+
+    const supported = resolvedCatalog[selection.model];
+    if (!supported) {
+      errors.push(
+        `${phase} Codex model '${selection.model}' is not in the installed Codex model catalog; cannot validate effort '${selection.effort}'.`,
+      );
+      continue;
+    }
+    const allowed = supported.filter((effort) => effort !== "ultra");
+    if (!allowed.includes(selection.effort)) {
+      errors.push(
+        `${phase} Codex model '${selection.model}' does not support effort '${selection.effort}'. Supported: ${allowed.join(", ")}.`,
+      );
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+function codexReasoningConfig(effort: string): string {
+  return `model_reasoning_effort=${JSON.stringify(effort)}`;
 }
 
 export function buildClaudeWorkerArgs(
@@ -611,17 +716,15 @@ export function buildCodexWorkerArgs(
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
   const configDir = join(opts.projectRoot, CONFIG_DIR);
   const workerPromptContent = readPromptWithLocal(configDir, opts.config.workerPrompt);
-  const prompt =
-    workerPromptContent +
-    `\n\n` +
-    buildTaskPrompt(opts, archivePath) +
-    `\n\nEffort preference: ${opts.config.effort} (map this to response depth and planning thoroughness).`;
+  const prompt = workerPromptContent + `\n\n` + buildTaskPrompt(opts, archivePath);
+  const { model, effort } = workerModelEffort(opts.config);
 
   const args = [
     "exec",
     "--json",
     "--full-auto",
-    "--model", workerModelEffort(opts.config).model,
+    "--model", model,
+    "-c", codexReasoningConfig(effort),
     "-c", "sandbox_workspace_write.network_access=true",
     "--cd", worktreePath,
     "-",
@@ -647,21 +750,20 @@ export function buildCodexReviewArgs(
     diffStat = "(could not capture diff stat)";
   }
 
-  const reviewModel = reviewModelEffort(opts.config).model;
-  const reviewEffort = opts.config.reviewEffort ?? opts.config.effort;
+  const { model: reviewModel, effort: reviewEffort } = reviewModelEffort(opts.config);
   const configDir = join(opts.projectRoot, CONFIG_DIR);
   const reviewPromptContent = readPromptWithLocal(configDir, opts.config.reviewPrompt);
   const prompt =
     reviewPromptContent +
     `\n\n` +
-    buildReviewPrompt(opts, archivePath, diffStat, diffBase, verification) +
-    `\n\nEffort preference: ${reviewEffort} (map this to response depth and planning thoroughness).`;
+    buildReviewPrompt(opts, archivePath, diffStat, diffBase, verification);
 
   const args = [
     "exec",
     "--json",
     "--full-auto",
     "--model", reviewModel,
+    "-c", codexReasoningConfig(reviewEffort),
     "-c", "sandbox_workspace_write.network_access=true",
     "--cd", join(opts.projectRoot, ".claude", "worktrees", worktreeName),
     "-",
@@ -766,7 +868,8 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
       console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
       console.log(`📋 Branch: ${branch}`);
       console.log(`⚙️  Engine: codex`);
-      console.log(`🔧 Model: ${opts.config.model}`);
+      const selection = workerModelEffort(opts.config);
+      console.log(`🔧 Model: ${selection.model} (effort: ${selection.effort})`);
       console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
       console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
       console.log(`\n--- Worker session starting ---\n`);
@@ -836,7 +939,8 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
     console.log(`📋 Branch: ${branch}`);
-    console.log(`🔧 Model: ${opts.config.model}`);
+    const selection = workerModelEffort(opts.config);
+    console.log(`🔧 Model: ${selection.model} (effort: ${selection.effort})`);
     console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
     console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
     console.log(`\n--- Worker session starting ---\n`);

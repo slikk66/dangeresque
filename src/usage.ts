@@ -3,11 +3,11 @@ import type { Engine } from "./config.js";
 export function usageForEngine(engine: Engine): string {
   const engineLine =
     engine === "codex"
-      ? "Engine: codex • codex exec --full-auto --json\nModel: gpt-5.4 (override with --model)"
+      ? "Engine: codex • codex exec --full-auto --json\nModels: installed Codex catalog (examples: gpt-5.4, gpt-5.5; override with --model)\nEffort: native model_reasoning_effort; gpt-5.5 supports low|medium|high|xhigh and does not support max"
       : "Engine: claude (default) • headless -p mode";
   const engineRunNotes =
     engine === "codex"
-      ? ""
+      ? "  --effort <level>  Override native Codex reasoning effort; validated against selected model\n"
       : "  --effort <level>  Override effort level (default: max) [low, medium, high|xhigh, max]\n";
 
   return `

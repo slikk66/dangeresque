@@ -63,13 +63,20 @@ export interface PidInfo {
   archivePath?: string;
   /** Model driving the current phase (worker or review). */
   model?: string;
-  /** Effort level for the current phase; absent for codex (which ignores it). */
+  /** Effort level driving the current phase. */
   effort?: string;
   /**
    * Current run phase: the mode (INVESTIGATE/IMPLEMENT/TEST/REFACTOR) while the
    * worker runs, "REVIEW" during the review pass. Reflects what is executing now.
    */
   phase?: string;
+}
+
+export function formatPidModelEffort(pidInfo: Pick<PidInfo, "model" | "effort">): string[] {
+  const lines: string[] = [];
+  if (pidInfo.model) lines.push(`  Model:  ${pidInfo.model}`);
+  if (pidInfo.effort) lines.push(`  Effort: ${pidInfo.effort}`);
+  return lines;
 }
 
 export interface WorktreeInfo {

@@ -10,6 +10,7 @@ import {
   normalizeMergeGateConfig,
   validateSetup,
   validateEngineRuntime,
+  applyEngineRunOverrides,
   agentMdHasPointer,
   ensurePointer,
   projectHash,
@@ -59,6 +60,64 @@ test("loadConfig: partial config merges with defaults", () => {
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("loadConfig: loads Codex worker and review model/effort overrides", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({
+        engine: "codex",
+        codexModel: "gpt-5.5",
+        codexEffort: "xhigh",
+        codexReviewModel: "gpt-5.4",
+        codexReviewEffort: "high",
+      }),
+    );
+    const cfg = loadConfig(tmp);
+    assert.equal(cfg.codexModel, "gpt-5.5");
+    assert.equal(cfg.codexEffort, "xhigh");
+    assert.equal(cfg.codexReviewModel, "gpt-5.4");
+    assert.equal(cfg.codexReviewEffort, "high");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyEngineRunOverrides: generic CLI flags target active Codex fields", () => {
+  const cfg = loadConfig(makeTmp());
+  cfg.engine = "codex";
+  cfg.codexModel = "gpt-5.4";
+  cfg.codexEffort = "high";
+
+  applyEngineRunOverrides(cfg, {
+    model: "gpt-5.5",
+    effort: "xhigh",
+    reviewModel: "gpt-5.4",
+    reviewEffort: "medium",
+  });
+
+  assert.equal(cfg.codexModel, "gpt-5.5");
+  assert.equal(cfg.codexEffort, "xhigh");
+  assert.equal(cfg.codexReviewModel, "gpt-5.4");
+  assert.equal(cfg.codexReviewEffort, "medium");
+});
+
+test("applyEngineRunOverrides: generic CLI flags retain Claude behavior", () => {
+  const cfg = loadConfig(makeTmp());
+  applyEngineRunOverrides(cfg, {
+    model: "claude-sonnet",
+    effort: "high",
+    reviewModel: "claude-opus",
+    reviewEffort: "max",
+  });
+
+  assert.equal(cfg.model, "claude-sonnet");
+  assert.equal(cfg.effort, "high");
+  assert.equal(cfg.reviewModel, "claude-opus");
+  assert.equal(cfg.reviewEffort, "max");
 });
 
 test("loadConfig: allowedTools extends defaults preserving order", () => {

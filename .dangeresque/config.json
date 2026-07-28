@@ -1,6 +1,7 @@
 {
   "model": "claude-opus-4-7[1m]",
   "codexModel": "gpt-5.4",
+  "codexEffort": "xhigh",
   "verify": {
     "enabled": true,
     "modes": ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],

@@ -4,6 +4,14 @@
   "engine": "claude",
   "model": "claude-opus-4-7",
   "effort": "max",
+  "reviewModel": "claude-opus-4-7",
+  "reviewEffort": "max",
+
+  "_doc_codex": "Codex overrides. Generic model/effort and reviewModel/reviewEffort are fallbacks. Values are checked against the installed Codex model catalog before dispatch. gpt-5.4 and gpt-5.5 support low/medium/high/xhigh, not max. ultra is rejected because it enables delegation.",
+  "codexModel": "gpt-5.5",
+  "codexEffort": "xhigh",
+  "codexReviewModel": "gpt-5.5",
+  "codexReviewEffort": "xhigh",
 
   "_doc_verify": "Pre-review verification: dangeresque runs each command in the worktree between the worker exit (post-rebase, post-file-count-normalize) and the review pass. Catches drift between worker prose claims (\"yarn build passes\") and code reality. Empty `commands` array (default) means no-op; opt in by listing commands. The CLI runs them, NOT the engine — `allowedTools` does not constrain them.",
   "verify": {

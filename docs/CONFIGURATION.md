@@ -19,9 +19,15 @@
 | Key               | Type     | Default              | Description                                                                                        |
 | ----------------- | -------- | -------------------- | -------------------------------------------------------------------------------------------------- |
 | `engine`          | string   | `"claude"`           | Execution engine (`claude` or `codex`)                                                             |
-| `model`           | string   | `"claude-opus-4-7"`  | Model ID passed to the selected engine                                                             |
+| `model`           | string   | `"claude-opus-4-7"`  | Generic worker model; Codex falls back to this when `codexModel` is unset                           |
 | `permissionMode`  | string   | `"acceptEdits"`      | Sandbox/permission mode for the selected engine                                                    |
-| `effort`          | string   | `"max"`              | Effort level: low, medium, high, xhigh, max                                                        |
+| `effort`          | string   | `"max"`              | Generic worker effort; Codex falls back to this when `codexEffort` is unset                         |
+| `reviewModel`     | string   | worker model         | Generic review model                                                                                |
+| `reviewEffort`    | string   | worker effort        | Generic review effort                                                                               |
+| `codexModel`      | string   | `model`              | Codex worker model                                                                                  |
+| `codexEffort`     | string   | `effort`             | Codex native worker reasoning effort                                                               |
+| `codexReviewModel` | string  | review/worker model  | Codex review model                                                                                  |
+| `codexReviewEffort` | string | review/worker effort | Codex native review reasoning effort                                                               |
 | `headless`        | boolean  | `true`               | Run with `-p` flag (set false for interactive)                                                     |
 | `allowedTools`    | string[] | _(see below)_        | Tools auto-approved without prompting                                                              |
 | `disallowedTools` | string[] | _(see below)_        | Tools hard-blocked from use                                                                        |
@@ -45,13 +51,16 @@ Select per-project in `.dangeresque/config.json`:
 ```json
 {
   "engine": "codex",
-  "model": "gpt-5.4"
+  "codexModel": "gpt-5.5",
+  "codexEffort": "xhigh",
+  "codexReviewModel": "gpt-5.5",
+  "codexReviewEffort": "high"
 }
 ```
 
 Or override per-run: `DANGERESQUE_ENGINE=codex dangeresque run --issue 63`. Help output adapts to the active engine.
 
-Codex-specific notes: `model` maps directly to `codex exec --model <model>`; `effort` has no native Codex CLI flag (dangeresque passes it as a prompt hint for planning depth); Codex runs use `--full-auto` (safe automation mode), not dangerous bypass flags. MCP on **Claude Code** uses your existing Claude setup; MCP on **Codex** is configured in `~/.codex/config.toml` under `[mcp_servers]` — keep entries aligned across both tools for equivalent behavior.
+Codex uses `-c model_reasoning_effort="<effort>"` for both worker and review runs. Generic `--model`, `--effort`, `--review-model`, and `--review-effort` flags override the active engine. In config, Codex-specific fields override generic fields; review-specific fields override worker fields. Before dispatch, dangeresque reads the installed Codex model catalog and fails when either phase selects an unsupported pair. GPT-5.4 and GPT-5.5 support `low`, `medium`, `high`, and `xhigh`, but not `max`. `ultra` is always rejected because it enables multi-agent delegation rather than only increasing single-agent reasoning. Codex runs use `--full-auto` (safe automation mode), not dangerous bypass flags. MCP on **Claude Code** uses your existing Claude setup; MCP on **Codex** is configured in `~/.codex/config.toml` under `[mcp_servers]` — keep entries aligned across both tools for equivalent behavior.
 
 ## Permissions
 

@@ -19,6 +19,7 @@ import {
   buildClaudeReviewArgs,
   workerModelEffort,
   reviewModelEffort,
+  validateCodexModelEfforts,
   readPromptWithLocal,
   exitCodeFromCloseEvent,
   CODEX_RULES_RELPATH,
@@ -367,6 +368,8 @@ function makeCodexArgsFixture(): { projectRoot: string; opts: RunOptions; cleanu
     model: "claude-model-default",
     codexModel: "codex-model-worker",
     codexReviewModel: "codex-model-review",
+    codexEffort: "xhigh",
+    codexReviewEffort: "high",
     permissionMode: "acceptEdits",
     effort: "max",
     reviewEffort: "low",
@@ -414,12 +417,13 @@ test("buildCodexWorkerArgs: returns {args, prompt}; args ends with '-'; prompt c
     assert.match(result.prompt, /UNIQUE_ISSUE_BODY_MARKER_XYZZY/);
     assert.match(result.prompt, /STAGED_COMMENT_MARKER_ABCDE/);
     assert.match(result.prompt, /WORKER_PROMPT_TEMPLATE_BODY/);
-    assert.match(result.prompt, /Effort preference: max/);
+    assert.doesNotMatch(result.prompt, /Effort preference/);
 
     assert.ok(result.args.includes("exec"));
     assert.ok(result.args.includes("--json"));
     assert.ok(result.args.includes("--full-auto"));
     assert.ok(result.args.includes("codex-model-worker"));
+    assert.ok(result.args.includes('model_reasoning_effort="xhigh"'));
   } finally {
     cleanup();
   }
@@ -459,12 +463,13 @@ test("buildCodexReviewArgs: returns {args, prompt}; args ends with '-'; prompt c
     assert.match(result.prompt, /UNIQUE_ISSUE_BODY_MARKER_XYZZY/);
     assert.match(result.prompt, /STAGED_COMMENT_MARKER_ABCDE/);
     assert.match(result.prompt, /REVIEW_PROMPT_TEMPLATE_BODY/);
-    assert.match(result.prompt, /Effort preference: low/);
+    assert.doesNotMatch(result.prompt, /Effort preference/);
 
     assert.ok(result.args.includes("exec"));
     assert.ok(result.args.includes("--json"));
     assert.ok(result.args.includes("--full-auto"));
     assert.ok(result.args.includes("codex-model-review"));
+    assert.ok(result.args.includes('model_reasoning_effort="high"'));
   } finally {
     cleanup();
   }
@@ -763,15 +768,14 @@ test("workerModelEffort(claude): carries model + effort", () => {
   );
 });
 
-test("workerModelEffort(codex): model only, no effort, prefers codexModel", () => {
+test("workerModelEffort(codex): Codex overrides win, then generic fallback", () => {
   assert.deepEqual(
-    workerModelEffort(cfg({ engine: "codex", model: "fallback", codexModel: "gpt-5.4", effort: "max" })),
-    { model: "gpt-5.4" },
+    workerModelEffort(cfg({ engine: "codex", model: "fallback", codexModel: "gpt-5.5", effort: "high", codexEffort: "xhigh" })),
+    { model: "gpt-5.5", effort: "xhigh" },
   );
-  // codexModel unset → falls back to model
   assert.deepEqual(
-    workerModelEffort(cfg({ engine: "codex", model: "fallback", effort: "max" })),
-    { model: "fallback" },
+    workerModelEffort(cfg({ engine: "codex", model: "fallback", effort: "high" })),
+    { model: "fallback", effort: "high" },
   );
 });
 
@@ -786,21 +790,79 @@ test("reviewModelEffort(claude): review overrides win, fall back to worker value
   );
 });
 
-test("reviewModelEffort(codex): 4-deep fallback chain, no effort", () => {
+test("reviewModelEffort(codex): phase-specific, generic review, Codex worker, generic worker precedence", () => {
   assert.deepEqual(
-    reviewModelEffort(cfg({ engine: "codex", model: "m", codexModel: "cm", reviewModel: "rm", codexReviewModel: "crm", reviewEffort: "high" })),
-    { model: "crm" },
+    reviewModelEffort(cfg({ engine: "codex", model: "m", effort: "medium", codexModel: "cm", codexEffort: "high", reviewModel: "rm", reviewEffort: "xhigh", codexReviewModel: "crm", codexReviewEffort: "low" })),
+    { model: "crm", effort: "low" },
   );
   assert.deepEqual(
-    reviewModelEffort(cfg({ engine: "codex", model: "m", codexModel: "cm", reviewModel: "rm" })),
-    { model: "cm" },
+    reviewModelEffort(cfg({ engine: "codex", model: "m", effort: "medium", codexModel: "cm", codexEffort: "high", reviewModel: "rm", reviewEffort: "xhigh" })),
+    { model: "rm", effort: "xhigh" },
   );
   assert.deepEqual(
-    reviewModelEffort(cfg({ engine: "codex", model: "m", reviewModel: "rm" })),
-    { model: "rm" },
+    reviewModelEffort(cfg({ engine: "codex", model: "m", effort: "medium", codexModel: "cm", codexEffort: "high" })),
+    { model: "cm", effort: "high" },
   );
   assert.deepEqual(
-    reviewModelEffort(cfg({ engine: "codex", model: "m" })),
-    { model: "m" },
+    reviewModelEffort(cfg({ engine: "codex", model: "m", effort: "medium" })),
+    { model: "m", effort: "medium" },
   );
+});
+
+const codexCatalog = {
+  "gpt-5.4": ["low", "medium", "high", "xhigh"],
+  "gpt-5.5": ["low", "medium", "high", "xhigh"],
+  "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+};
+
+test("validateCodexModelEfforts: accepts gpt-5.5 xhigh for worker and review", () => {
+  const result = validateCodexModelEfforts(
+    cfg({
+      engine: "codex",
+      model: "fallback",
+      effort: "medium",
+      codexModel: "gpt-5.5",
+      codexEffort: "xhigh",
+      codexReviewModel: "gpt-5.5",
+      codexReviewEffort: "xhigh",
+    }),
+    codexCatalog,
+  );
+  assert.deepEqual(result, { valid: true, errors: [] });
+});
+
+test("validateCodexModelEfforts: rejects max on gpt-5.5 loudly", () => {
+  const result = validateCodexModelEfforts(
+    cfg({ engine: "codex", model: "gpt-5.5", effort: "max" }),
+    codexCatalog,
+  );
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join("\n"), /gpt-5\.5/);
+  assert.match(result.errors.join("\n"), /max/);
+  assert.match(result.errors.join("\n"), /low, medium, high, xhigh/);
+});
+
+test("validateCodexModelEfforts: validates review model/effort independently", () => {
+  const result = validateCodexModelEfforts(
+    cfg({
+      engine: "codex",
+      model: "gpt-5.5",
+      effort: "xhigh",
+      codexReviewModel: "gpt-5.5",
+      codexReviewEffort: "max",
+    }),
+    codexCatalog,
+  );
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join("\n"), /Review Codex model 'gpt-5\.5'/);
+  assert.match(result.errors.join("\n"), /effort 'max'/);
+});
+
+test("validateCodexModelEfforts: rejects ultra even when catalog advertises it", () => {
+  const result = validateCodexModelEfforts(
+    cfg({ engine: "codex", model: "gpt-5.6-sol", effort: "ultra" }),
+    codexCatalog,
+  );
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join("\n"), /ultra.*delegation/i);
 });

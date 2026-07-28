@@ -136,11 +136,14 @@ Select per-project in `.dangeresque/config.json`:
 ```json
 {
   "engine": "codex",
-  "model": "gpt-5.4"
+  "codexModel": "gpt-5.5",
+  "codexEffort": "xhigh",
+  "codexReviewModel": "gpt-5.5",
+  "codexReviewEffort": "high"
 }
 ```
 
-Or override per-run: `DANGERESQUE_ENGINE=codex dangeresque run --issue 63`. Help output adapts to the active engine.
+Or override per-run: `DANGERESQUE_ENGINE=codex dangeresque run --issue 63 --model gpt-5.5 --effort xhigh --review-model gpt-5.5 --review-effort high`. Codex effort is passed natively and validated against the selected model before dispatch.
 
 For per-engine notes (Codex-specific flags, MCP setup differences) see [`docs/CONFIGURATION.md` §Engines](docs/CONFIGURATION.md#engines-claude-vs-codex).
 

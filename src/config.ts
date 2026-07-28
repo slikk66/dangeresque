@@ -120,8 +120,12 @@ export interface DangeresqueConfig {
   reviewEffort?: string;
   /** Model when engine is codex (falls back to `model` when unset) */
   codexModel?: string;
-  /** Review-pass model when engine is codex (falls back to `codexModel`, then `reviewModel`, then `model`) */
+  /** Effort when engine is codex (falls back to `effort` when unset) */
+  codexEffort?: string;
+  /** Review-pass model when engine is codex (falls back to `reviewModel`, then `codexModel`, then `model`) */
   codexReviewModel?: string;
+  /** Review-pass effort when engine is codex (falls back to `reviewEffort`, then `codexEffort`, then `effort`) */
+  codexReviewEffort?: string;
   /** Pre-review verification commands (compile/test/lint) run in the worktree. */
   verify?: VerifyConfig;
   /** Scope subsystem config (allow-list policy + opportunistic-fix budget). */
@@ -276,6 +280,39 @@ export function loadConfig(projectRoot: string): DangeresqueConfig {
   merged.dispatchGate = normalizeDispatchGateConfig(raw.dispatchGate);
   merged.mergeGate = normalizeMergeGateConfig(raw.mergeGate);
   return merged;
+}
+
+export interface EngineRunOverrides {
+  model?: string;
+  effort?: string;
+  reviewModel?: string;
+  reviewEffort?: string;
+}
+
+export function applyEngineRunOverrides(
+  config: DangeresqueConfig,
+  overrides: EngineRunOverrides,
+): void {
+  if (config.engine === "codex") {
+    if (overrides.model !== undefined) config.codexModel = overrides.model;
+    if (overrides.effort !== undefined) config.codexEffort = overrides.effort;
+    if (overrides.reviewModel !== undefined) {
+      config.codexReviewModel = overrides.reviewModel;
+    }
+    if (overrides.reviewEffort !== undefined) {
+      config.codexReviewEffort = overrides.reviewEffort;
+    }
+    return;
+  }
+
+  if (overrides.model !== undefined) config.model = overrides.model;
+  if (overrides.effort !== undefined) config.effort = overrides.effort;
+  if (overrides.reviewModel !== undefined) {
+    config.reviewModel = overrides.reviewModel;
+  }
+  if (overrides.reviewEffort !== undefined) {
+    config.reviewEffort = overrides.reviewEffort;
+  }
 }
 
 function defaultScopeConfig(): ScopeConfig {

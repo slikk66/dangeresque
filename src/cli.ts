@@ -4,10 +4,12 @@ import {
   loadConfig,
   validateSetup,
   validateEngineRuntime,
+  applyEngineRunOverrides,
   resolveProjectRoot,
   type Engine,
+  type EngineRunOverrides,
 } from "./config.js";
-import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, killActiveEngines, type IssueData } from "./runner.js";
+import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, killActiveEngines, workerModelEffort, reviewModelEffort, validateCodexModelEfforts, type IssueData } from "./runner.js";
 import {
   ArtifactBuilder,
   writeArtifact,
@@ -31,6 +33,7 @@ import {
   assertInMainCheckout,
   filterWorktrees,
   formatRunHeader,
+  formatPidModelEffort,
   type WorktreeInfo,
   type WorktreeFilter,
 } from "./worktree.js";
@@ -333,7 +336,7 @@ async function cmdRun(args: string[]) {
   let issueNumber: number | undefined;
   let issueFixturePath: string | undefined;
   let mode: string | undefined;
-  let effortFlagUsed = false;
+  const runOverrides: EngineRunOverrides = {};
   let force = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -348,7 +351,7 @@ async function cmdRun(args: string[]) {
     } else if (args[i] === "--force") {
       force = true;
     } else if (args[i] === "--model" && args[i + 1]) {
-      config.model = args[++i];
+      runOverrides.model = args[++i];
       // Hidden advanced override flag (kept for power users)
     } else if (args[i] === "--engine" && args[i + 1]) {
       const engine = args[++i].toLowerCase();
@@ -358,12 +361,11 @@ async function cmdRun(args: string[]) {
       }
       config.engine = engine;
     } else if (args[i] === "--effort" && args[i + 1]) {
-      effortFlagUsed = true;
-      config.effort = args[++i];
+      runOverrides.effort = args[++i];
     } else if (args[i] === "--review-model" && args[i + 1]) {
-      config.reviewModel = args[++i];
+      runOverrides.reviewModel = args[++i];
     } else if (args[i] === "--review-effort" && args[i + 1]) {
-      config.reviewEffort = args[++i];
+      runOverrides.reviewEffort = args[++i];
     } else if (args[i] === "--issue" && args[i + 1]) {
       issueNumber = parseInt(args[++i], 10);
       if (isNaN(issueNumber)) {
@@ -377,10 +379,21 @@ async function cmdRun(args: string[]) {
     }
   }
 
+  applyEngineRunOverrides(config, runOverrides);
+
   const runtimeValidation = validateEngineRuntime(config.engine, projectRoot);
   if (!runtimeValidation.valid) {
     console.error("Setup validation failed:");
     for (const err of runtimeValidation.errors) {
+      console.error(`  - ${err}`);
+    }
+    process.exit(1);
+  }
+
+  const effortValidation = validateCodexModelEfforts(config);
+  if (!effortValidation.valid) {
+    console.error("Codex model/effort validation failed:");
+    for (const err of effortValidation.errors) {
       console.error(`  - ${err}`);
     }
     process.exit(1);
@@ -437,10 +450,6 @@ async function cmdRun(args: string[]) {
 
   const effectiveMode = mode ?? "INVESTIGATE";
 
-  if (config.engine === "codex" && effortFlagUsed) {
-    console.warn("⚠️  --effort is ignored in codex mode");
-  }
-
   // Pre-flight gates: refuse to spawn a new worker when an unmerged worktree
   // for the same issue exists, or when local main is ahead of origin. Both
   // are workflow problems where the orchestrator skipped a step; surfacing
@@ -495,19 +504,20 @@ async function cmdRun(args: string[]) {
   process.on("SIGTERM", () => onStopSignal("SIGTERM"));
   process.on("SIGINT", () => onStopSignal("SIGINT"));
 
-  const effectiveReviewModel = config.reviewModel ?? config.model;
-  const effectiveReviewEffort = config.reviewEffort ?? config.effort;
+  const effectiveWorker = workerModelEffort(config);
+  const effectiveReview = reviewModelEffort(config);
   const reviewDiffers =
-    effectiveReviewModel !== config.model || effectiveReviewEffort !== config.effort;
+    effectiveReview.model !== effectiveWorker.model ||
+    effectiveReview.effort !== effectiveWorker.effort;
 
   console.log("\ndangeresque — starting AFK run");
   console.log(`  Project: ${projectRoot}`);
   console.log(`  Issue: #${issueData.number} — ${issueData.title}`);
   console.log(`  Mode: ${effectiveMode}`);
   console.log(`  Engine: ${config.engine}`);
-  console.log(`  Model: ${config.model} (effort: ${config.effort})`);
+  console.log(`  Model: ${effectiveWorker.model} (effort: ${effectiveWorker.effort})`);
   if (reviewDiffers) {
-    console.log(`  Review: ${effectiveReviewModel} (effort: ${effectiveReviewEffort})`);
+    console.log(`  Review: ${effectiveReview.model} (effort: ${effectiveReview.effort})`);
   }
   console.log(`  Mode: ${config.headless ? "headless (-p)" : "interactive"}`);
   console.log(`  Review pass: ${review ? "yes" : "no"}`);
@@ -529,10 +539,10 @@ async function cmdRun(args: string[]) {
     ...(fixtureUsed ? { issueUrl: null } : {}),
     mode: effectiveMode,
     engine: config.engine,
-    model: config.model,
-    effort: config.effort,
-    reviewModel: effectiveReviewModel,
-    reviewEffort: effectiveReviewEffort,
+    model: effectiveWorker.model,
+    effort: effectiveWorker.effort,
+    reviewModel: effectiveReview.model,
+    reviewEffort: effectiveReview.effort,
     worktreeName: workerResult.worktreeName,
     branch: workerResult.branch,
     archivePath: workerResult.archivePath,
@@ -572,10 +582,10 @@ async function cmdRun(args: string[]) {
           archivePath: workerResult.archivePath,
           workerExitCode: workerResult.exitCode,
           engine: config.engine,
-          model: config.model,
-          effort: config.engine === "claude" ? config.effort : undefined,
-          reviewModel: config.reviewModel,
-          reviewEffort: config.reviewEffort,
+          model: effectiveWorker.model,
+          effort: effectiveWorker.effort,
+          reviewModel: effectiveReview.model,
+          reviewEffort: effectiveReview.effort,
         });
       } catch (err) {
         console.error(
@@ -787,10 +797,10 @@ async function cmdRun(args: string[]) {
         workerExitCode: workerResult.exitCode,
         reviewExitCode,
         engine: config.engine,
-        model: config.model,
-        effort: config.engine === "claude" ? config.effort : undefined,
-        reviewModel: config.reviewModel,
-        reviewEffort: config.reviewEffort,
+        model: effectiveWorker.model,
+        effort: effectiveWorker.effort,
+        reviewModel: effectiveReview.model,
+        reviewEffort: effectiveReview.effort,
       });
     } catch (err) {
       console.error(
@@ -989,9 +999,8 @@ function cmdStatus() {
     console.log(`  Branch: ${wt.branch}  ${state}`);
     console.log(`  Path:   ${wt.path}`);
     console.log(`  HEAD:   ${wt.head.slice(0, 8)}`);
-    if (wt.pidInfo?.model) {
-      const eff = wt.pidInfo.effort ? ` / ${wt.pidInfo.effort}` : "";
-      console.log(`  Model:  ${wt.pidInfo.model}${eff}`);
+    if (wt.pidInfo) {
+      for (const line of formatPidModelEffort(wt.pidInfo)) console.log(line);
     }
     if (wt.pidInfo?.phase) {
       console.log(`  Phase:  ${wt.pidInfo.phase}`);

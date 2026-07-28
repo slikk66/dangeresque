@@ -354,17 +354,18 @@ are all identical across engines. The engine split lives in
   pretty-print the transcript.
 - **Codex** has no system-prompt-file flag, so dangeresque reads merged
   canonical + `.local.md` prompt content and concatenates it with the task
-  description plus an effort-hint suffix. The result is piped via stdin
+  description. The result is piped via stdin
   (`exec -`) rather than argv (see
   `src/runner.ts:buildCodexWorkerArgs`). Codex runs with `--full-auto` —
   its safe automation mode, *not* a dangerous bypass — and streams JSONL
   to a dangeresque-owned log file under `.dangeresque/` inside the
   worktree.
 
-**Effort is not a Codex flag.** `--effort` is Claude-only. Under Codex,
-dangeresque passes the effort value as a prompt hint for planning depth
-(see `src/runner.ts:buildCodexWorkerArgs`) and the help output adapts per
-engine so Claude users see `--effort` and Codex users don't.
+**Effort is native for both engines.** Claude receives `--effort`; Codex
+receives `-c model_reasoning_effort="<effort>"`. Codex worker/review values
+resolve from engine- and phase-specific config, then generic fallbacks. Before
+dispatch, dangeresque validates each model/effort pair against the installed
+Codex model catalog. Unsupported pairs and `ultra` fail loudly.
 
 **Codex worker commits are owned by dangeresque, not the worker (issue
 #38).** Codex runs with `--full-auto` inside a sandbox that explicitly
@@ -397,7 +398,7 @@ when a tool does not resolve under one engine.
 | --------------------------------- | -------------------------------------------- | ---------------------------------------------------------------- |
 | Web search                        | `WebSearch` tool (native)                    | `web_search` built-in (default mode: cached)                     |
 | Web fetch                         | `WebFetch(url, prompt)` tool (native)        | Shell `curl` (network egress enabled) or MCP server              |
-| Effort hint                       | `--effort` flag (native)                     | Prompt-suffix hint (existing)                                    |
+| Reasoning effort                  | `--effort` flag (native)                     | `model_reasoning_effort` config override (native)                |
 | Destructive-command blocking      | `--disallowed-tools Bash(...)`               | `.codex/rules/dangeresque.rules` prefix_rules (#39)              |
 | MCP                               | `~/.claude.json` / `.mcp.json` (project)     | `~/.codex/config.toml` / `.codex/config.toml` (project)          |
 | Task-prompt delivery              | stdin via pipe in headless (#43)             | stdin via `-` in headless (#35)                                  |
