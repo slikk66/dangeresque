@@ -13,7 +13,7 @@ import {
   RUNS_DIR,
   projectHash,
 } from "./config.js";
-import { writePidFile, removePidFile, resolveDiffBase, mirrorIssueRuns, parseSummaryBlock, type PidInfo } from "./worktree.js";
+import { writePidFile, removePidFile, resolveDiffBase, mirrorIssueRuns, parseSummaryBlock, formatResultsGuidance, type PidInfo } from "./worktree.js";
 import type { VerificationOutcome } from "./verify.js";
 
 // --- engine-process tracking ---
@@ -1062,6 +1062,16 @@ export async function runWorker(opts: RunOptions): Promise<RunResult> {
   console.log(`🔧 Model: ${selection.model} (effort: ${selection.effort})`);
   console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
   console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
+  console.log(
+    `\n📖 ${opts.mode ?? "INVESTIGATE"} running on #${opts.issueData.number} — to read the results:`,
+  );
+  for (const line of formatResultsGuidance({
+    branch,
+    issueNumber: opts.issueData.number,
+    running: true,
+  })) {
+    console.log(line);
+  }
   console.log(`\n--- Worker session starting ---\n`);
 
   const receipt = await executeInvocation(
@@ -1092,7 +1102,16 @@ export async function runReview(
 
   console.log(`\n--- Review session starting ---`);
   console.log(`⚙️  Engine: ${selection.engine}`);
-  console.log(`🔧 Model: ${selection.model} (effort: ${selection.effort})\n`);
+  console.log(`🔧 Model: ${selection.model} (effort: ${selection.effort})`);
+  console.log(`\n📖 REVIEW running on #${opts.issueData.number} — to read the results:`);
+  for (const line of formatResultsGuidance({
+    branch,
+    issueNumber: opts.issueData.number,
+    running: true,
+  })) {
+    console.log(line);
+  }
+  console.log();
 
   let receipt: ExecutionReceipt;
   try {
@@ -1163,7 +1182,8 @@ export function postRunComment(opts: CommentOptions): void {
       `- Worktree: \`.claude/worktrees/${worktreeName}/\`\n` +
       `- Expected run artifact: \`${archiveRel}\` ` +
       `(${existsSync(archivePath) ? "partial output present" : "not written"})\n\n` +
-      `Inspect the worker session log with \`dangeresque logs\`, then \`dangeresque discard worktree-${worktreeName}\` to clean up.`;
+      `Inspect the worker session log with \`dangeresque logs worktree-${worktreeName}\`, ` +
+      `then \`dangeresque discard worktree-${worktreeName}\` to clean up.`;
   } else if (!existsSync(archivePath)) {
     comment =
       `${tag} ⚠️  Worker exited cleanly but wrote no run artifact.\n\n` +
@@ -1194,15 +1214,21 @@ export function postRunComment(opts: CommentOptions): void {
         "```\n\n" +
         `The worker's summary below is unreviewed and unverified by the reviewer:\n\n` +
         `${summaryBlock}\n\n` +
-        `Local artifact: \`${archiveRel}\``;
+        `Local artifact: \`${archiveRel}\`\n` +
+        `Read it: \`dangeresque results worktree-${worktreeName}\``;
     } else {
       const reviewNote = reviewExitCode !== undefined && reviewExitCode !== 0
         ? `\n\n⚠️  Review process exited with code ${reviewExitCode} — full artifact may be incomplete.`
         : "";
+      // Point at the BRANCH form: this comment is posted pre-merge, and
+      // `results --issue N` reads the project-root archive that only `merge`
+      // populates — it would report "No runs found" to anyone who follows it
+      // right now.
       comment =
         `${tag}\n\n${summaryBlock}\n\n` +
-        `Local artifact: \`${archiveRel}\` ` +
-        `(\`dangeresque results --issue ${issueNumber}\`)${reviewNote}`;
+        `Local artifact: \`${archiveRel}\`\n` +
+        `Read it: \`dangeresque results worktree-${worktreeName}\` ` +
+        `(after merge: \`dangeresque results --issue ${issueNumber}\`)${reviewNote}`;
     }
   }
 

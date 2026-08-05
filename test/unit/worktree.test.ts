@@ -10,6 +10,7 @@ import {
   parseSummaryBlock,
   formatRunOneLiner,
   formatRunHeader,
+  formatResultsGuidance,
   formatPidExecution,
   getWorktreeResults,
   mergeWorktree,
@@ -1709,4 +1710,33 @@ test("mergeWorktree --rescue: reject verdict but NO sentinel commit → gate ref
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("formatResultsGuidance: a running phase leads with follow, and flags results as not-yet-ready", () => {
+  const lines = formatResultsGuidance({
+    branch: "worktree-dangeresque-investigate-93",
+    issueNumber: 93,
+    running: true,
+  });
+  assert.match(lines[0], /dangeresque logs worktree-dangeresque-investigate-93 -f/);
+  assert.match(lines[1], /dangeresque results worktree-dangeresque-investigate-93/);
+  assert.match(lines[1], /once the phase ends/);
+});
+
+test("formatResultsGuidance: pre-merge guidance never leads with the --issue form", () => {
+  // `results --issue N` reads the project-root archive, which only `merge`
+  // populates — leading with it is what sends readers off to raw session logs.
+  const lines = formatResultsGuidance({
+    branch: "worktree-dangeresque-implement-93",
+    issueNumber: 93,
+    running: false,
+  });
+  assert.match(lines[0], /dangeresque results worktree-dangeresque-implement-93$/);
+  assert.match(lines[1], /After merge:.*--issue 93/);
+});
+
+test("formatResultsGuidance: no issue number → no post-merge line to get wrong", () => {
+  const lines = formatResultsGuidance({ branch: "worktree-dangeresque-adhoc", running: false });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /dangeresque results worktree-dangeresque-adhoc/);
 });

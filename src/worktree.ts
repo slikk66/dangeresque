@@ -512,14 +512,49 @@ export function parseSummaryBlock(content: string): string | null {
  * Extract a one-line summary from an archived run filename + content.
  * Format: "Run N (MODE): status — files, verdict"
  */
+/**
+ * Strip the `dangeresque-` prefix from a worktree name for display, so a run
+ * reads as `implement-123-slice-a` rather than the full internal name.
+ */
+export function shortRunName(worktreeName: string): string {
+  return worktreeName.replace(/^dangeresque-/, "");
+}
+
+/**
+ * Read the run's own identity (the worktree it ran in) from the sibling eval
+ * JSON. Archived filenames carry only a timestamp and mode, so several runs
+ * against ONE issue — the `--name implement-123-slice-a` / `-slice-b` pattern —
+ * are indistinguishable in a listing without this.
+ */
+export function readRunName(
+  projectRoot: string,
+  issueNumber: number,
+  filename: string,
+): string | undefined {
+  const jsonPath = jsonPathForArchive(
+    join(getIssueRunsDir(projectRoot, issueNumber), filename),
+  );
+  if (!existsSync(jsonPath)) return undefined;
+  try {
+    const artifact = JSON.parse(readFileSync(jsonPath, "utf-8")) as Partial<RunArtifact>;
+    return typeof artifact.worktree_name === "string"
+      ? shortRunName(artifact.worktree_name)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function formatRunOneLiner(
   filename: string,
   content: string,
   index: number,
+  runName?: string,
 ): string {
   // Extract mode from filename: 2026-04-02T14-30-00-IMPLEMENT.md → IMPLEMENT
   const modeMatch = filename.match(/-([A-Z]+)\.md$/);
   const mode = modeMatch ? modeMatch[1] : "UNKNOWN";
+  const label = `Run ${index + 1} (${mode}${runName ? ` · ${runName}` : ""})`;
 
   const summary = parseSummaryBlock(content);
   if (summary) {
@@ -528,11 +563,11 @@ export function formatRunOneLiner(
     const status = statusMatch ? statusMatch[1].trim() : "unknown";
     const filesMatch = summary.match(/Files:\s*(.+)/);
     const files = filesMatch ? filesMatch[1].trim() : "";
-    return `Run ${index + 1} (${mode}): ${status}${files ? ` — ${files}` : ""}`;
+    return `${label}: ${status}${files ? ` — ${files}` : ""}`;
   }
 
   // Fallback: no summary block (older run)
-  return `Run ${index + 1} (${mode}): ${filename}`;
+  return `${label}: ${filename}`;
 }
 
 /**
@@ -541,6 +576,35 @@ export function formatRunOneLiner(
  * when the JSON is missing or unparseable so callers can fall back to the
  * pre-header layout.
  */
+/**
+ * The canonical commands for reading a run's output, in the form that actually
+ * works at this point in the run's life.
+ *
+ * This is printed rather than left implicit because the answer is genuinely
+ * non-obvious and gets improvised badly. `results --issue <N>` reads the
+ * PROJECT-ROOT archive, which is only populated once `merge` mirrors the
+ * worktree across — before a merge it reports "No runs found". An operator (or
+ * agent) who tries it pre-merge, gets nothing, and has no other pointer ends up
+ * tailing raw engine session logs out of temp directories.
+ */
+export function formatResultsGuidance(opts: {
+  branch: string;
+  issueNumber?: number;
+  running: boolean;
+}): string[] {
+  const lines = [
+    `  Read results: dangeresque results ${opts.branch}` +
+      (opts.running ? "   (once the phase ends)" : ""),
+  ];
+  if (opts.running) {
+    lines.unshift(`  Follow live:  dangeresque logs ${opts.branch} -f`);
+  }
+  if (opts.issueNumber !== undefined) {
+    lines.push(`  After merge:  dangeresque results --issue ${opts.issueNumber}`);
+  }
+  return lines;
+}
+
 export function formatRunHeader(jsonPath: string): string | null {
   if (!existsSync(jsonPath)) return null;
   let artifact: Partial<RunArtifact>;
@@ -1189,7 +1253,14 @@ export function getWorktreeResults(
             issueNum,
             archived[i],
           );
-          lines.push(formatRunOneLiner(archived[i], content, i));
+          lines.push(
+            formatRunOneLiner(
+              archived[i],
+              content,
+              i,
+              readRunName(targetWorktree.path, issueNum, archived[i]),
+            ),
+          );
         }
         lines.push("");
       }
@@ -1231,7 +1302,8 @@ export function getArchivedResults(
   if (showAll) {
     for (let i = 0; i < archived.length; i++) {
       const content = readArchivedRun(projectRoot, issueNumber, archived[i]);
-      lines.push(`=== Run ${i + 1}: ${archived[i]} ===`);
+      const runName = readRunName(projectRoot, issueNumber, archived[i]);
+      lines.push(`=== Run ${i + 1}: ${archived[i]}${runName ? ` (${runName})` : ""} ===`);
       lines.push(content);
       lines.push("");
     }
@@ -1254,7 +1326,10 @@ export function getArchivedResults(
     }
 
     const latest = readArchivedRun(projectRoot, issueNumber, latestName);
-    lines.push(`--- Latest: Run ${archived.length} (${latestName}) ---`);
+    const latestRunName = readRunName(projectRoot, issueNumber, latestName);
+    lines.push(
+      `--- Latest: Run ${archived.length} (${latestName}${latestRunName ? ` · ${latestRunName}` : ""}) ---`,
+    );
     lines.push(latest);
   }
 

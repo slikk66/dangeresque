@@ -17,6 +17,8 @@ import {
   locateLatestRun,
   assessReviewRescue,
   recoverWorkerPhase,
+  deriveIssueNumberFromWorktree,
+  deriveModeFromWorktree,
 } from "./rescue.js";
 import {
   ArtifactBuilder,
@@ -41,6 +43,7 @@ import {
   assertInMainCheckout,
   filterWorktrees,
   formatRunHeader,
+  formatResultsGuidance,
   formatPidExecution,
   extractIssueNumber,
   extractMode,
@@ -590,7 +593,8 @@ async function cmdRun(args: string[]) {
     console.error(`!!  Branch:   ${workerResult.branch}`);
     console.error(`!!  Artifact: ${workerResult.archivePath}`);
     console.error(`!!`);
-    console.error(`!!  Inspect: dangeresque logs`);
+    console.error(`!!  Inspect: dangeresque logs ${workerResult.branch}`);
+    console.error(`!!  Results: dangeresque results ${workerResult.branch}`);
     console.error(`!!  Cleanup: dangeresque discard ${workerResult.branch}`);
     console.error(`${banner}\n`);
 
@@ -1196,6 +1200,13 @@ function cmdStatus() {
     if (wt.pidInfo?.phase) {
       console.log(`  Phase:  ${wt.pidInfo.phase}`);
     }
+    for (const line of formatResultsGuidance({
+      branch: wt.branch,
+      issueNumber: extractIssueNumber(wt.branch),
+      running: wt.running,
+    })) {
+      console.log(line);
+    }
     console.log();
   }
 }
@@ -1226,6 +1237,8 @@ async function cmdReview(args: string[]) {
   let verifyEnabled = true;
   let dryRun = false;
   let target: string | undefined;
+  let issueOverride: number | undefined;
+  let modeOverride: string | undefined;
   const runOverrides: RunPlanOverrides = { worker: {}, review: {} };
 
   const envReviewEngine = process.env.DANGERESQUE_REVIEW_ENGINE?.toLowerCase();
@@ -1256,6 +1269,14 @@ async function cmdReview(args: string[]) {
       runOverrides.review!.model = args[++i];
     } else if (arg === "--review-effort" && args[i + 1]) {
       runOverrides.review!.effort = args[++i];
+    } else if (arg === "--issue" && args[i + 1]) {
+      issueOverride = parseInt(args[++i], 10);
+      if (isNaN(issueOverride)) {
+        console.error("--issue requires a numeric issue number");
+        process.exit(1);
+      }
+    } else if (arg === "--mode" && args[i + 1]) {
+      modeOverride = args[++i].toUpperCase();
     } else if (!arg.startsWith("-") && target === undefined) {
       target = arg;
     }
@@ -1284,8 +1305,21 @@ async function cmdReview(args: string[]) {
 
   const worktreeName = branch.replace("worktree-", "");
   const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
-  const issueNumber = extractIssueNumber(branch);
-  const mode = extractMode(branch);
+
+  // Identity resolution, most-explicit first. Branch parsing handles the
+  // conventional shape including multi-slice names (`implement-123-slice-a`);
+  // the worktree's own runs dir covers fully custom `--name` values that encode
+  // neither; the flags are the escape hatch when both fail.
+  const issueNumber =
+    issueOverride ?? extractIssueNumber(branch) ?? deriveIssueNumberFromWorktree(worktreePath);
+  const parsedMode = extractMode(branch);
+  const mode =
+    modeOverride ??
+    (parsedMode !== "UNKNOWN"
+      ? parsedMode
+      : (issueNumber !== undefined
+          ? deriveModeFromWorktree(worktreePath, issueNumber)
+          : undefined) ?? parsedMode);
 
   const refuse = (reason: string, hints: string[] = []): never => {
     console.error(`ERROR: refusing to re-review ${branch} because -`);
@@ -1303,9 +1337,14 @@ async function cmdReview(args: string[]) {
     ]);
   }
   if (issueNumber === undefined) {
-    refuse(`no issue number could be derived from the branch name`, [
+    refuse(`no issue number could be derived from the branch name or its worktree`, [
       "Review rescue re-fetches the issue to rebuild the reviewer's prompt.",
-      "Only branches named worktree-dangeresque-<mode>-<issue> can be rescued.",
+      `Name it explicitly: dangeresque review ${branch} --issue <N>`,
+    ]);
+  }
+  if (mode === "UNKNOWN") {
+    refuse(`no mode could be derived from the branch name or its run artifacts`, [
+      `Name it explicitly: dangeresque review ${branch} --mode IMPLEMENT`,
     ]);
   }
 
