@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,7 +10,7 @@ import {
   normalizeMergeGateConfig,
   validateSetup,
   validateEngineRuntime,
-  applyEngineRunOverrides,
+  resolveRunPlan,
   agentMdHasPointer,
   ensurePointer,
   projectHash,
@@ -33,7 +33,15 @@ test("loadConfig: no config file → full defaults", () => {
   const tmp = makeTmp();
   try {
     const cfg = loadConfig(tmp);
-    assert.equal(cfg.engine, "claude");
+    assert.deepEqual(cfg.worker, {
+      engine: "claude",
+      model: "claude-opus-4-7",
+      effort: "max",
+    });
+    assert.deepEqual(cfg.engineDefaults, {
+      claude: { model: "claude-opus-4-7", effort: "max" },
+      codex: { model: "gpt-5.5", effort: "xhigh" },
+    });
     assert.equal(cfg.permissionMode, "acceptEdits");
     assert.equal(cfg.workerPrompt, "worker-prompt.md");
     assert.equal(cfg.reviewPrompt, "review-prompt.md");
@@ -50,11 +58,10 @@ test("loadConfig: partial config merges with defaults", () => {
     mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
     writeFileSync(
       join(tmp, CONFIG_DIR, "config.json"),
-      JSON.stringify({ engine: "codex", model: "custom-model" }),
+      JSON.stringify({ worker: { engine: "codex", model: "custom-model", effort: "high" } }),
     );
     const cfg = loadConfig(tmp);
-    assert.equal(cfg.engine, "codex");
-    assert.equal(cfg.model, "custom-model");
+    assert.deepEqual(cfg.worker, { engine: "codex", model: "custom-model", effort: "high" });
     assert.equal(cfg.permissionMode, "acceptEdits");
     assert.equal(cfg.workerPrompt, "worker-prompt.md");
   } finally {
@@ -62,62 +69,203 @@ test("loadConfig: partial config merges with defaults", () => {
   }
 });
 
-test("loadConfig: loads Codex worker and review model/effort overrides", () => {
+test("loadConfig: loads explicit mixed-engine phases", () => {
   const tmp = makeTmp();
   try {
     mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
     writeFileSync(
       join(tmp, CONFIG_DIR, "config.json"),
       JSON.stringify({
-        engine: "codex",
-        codexModel: "gpt-5.5",
-        codexEffort: "xhigh",
-        codexReviewModel: "gpt-5.4",
-        codexReviewEffort: "high",
+        engineDefaults: {
+          claude: { model: "claude-opus-4-7", effort: "max" },
+          codex: { model: "gpt-5.5", effort: "xhigh" },
+        },
+        worker: { engine: "codex" },
+        review: { engine: "claude" },
       }),
     );
     const cfg = loadConfig(tmp);
-    assert.equal(cfg.codexModel, "gpt-5.5");
-    assert.equal(cfg.codexEffort, "xhigh");
-    assert.equal(cfg.codexReviewModel, "gpt-5.4");
-    assert.equal(cfg.codexReviewEffort, "high");
+    assert.deepEqual(resolveRunPlan(cfg), {
+      worker: { engine: "codex", model: "gpt-5.5", effort: "xhigh" },
+      review: { engine: "claude", model: "claude-opus-4-7", effort: "max" },
+    });
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test("applyEngineRunOverrides: generic CLI flags target active Codex fields", () => {
+test("resolveRunPlan: applies worker and review overrides immutably", () => {
   const cfg = loadConfig(makeTmp());
-  cfg.engine = "codex";
-  cfg.codexModel = "gpt-5.4";
-  cfg.codexEffort = "high";
-
-  applyEngineRunOverrides(cfg, {
-    model: "gpt-5.5",
-    effort: "xhigh",
-    reviewModel: "gpt-5.4",
-    reviewEffort: "medium",
+  const plan = resolveRunPlan(cfg, {
+    worker: { engine: "codex", model: "gpt-5.5", effort: "xhigh" },
+    review: { engine: "claude", model: "claude-opus", effort: "max" },
   });
-
-  assert.equal(cfg.codexModel, "gpt-5.5");
-  assert.equal(cfg.codexEffort, "xhigh");
-  assert.equal(cfg.codexReviewModel, "gpt-5.4");
-  assert.equal(cfg.codexReviewEffort, "medium");
+  assert.deepEqual(plan.worker, { engine: "codex", model: "gpt-5.5", effort: "xhigh" });
+  assert.deepEqual(plan.review, { engine: "claude", model: "claude-opus", effort: "max" });
+  assert.equal(cfg.worker.engine, "claude");
 });
 
-test("applyEngineRunOverrides: generic CLI flags retain Claude behavior", () => {
+test("resolveRunPlan: omitted review inherits resolved worker", () => {
   const cfg = loadConfig(makeTmp());
-  applyEngineRunOverrides(cfg, {
-    model: "claude-sonnet",
-    effort: "high",
-    reviewModel: "claude-opus",
-    reviewEffort: "max",
+  const plan = resolveRunPlan(cfg, {
+    worker: { model: "claude-sonnet", effort: "high" },
   });
+  assert.deepEqual(plan.review, plan.worker);
+});
 
-  assert.equal(cfg.model, "claude-sonnet");
-  assert.equal(cfg.effort, "high");
-  assert.equal(cfg.reviewModel, "claude-opus");
-  assert.equal(cfg.reviewEffort, "max");
+test("resolveRunPlan: engine-only worker override uses target engine defaults", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({
+        engineDefaults: {
+          claude: { model: "claude-opus", effort: "max" },
+          codex: { model: "gpt-5.6-sol", effort: "xhigh" },
+        },
+        worker: { engine: "claude", model: "claude-worker", effort: "high" },
+      }),
+    );
+    const plan = resolveRunPlan(loadConfig(tmp), {
+      worker: { engine: "codex" },
+    });
+    assert.deepEqual(plan.worker, {
+      engine: "codex",
+      model: "gpt-5.6-sol",
+      effort: "xhigh",
+    });
+    assert.deepEqual(plan.review, plan.worker);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("resolveRunPlan: engine-only review override uses target engine defaults", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({
+        engineDefaults: {
+          claude: { model: "claude-opus", effort: "max" },
+          codex: { model: "gpt-5.6-sol", effort: "xhigh" },
+        },
+        worker: { engine: "claude", model: "claude-worker", effort: "high" },
+      }),
+    );
+    const plan = resolveRunPlan(loadConfig(tmp), {
+      review: { engine: "codex" },
+    });
+    assert.deepEqual(plan.review, {
+      engine: "codex",
+      model: "gpt-5.6-sol",
+      effort: "xhigh",
+    });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("resolveRunPlan: explicit model and effort override target engine defaults", () => {
+  const cfg = loadConfig(makeTmp());
+  const plan = resolveRunPlan(cfg, {
+    worker: { engine: "codex", model: "gpt-custom", effort: "medium" },
+  });
+  assert.deepEqual(plan.worker, {
+    engine: "codex",
+    model: "gpt-custom",
+    effort: "medium",
+  });
+});
+
+test("resolveRunPlan: cross-engine review uses target engine defaults", () => {
+  const cfg = loadConfig(makeTmp());
+  assert.deepEqual(resolveRunPlan(cfg, { review: { engine: "codex" } }).review, {
+    engine: "codex",
+    model: "gpt-5.5",
+    effort: "xhigh",
+  });
+});
+
+test("loadConfig: worker can select a standing engine default without repeating model", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({
+        engineDefaults: {
+          codex: { model: "gpt-5.6-sol", effort: "high" },
+        },
+        worker: { engine: "codex" },
+      }),
+    );
+    assert.deepEqual(loadConfig(tmp).worker, {
+      engine: "codex",
+      model: "gpt-5.6-sol",
+      effort: "high",
+    });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: invalid engine default fails loudly", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    writeFileSync(
+      join(tmp, CONFIG_DIR, "config.json"),
+      JSON.stringify({
+        engineDefaults: { codex: { model: "gpt-5.6-sol", effort: "" } },
+      }),
+    );
+    assert.throws(
+      () => loadConfig(tmp),
+      /engineDefaults\.codex\.effort must be a non-empty string/,
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("resolveRunPlan: supports all four worker/review engine pairings", () => {
+  const cfg = loadConfig(makeTmp());
+  for (const workerEngine of ["claude", "codex"] as const) {
+    for (const reviewEngine of ["claude", "codex"] as const) {
+      const plan = resolveRunPlan(cfg, {
+        worker: { engine: workerEngine, model: `${workerEngine}-model`, effort: "high" },
+        review: { engine: reviewEngine, model: `${reviewEngine}-review`, effort: "high" },
+      });
+      assert.equal(plan.worker.engine, workerEngine);
+      assert.equal(plan.review.engine, reviewEngine);
+    }
+  }
+});
+
+test("loadConfig: legacy flat engine fields fail loudly", () => {
+  const tmp = makeTmp();
+  mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+  writeFileSync(join(tmp, CONFIG_DIR, "config.json"), JSON.stringify({ engine: "codex" }));
+  assert.throws(() => loadConfig(tmp), /Legacy flat engine config.*engine/);
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("loadConfig: shipped config example is valid when copied verbatim", () => {
+  const tmp = makeTmp();
+  try {
+    mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+    const example = readFileSync(
+      join(process.cwd(), "config-templates", "config.example.json"),
+      "utf-8",
+    );
+    writeFileSync(join(tmp, CONFIG_DIR, "config.json"), example);
+    assert.doesNotThrow(() => loadConfig(tmp));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("loadConfig: allowedTools extends defaults preserving order", () => {
@@ -186,17 +334,17 @@ test("loadConfig: disallowedTools extends + dedupes the same way", () => {
   }
 });
 
-test("loadConfig: scalar override (model) still last-wins", () => {
+test("loadConfig: worker model override still last-wins", () => {
   const tmp = makeTmp();
   try {
     mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
     writeFileSync(
       join(tmp, CONFIG_DIR, "config.json"),
-      JSON.stringify({ model: "claude-sonnet-4-6" }),
+      JSON.stringify({ worker: { model: "claude-sonnet-4-6" } }),
     );
     const cfg = loadConfig(tmp);
     const baseline = loadConfig(makeTmp());
-    assert.equal(cfg.model, "claude-sonnet-4-6");
+    assert.equal(cfg.worker.model, "claude-sonnet-4-6");
     assert.deepEqual(cfg.allowedTools, baseline.allowedTools);
     assert.deepEqual(cfg.disallowedTools, baseline.disallowedTools);
   } finally {
@@ -232,6 +380,14 @@ test("loadConfig: malformed JSON throws", () => {
   }
 });
 
+test("loadConfig: non-object JSON fails loudly", () => {
+  const tmp = makeTmp();
+  mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
+  writeFileSync(join(tmp, CONFIG_DIR, "config.json"), "null");
+  assert.throws(() => loadConfig(tmp), /must contain a JSON object/);
+  rmSync(tmp, { recursive: true, force: true });
+});
+
 test("validateSetup: missing .dangeresque/ directory → invalid", () => {
   const tmp = makeTmp();
   try {
@@ -249,7 +405,7 @@ test("validateSetup: invalid engine value reported", () => {
     mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
     writeFileSync(
       join(tmp, CONFIG_DIR, "config.json"),
-      JSON.stringify({ engine: "banana" }),
+      JSON.stringify({ worker: { engine: "banana" } }),
     );
     writeFileSync(join(tmp, CONFIG_DIR, "worker-prompt.md"), "worker");
     writeFileSync(join(tmp, CONFIG_DIR, "review-prompt.md"), "review");
@@ -544,7 +700,7 @@ test("loadConfig: scope.opportunistic missing in config.json → defaults", () =
   const tmp = makeTmp();
   try {
     mkdirSync(join(tmp, CONFIG_DIR), { recursive: true });
-    writeFileSync(join(tmp, CONFIG_DIR, "config.json"), JSON.stringify({ engine: "claude" }));
+    writeFileSync(join(tmp, CONFIG_DIR, "config.json"), JSON.stringify({ worker: { engine: "claude" } }));
     const cfg = loadConfig(tmp);
     assert.equal(cfg.scope?.opportunistic.enabled, true);
     assert.equal(cfg.scope?.opportunistic.maxFiles, 1);

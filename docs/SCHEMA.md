@@ -4,7 +4,7 @@ This page covers the operator-facing surface of dangeresque's artifact and binar
 
 ## Health Checks (`dangeresque doctor`)
 
-`dangeresque doctor` runs five quick checks against the installed binary, the project, and the host environment. It exists because a globally-linked `dangeresque` is easy to forget about: a stale `dist/` writes wrong-schema artifacts, a missing `gh` makes `--issue` runs fail mid-flight, and a project that was never `init`-ed has no `.dangeresque/` for the worker to read.
+`dangeresque doctor` runs six quick checks against the installed binary, the project, and the host environment. It exists because a globally-linked `dangeresque` is easy to forget about: a stale `dist/` writes wrong-schema artifacts, a missing `gh` makes `--issue` runs fail mid-flight, and invalid project config otherwise fails only at dispatch.
 
 ```
 $ dangeresque doctor
@@ -23,10 +23,12 @@ Checks:
          gh --version OK
   [PASS] dangeresque-initialized
          .dangeresque/ exists at /path/to/your-project
+  [PASS] dangeresque-config-valid
+         config and prompt files pass run preflight validation
 
-Summary: 5 pass · 0 warn · 0 fail
+Summary: 6 pass · 0 warn · 0 fail
 
-Exit codes: 0 normal · 1 if --strict and any WARN · 2 on internal error
+Exit codes: 0 normal · 1 on FAIL or --strict WARN · 2 on internal error
 ```
 
 | Check | What it verifies |
@@ -36,6 +38,7 @@ Exit codes: 0 normal · 1 if --strict and any WARN · 2 on internal error
 | `schema-version` | The build-info `schema_version` matches the loaded module's `ARTIFACT_SCHEMA_VERSION`. Catches mixed-build state. |
 | `gh-cli-available` | `gh --version` succeeds. The `--issue <N>` flow requires it. |
 | `dangeresque-initialized` | `.dangeresque/` exists in the project root. Catches "linked the binary but never ran `dangeresque init`". |
+| `dangeresque-config-valid` | Uses the same setup/config validator as `dangeresque run`; catches rejected keys, malformed phase/default profiles, and missing prompt files. |
 
 `--strict` flips WARN into an exit-code-1 condition for CI use. By default only FAIL produces non-zero exit. Internal errors (uncaught exceptions in the doctor checks themselves) exit 2.
 
@@ -48,15 +51,16 @@ Exit codes: 0 normal · 1 if --strict and any WARN · 2 on internal error
 ```
 $ dangeresque migrate
 Migrated: 0
-Skipped (already at v6): 1
+Skipped (already at v7): 1
 ```
 
-Currently supported source versions: `v4` and `v5`. Older versions throw with a "unsupported source schema_version" error and require manual handling.
+Currently supported source versions: `v4`, `v5`, and `v6`. Older versions throw with an "unsupported source schema_version" error and require manual handling.
 
 | Step | Effect |
 | --- | --- |
 | `v4 → v5` | Adds empty defaults for `scope_block`, `scope_declaration`, `scope_report` (the scope subsystem fields). |
 | `v5 → v6` | Drops the deprecated `scope_violations` field; renames the `scope_violation` enum value in `failure_categories` to `scope_outside`. |
+| `v6 → v7` | Adds `review_engine` to reviewed artifacts, defaulting to the worker `engine` for historical same-engine runs. |
 
 Migrations write a `migrated_from_version` field on each touched artifact so downstream consumers can tell a freshly-migrated file from one originally written at the current version. Run-result `.md` files are untouched — they are operator narrative, not derived data.
 

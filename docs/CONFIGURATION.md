@@ -18,16 +18,10 @@
 
 | Key               | Type     | Default              | Description                                                                                        |
 | ----------------- | -------- | -------------------- | -------------------------------------------------------------------------------------------------- |
-| `engine`          | string   | `"claude"`           | Execution engine (`claude` or `codex`)                                                             |
-| `model`           | string   | `"claude-opus-4-7"`  | Generic worker model; Codex falls back to this when `codexModel` is unset                           |
+| `engineDefaults`  | object   | Claude + Codex pins   | Standing `model` and `effort` per engine; used whenever a phase selects or switches engine         |
+| `worker`          | object   | Claude Opus / max     | Worker `engine`, `model`, and `effort`                                                              |
+| `review`          | object   | worker phase          | Review `engine`, `model`, and `effort`; omitted fields inherit worker when engine matches           |
 | `permissionMode`  | string   | `"acceptEdits"`      | Sandbox/permission mode for the selected engine                                                    |
-| `effort`          | string   | `"max"`              | Generic worker effort; Codex falls back to this when `codexEffort` is unset                         |
-| `reviewModel`     | string   | worker model         | Generic review model                                                                                |
-| `reviewEffort`    | string   | worker effort        | Generic review effort                                                                               |
-| `codexModel`      | string   | `model`              | Codex worker model                                                                                  |
-| `codexEffort`     | string   | `effort`             | Codex native worker reasoning effort                                                               |
-| `codexReviewModel` | string  | review/worker model  | Codex review model                                                                                  |
-| `codexReviewEffort` | string | review/worker effort | Codex native review reasoning effort                                                               |
 | `headless`        | boolean  | `true`               | Run with `-p` flag (set false for interactive)                                                     |
 | `allowedTools`    | string[] | _(see below)_        | Tools auto-approved without prompting                                                              |
 | `disallowedTools` | string[] | _(see below)_        | Tools hard-blocked from use                                                                        |
@@ -50,17 +44,20 @@ Select per-project in `.dangeresque/config.json`:
 
 ```json
 {
-  "engine": "codex",
-  "codexModel": "gpt-5.5",
-  "codexEffort": "xhigh",
-  "codexReviewModel": "gpt-5.5",
-  "codexReviewEffort": "high"
+  "engineDefaults": {
+    "claude": { "model": "claude-opus-4-7", "effort": "max" },
+    "codex": { "model": "gpt-5.5", "effort": "xhigh" }
+  },
+  "worker": { "engine": "codex" },
+  "review": { "engine": "claude" }
 }
 ```
 
-Or override per-run: `DANGERESQUE_ENGINE=codex dangeresque run --issue 63`. Help output adapts to the active engine.
+Or override per-run with `--engine`, `--model`, `--effort`, `--review-engine`, `--review-model`, and `--review-effort`. Environment equivalents are `DANGERESQUE_ENGINE` and `DANGERESQUE_REVIEW_ENGINE`.
 
-Codex uses `-c model_reasoning_effort="<effort>"` for both worker and review runs. Generic `--model`, `--effort`, `--review-model`, and `--review-effort` flags override the active engine. In config, Codex-specific fields override generic fields; review-specific fields override worker fields. Before dispatch, dangeresque reads the installed Codex model catalog and fails when either phase selects an unsupported pair. GPT-5.4 and GPT-5.5 support `low`, `medium`, `high`, and `xhigh`, but not `max`. `ultra` is always rejected because it enables multi-agent delegation rather than only increasing single-agent reasoning. Codex runs use `--full-auto` (safe automation mode), not dangerous bypass flags. MCP on **Claude Code** uses your existing Claude setup; MCP on **Codex** is configured in `~/.codex/config.toml` under `[mcp_servers]` — keep entries aligned across both tools for equivalent behavior.
+Resolution order is CLI phase model/effort, phase config model/effort, then the selected `engineDefaults` pin. Changing only `--engine` or `--review-engine` therefore switches model and effort with the provider instead of carrying an incompatible string across engines. Omitting `review` inherits the resolved worker phase. Legacy flat `engine`, `model`, `codexModel`, and related fields fail loudly; `dangeresque doctor` detects them before dispatch.
+
+Codex uses `-c model_reasoning_effort="<effort>"` for every Codex phase. Before dispatch, dangeresque reads the installed Codex model catalog and fails when any scheduled Codex phase selects an unsupported pair. GPT-5.4 and GPT-5.5 support `low`, `medium`, `high`, and `xhigh`, but not `max`. `ultra` is always rejected because it enables multi-agent delegation rather than only increasing single-agent reasoning. Codex runs use `--full-auto` (safe automation mode), not dangerous bypass flags. MCP on **Claude Code** uses your existing Claude setup; MCP on **Codex** is configured in `~/.codex/config.toml` under `[mcp_servers]` — keep entries aligned across both tools for equivalent behavior.
 
 ## Permissions
 

@@ -17,15 +17,17 @@ import {
   buildCodexReviewArgs,
   buildClaudeWorkerArgs,
   buildClaudeReviewArgs,
-  workerModelEffort,
-  reviewModelEffort,
   validateCodexModelEfforts,
+  buildRunTag,
+  executionReceiptPidFields,
+  buildWorkerInvocation,
+  buildReviewInvocation,
   readPromptWithLocal,
   exitCodeFromCloseEvent,
   CODEX_RULES_RELPATH,
 } from "#dist/runner.js";
 import type { RunOptions } from "#dist/runner.js";
-import type { DangeresqueConfig } from "#dist/config.js";
+import type { DangeresqueConfig, PhaseConfig, RunPlan } from "#dist/config.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(HERE, "..", "..", "..");
@@ -364,15 +366,13 @@ function makeCodexArgsFixture(): { projectRoot: string; opts: RunOptions; cleanu
   writeFileSync(join(projectRoot, ".dangeresque", "review-prompt.md"), "REVIEW_PROMPT_TEMPLATE_BODY\n");
 
   const config: DangeresqueConfig = {
-    engine: "codex",
-    model: "claude-model-default",
-    codexModel: "codex-model-worker",
-    codexReviewModel: "codex-model-review",
-    codexEffort: "xhigh",
-    codexReviewEffort: "high",
+    engineDefaults: {
+      claude: { model: "claude-model-default", effort: "max" },
+      codex: { model: "codex-model-worker", effort: "xhigh" },
+    },
+    worker: { engine: "codex", model: "codex-model-worker", effort: "xhigh" },
+    review: { engine: "codex", model: "codex-model-review", effort: "high" },
     permissionMode: "acceptEdits",
-    effort: "max",
-    reviewEffort: "low",
     headless: true,
     allowedTools: [],
     disallowedTools: [],
@@ -384,6 +384,10 @@ function makeCodexArgsFixture(): { projectRoot: string; opts: RunOptions; cleanu
   const opts: RunOptions = {
     projectRoot,
     config,
+    plan: {
+      worker: { engine: "codex", model: "codex-model-worker", effort: "xhigh" },
+      review: { engine: "codex", model: "codex-model-review", effort: "high" },
+    },
     mode: "IMPLEMENT",
     issueData: {
       number: 35,
@@ -497,11 +501,13 @@ function makeClaudeArgsFixture(headless: boolean): { projectRoot: string; opts: 
   writeFileSync(join(projectRoot, ".dangeresque", "review-prompt.md"), "CLAUDE_REVIEW_PROMPT_BODY\n");
 
   const config: DangeresqueConfig = {
-    engine: "claude",
-    model: "claude-model-default",
+    engineDefaults: {
+      claude: { model: "claude-model-default", effort: "max" },
+      codex: { model: "codex-model-default", effort: "xhigh" },
+    },
+    worker: { engine: "claude", model: "claude-model-default", effort: "max" },
+    review: { effort: "low" },
     permissionMode: "acceptEdits",
-    effort: "max",
-    reviewEffort: "low",
     headless,
     allowedTools: [],
     disallowedTools: ["Bash(git push *)"],
@@ -513,6 +519,10 @@ function makeClaudeArgsFixture(headless: boolean): { projectRoot: string; opts: 
   const opts: RunOptions = {
     projectRoot,
     config,
+    plan: {
+      worker: { engine: "claude", model: "claude-model-default", effort: "max" },
+      review: { engine: "claude", model: "claude-model-default", effort: "low" },
+    },
     mode: "IMPLEMENT",
     issueData: {
       number: 43,
@@ -758,56 +768,7 @@ test("exitCodeFromCloseEvent: signal takes precedence over a non-null code", () 
   assert.equal(exitCodeFromCloseEvent(0, "SIGTERM"), 0);
 });
 
-const cfg = (partial: Partial<DangeresqueConfig>): DangeresqueConfig =>
-  partial as DangeresqueConfig;
-
-test("workerModelEffort(claude): carries model + effort", () => {
-  assert.deepEqual(
-    workerModelEffort(cfg({ engine: "claude", model: "opus", effort: "xhigh" })),
-    { model: "opus", effort: "xhigh" },
-  );
-});
-
-test("workerModelEffort(codex): Codex overrides win, then generic fallback", () => {
-  assert.deepEqual(
-    workerModelEffort(cfg({ engine: "codex", model: "fallback", codexModel: "gpt-5.5", effort: "high", codexEffort: "xhigh" })),
-    { model: "gpt-5.5", effort: "xhigh" },
-  );
-  assert.deepEqual(
-    workerModelEffort(cfg({ engine: "codex", model: "fallback", effort: "high" })),
-    { model: "fallback", effort: "high" },
-  );
-});
-
-test("reviewModelEffort(claude): review overrides win, fall back to worker values", () => {
-  assert.deepEqual(
-    reviewModelEffort(cfg({ engine: "claude", model: "opus", effort: "max", reviewModel: "sonnet", reviewEffort: "high" })),
-    { model: "sonnet", effort: "high" },
-  );
-  assert.deepEqual(
-    reviewModelEffort(cfg({ engine: "claude", model: "opus", effort: "max" })),
-    { model: "opus", effort: "max" },
-  );
-});
-
-test("reviewModelEffort(codex): phase-specific, generic review, Codex worker, generic worker precedence", () => {
-  assert.deepEqual(
-    reviewModelEffort(cfg({ engine: "codex", model: "m", effort: "medium", codexModel: "cm", codexEffort: "high", reviewModel: "rm", reviewEffort: "xhigh", codexReviewModel: "crm", codexReviewEffort: "low" })),
-    { model: "crm", effort: "low" },
-  );
-  assert.deepEqual(
-    reviewModelEffort(cfg({ engine: "codex", model: "m", effort: "medium", codexModel: "cm", codexEffort: "high", reviewModel: "rm", reviewEffort: "xhigh" })),
-    { model: "rm", effort: "xhigh" },
-  );
-  assert.deepEqual(
-    reviewModelEffort(cfg({ engine: "codex", model: "m", effort: "medium", codexModel: "cm", codexEffort: "high" })),
-    { model: "cm", effort: "high" },
-  );
-  assert.deepEqual(
-    reviewModelEffort(cfg({ engine: "codex", model: "m", effort: "medium" })),
-    { model: "m", effort: "medium" },
-  );
-});
+const plan = (worker: PhaseConfig, review: PhaseConfig = worker): RunPlan => ({ worker, review });
 
 const codexCatalog = {
   "gpt-5.4": ["low", "medium", "high", "xhigh"],
@@ -817,15 +778,10 @@ const codexCatalog = {
 
 test("validateCodexModelEfforts: accepts gpt-5.5 xhigh for worker and review", () => {
   const result = validateCodexModelEfforts(
-    cfg({
-      engine: "codex",
-      model: "fallback",
-      effort: "medium",
-      codexModel: "gpt-5.5",
-      codexEffort: "xhigh",
-      codexReviewModel: "gpt-5.5",
-      codexReviewEffort: "xhigh",
-    }),
+    plan(
+      { engine: "codex", model: "gpt-5.5", effort: "xhigh" },
+      { engine: "codex", model: "gpt-5.5", effort: "xhigh" },
+    ),
     codexCatalog,
   );
   assert.deepEqual(result, { valid: true, errors: [] });
@@ -833,7 +789,7 @@ test("validateCodexModelEfforts: accepts gpt-5.5 xhigh for worker and review", (
 
 test("validateCodexModelEfforts: rejects max on gpt-5.5 loudly", () => {
   const result = validateCodexModelEfforts(
-    cfg({ engine: "codex", model: "gpt-5.5", effort: "max" }),
+    plan({ engine: "codex", model: "gpt-5.5", effort: "max" }),
     codexCatalog,
   );
   assert.equal(result.valid, false);
@@ -844,13 +800,10 @@ test("validateCodexModelEfforts: rejects max on gpt-5.5 loudly", () => {
 
 test("validateCodexModelEfforts: validates review model/effort independently", () => {
   const result = validateCodexModelEfforts(
-    cfg({
-      engine: "codex",
-      model: "gpt-5.5",
-      effort: "xhigh",
-      codexReviewModel: "gpt-5.5",
-      codexReviewEffort: "max",
-    }),
+    plan(
+      { engine: "claude", model: "claude-opus", effort: "max" },
+      { engine: "codex", model: "gpt-5.5", effort: "max" },
+    ),
     codexCatalog,
   );
   assert.equal(result.valid, false);
@@ -860,9 +813,78 @@ test("validateCodexModelEfforts: validates review model/effort independently", (
 
 test("validateCodexModelEfforts: rejects ultra even when catalog advertises it", () => {
   const result = validateCodexModelEfforts(
-    cfg({ engine: "codex", model: "gpt-5.6-sol", effort: "ultra" }),
+    plan({ engine: "codex", model: "gpt-5.6-sol", effort: "ultra" }),
     codexCatalog,
   );
   assert.equal(result.valid, false);
   assert.match(result.errors.join("\n"), /ultra.*delegation/i);
+});
+
+test("validateCodexModelEfforts: ignores unscheduled Codex review", () => {
+  const result = validateCodexModelEfforts(
+    plan(
+      { engine: "claude", model: "claude-opus", effort: "max" },
+      { engine: "codex", model: "gpt-5.5", effort: "max" },
+    ),
+    codexCatalog,
+    false,
+  );
+  assert.deepEqual(result, { valid: true, errors: [] });
+});
+
+test("buildRunTag: shows mixed review engine", () => {
+  const tag = buildRunTag("IMPLEMENT", {
+    projectRoot: "/tmp",
+    issueNumber: 1,
+    mode: "IMPLEMENT",
+    worktreeName: "wt",
+    archivePath: "/tmp/run.md",
+    workerExitCode: 0,
+    engine: "codex",
+    reviewEngine: "claude",
+    model: "gpt-5.5",
+    effort: "xhigh",
+    reviewModel: "claude-opus-4-7",
+    reviewEffort: "max",
+  });
+  assert.match(tag, /engine=codex/);
+  assert.match(tag, /review-engine=claude/);
+});
+
+test("executionReceiptPidFields: preserves opposite-engine worker locator", () => {
+  const codexWorker = { engine: "codex" as const, model: "gpt-5.5", effort: "xhigh", exitCode: 0, logPath: "/tmp/worker.jsonl" };
+  const claudeReview = { engine: "claude" as const, model: "opus", effort: "max", exitCode: 0, sessionId: "review-session" };
+  assert.deepEqual(executionReceiptPidFields(codexWorker, claudeReview), {
+    workerSessionId: undefined,
+    workerLogPath: "/tmp/worker.jsonl",
+    reviewSessionId: "review-session",
+    reviewLogPath: undefined,
+  });
+
+  const claudeWorker = { ...claudeReview, sessionId: "worker-session" };
+  const codexReview = { ...codexWorker, logPath: "/tmp/review.jsonl" };
+  assert.deepEqual(executionReceiptPidFields(claudeWorker, codexReview), {
+    workerSessionId: "worker-session",
+    workerLogPath: undefined,
+    reviewSessionId: undefined,
+    reviewLogPath: "/tmp/review.jsonl",
+  });
+});
+
+test("engine adapters: all four phase pairings select the correct commands", () => {
+  const { opts, cleanup } = makeCodexArgsFixture();
+  try {
+    for (const workerEngine of ["claude", "codex"] as const) {
+      for (const reviewEngine of ["claude", "codex"] as const) {
+        opts.plan = {
+          worker: { engine: workerEngine, model: workerEngine === "codex" ? "gpt-5.5" : "opus", effort: workerEngine === "codex" ? "xhigh" : "max" },
+          review: { engine: reviewEngine, model: reviewEngine === "codex" ? "gpt-5.5" : "opus", effort: reviewEngine === "codex" ? "xhigh" : "max" },
+        };
+        assert.equal(buildWorkerInvocation(opts, "dangeresque-pairing", "/tmp/run.md").command, workerEngine);
+        assert.equal(buildReviewInvocation(opts, "dangeresque-pairing", "/tmp/run.md").command, reviewEngine);
+      }
+    }
+  } finally {
+    cleanup();
+  }
 });

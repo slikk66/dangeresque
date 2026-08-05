@@ -32,9 +32,9 @@ export function migrateArtifact(json: unknown): MigrateOneResult {
     return { migrated: false, result: obj as unknown as RunArtifact };
   }
 
-  if (version !== "4" && version !== "5") {
+  if (version !== "4" && version !== "5" && version !== "6") {
     throw new Error(
-      `unsupported source schema_version: ${version} (only v4/v5 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
+      `unsupported source schema_version: ${version} (only v4/v5/v6 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
     );
   }
 
@@ -44,11 +44,23 @@ export function migrateArtifact(json: unknown): MigrateOneResult {
   if (version === "4") {
     next = stepV4toV5(next);
   }
-  next = stepV5toV6(next);
+  if (version === "4" || version === "5") {
+    next = stepV5toV6(next);
+  }
+  next = stepV6toV7(next);
   next.schema_version = ARTIFACT_SCHEMA_VERSION;
   next.migrated_from_version = fromVersion;
 
   return { migrated: true, result: next as unknown as RunArtifact };
+}
+
+function stepV6toV7(obj: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...obj };
+  const review = next.review as Record<string, unknown> | null | undefined;
+  if (review && review.skipped === false && next.review_engine === undefined) {
+    next.review_engine = next.engine;
+  }
+  return next;
 }
 
 function stepV4toV5(obj: Record<string, unknown>): Record<string, unknown> {

@@ -4,12 +4,20 @@ import {
   loadConfig,
   validateSetup,
   validateEngineRuntime,
-  applyEngineRunOverrides,
+  resolveRunPlan,
   resolveProjectRoot,
+  SKIP_REVIEW_MODES,
+  type DangeresqueConfig,
   type Engine,
-  type EngineRunOverrides,
+  type RunPlan,
+  type RunPlanOverrides,
 } from "./config.js";
-import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, killActiveEngines, workerModelEffort, reviewModelEffort, validateCodexModelEfforts, type IssueData } from "./runner.js";
+import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, killActiveEngines, validateCodexModelEfforts, type ExecutionReceipt, type IssueData } from "./runner.js";
+import {
+  locateLatestRun,
+  assessReviewRescue,
+  recoverWorkerPhase,
+} from "./rescue.js";
 import {
   ArtifactBuilder,
   writeArtifact,
@@ -33,7 +41,9 @@ import {
   assertInMainCheckout,
   filterWorktrees,
   formatRunHeader,
-  formatPidModelEffort,
+  formatPidExecution,
+  extractIssueNumber,
+  extractMode,
   type WorktreeInfo,
   type WorktreeFilter,
 } from "./worktree.js";
@@ -61,9 +71,9 @@ import {
 import type { ScopeOpportunisticConfig } from "./config.js";
 import { detectDrift } from "./build-info.js";
 import { runDoctorChecks, formatDoctorReport } from "./doctor.js";
-import { relative } from "node:path";
-
-const SKIP_REVIEW_MODES = new Set(["INVESTIGATE", "VERIFY"]);
+import { relative, join } from "node:path";
+import { existsSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 
 interface FileLineCounts {
   /** Per-file (added + deleted) line counts, keyed by path. */
@@ -165,7 +175,7 @@ function currentHelpEngine(): Engine {
 
   try {
     const config = loadConfig(resolveProjectRoot());
-    return config.engine;
+    return config.worker.engine;
   } catch {
     return "claude";
   }
@@ -263,6 +273,9 @@ async function main() {
     case "logs":
       await cmdLogs(args.slice(1));
       break;
+    case "review":
+      await cmdReview(args.slice(1));
+      break;
     case "results":
       await cmdResults(args.slice(1));
       break;
@@ -324,10 +337,6 @@ async function cmdRun(args: string[]) {
   }
 
   const config = loadConfig(projectRoot);
-  const envEngine = process.env.DANGERESQUE_ENGINE?.toLowerCase();
-  if (envEngine === "claude" || envEngine === "codex") {
-    config.engine = envEngine;
-  }
 
   // Parse CLI overrides
   let name: string | undefined;
@@ -336,7 +345,23 @@ async function cmdRun(args: string[]) {
   let issueNumber: number | undefined;
   let issueFixturePath: string | undefined;
   let mode: string | undefined;
-  const runOverrides: EngineRunOverrides = {};
+  const runOverrides: RunPlanOverrides = { worker: {}, review: {} };
+  const envEngine = process.env.DANGERESQUE_ENGINE?.toLowerCase();
+  if (envEngine && envEngine !== "claude" && envEngine !== "codex") {
+    console.error("DANGERESQUE_ENGINE must be one of: claude, codex");
+    process.exit(1);
+  }
+  if (envEngine === "claude" || envEngine === "codex") {
+    runOverrides.worker!.engine = envEngine;
+  }
+  const envReviewEngine = process.env.DANGERESQUE_REVIEW_ENGINE?.toLowerCase();
+  if (envReviewEngine && envReviewEngine !== "claude" && envReviewEngine !== "codex") {
+    console.error("DANGERESQUE_REVIEW_ENGINE must be one of: claude, codex");
+    process.exit(1);
+  }
+  if (envReviewEngine === "claude" || envReviewEngine === "codex") {
+    runOverrides.review!.engine = envReviewEngine;
+  }
   let force = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -351,21 +376,27 @@ async function cmdRun(args: string[]) {
     } else if (args[i] === "--force") {
       force = true;
     } else if (args[i] === "--model" && args[i + 1]) {
-      runOverrides.model = args[++i];
-      // Hidden advanced override flag (kept for power users)
+      runOverrides.worker!.model = args[++i];
     } else if (args[i] === "--engine" && args[i + 1]) {
       const engine = args[++i].toLowerCase();
       if (engine !== "claude" && engine !== "codex") {
         console.error("--engine must be one of: claude, codex");
         process.exit(1);
       }
-      config.engine = engine;
+      runOverrides.worker!.engine = engine;
+    } else if (args[i] === "--review-engine" && args[i + 1]) {
+      const engine = args[++i].toLowerCase();
+      if (engine !== "claude" && engine !== "codex") {
+        console.error("--review-engine must be one of: claude, codex");
+        process.exit(1);
+      }
+      runOverrides.review!.engine = engine;
     } else if (args[i] === "--effort" && args[i + 1]) {
-      runOverrides.effort = args[++i];
+      runOverrides.worker!.effort = args[++i];
     } else if (args[i] === "--review-model" && args[i + 1]) {
-      runOverrides.reviewModel = args[++i];
+      runOverrides.review!.model = args[++i];
     } else if (args[i] === "--review-effort" && args[i + 1]) {
-      runOverrides.reviewEffort = args[++i];
+      runOverrides.review!.effort = args[++i];
     } else if (args[i] === "--issue" && args[i + 1]) {
       issueNumber = parseInt(args[++i], 10);
       if (isNaN(issueNumber)) {
@@ -379,18 +410,29 @@ async function cmdRun(args: string[]) {
     }
   }
 
-  applyEngineRunOverrides(config, runOverrides);
-
-  const runtimeValidation = validateEngineRuntime(config.engine, projectRoot);
-  if (!runtimeValidation.valid) {
-    console.error("Setup validation failed:");
-    for (const err of runtimeValidation.errors) {
-      console.error(`  - ${err}`);
-    }
+  let plan: RunPlan;
+  try {
+    plan = resolveRunPlan(config, runOverrides);
+  } catch (err) {
+    console.error(`Run configuration invalid: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
+  const effectiveMode = mode ?? "INVESTIGATE";
+  const reviewScheduled = review && !SKIP_REVIEW_MODES.has(effectiveMode);
+  const scheduledEngines = new Set<Engine>([
+    plan.worker.engine,
+    ...(reviewScheduled ? [plan.review.engine] : []),
+  ]);
+  for (const engine of scheduledEngines) {
+    const runtimeValidation = validateEngineRuntime(engine, projectRoot);
+    if (!runtimeValidation.valid) {
+      console.error("Setup validation failed:");
+      for (const err of runtimeValidation.errors) console.error(`  - ${err}`);
+      process.exit(1);
+    }
+  }
 
-  const effortValidation = validateCodexModelEfforts(config);
+  const effortValidation = validateCodexModelEfforts(plan, undefined, reviewScheduled);
   if (!effortValidation.valid) {
     console.error("Codex model/effort validation failed:");
     for (const err of effortValidation.errors) {
@@ -448,8 +490,6 @@ async function cmdRun(args: string[]) {
     }
   }
 
-  const effectiveMode = mode ?? "INVESTIGATE";
-
   // Pre-flight gates: refuse to spawn a new worker when an unmerged worktree
   // for the same issue exists, or when local main is ahead of origin. Both
   // are workflow problems where the orchestrator skipped a step; surfacing
@@ -485,28 +525,12 @@ async function cmdRun(args: string[]) {
     name = `${effectiveMode.toLowerCase()}-${issueNumber}`;
   }
 
-  // Install SIGTERM/SIGINT handler so an external `dangeresque stop` (or
-  // operator Ctrl-C) cleanly aborts the worker. We signal the engine and
-  // let its child.on("close") resolve runWorker with a non-zero exit code
-  // — cmdRun then takes the FAIL-banner path naturally, but the
-  // stopRequested flag suppresses the GitHub failure comment so an
-  // aborted run does not leave a stale "FAILED" notice on the issue.
-  let stopRequested = false;
-  const onStopSignal = (signal: NodeJS.Signals) => {
-    if (stopRequested) return;
-    stopRequested = true;
-    console.error(`\nReceived ${signal} — stopping engine and aborting run.`);
-    killActiveEngines("SIGTERM");
-    setTimeout(() => {
-      killActiveEngines("SIGKILL");
-    }, 5000).unref();
-  };
-  process.on("SIGTERM", () => onStopSignal("SIGTERM"));
-  process.on("SIGINT", () => onStopSignal("SIGINT"));
+  const isStopRequested = installStopHandler();
 
-  const effectiveWorker = workerModelEffort(config);
-  const effectiveReview = reviewModelEffort(config);
+  const effectiveWorker = plan.worker;
+  const effectiveReview = plan.review;
   const reviewDiffers =
+    effectiveReview.engine !== effectiveWorker.engine ||
     effectiveReview.model !== effectiveWorker.model ||
     effectiveReview.effort !== effectiveWorker.effort;
 
@@ -514,10 +538,10 @@ async function cmdRun(args: string[]) {
   console.log(`  Project: ${projectRoot}`);
   console.log(`  Issue: #${issueData.number} — ${issueData.title}`);
   console.log(`  Mode: ${effectiveMode}`);
-  console.log(`  Engine: ${config.engine}`);
+  console.log(`  Engine: ${effectiveWorker.engine}`);
   console.log(`  Model: ${effectiveWorker.model} (effort: ${effectiveWorker.effort})`);
   if (reviewDiffers) {
-    console.log(`  Review: ${effectiveReview.model} (effort: ${effectiveReview.effort})`);
+    console.log(`  Review: ${effectiveReview.engine} · ${effectiveReview.model} (effort: ${effectiveReview.effort})`);
   }
   console.log(`  Mode: ${config.headless ? "headless (-p)" : "interactive"}`);
   console.log(`  Review pass: ${review ? "yes" : "no"}`);
@@ -527,6 +551,7 @@ async function cmdRun(args: string[]) {
   const workerResult = await runWorker({
     projectRoot,
     config,
+    plan,
     name,
     issueData,
     mode: effectiveMode,
@@ -538,9 +563,10 @@ async function cmdRun(args: string[]) {
     issueNumber,
     ...(fixtureUsed ? { issueUrl: null } : {}),
     mode: effectiveMode,
-    engine: config.engine,
+    engine: effectiveWorker.engine,
     model: effectiveWorker.model,
     effort: effectiveWorker.effort,
+    reviewEngine: effectiveReview.engine,
     reviewModel: effectiveReview.model,
     reviewEffort: effectiveReview.effort,
     worktreeName: workerResult.worktreeName,
@@ -558,7 +584,7 @@ async function cmdRun(args: string[]) {
   if (workerResult.exitCode !== 0) {
     const banner = "!".repeat(60);
     console.error(`\n${banner}`);
-    console.error(`!!  DANGERESQUE RUN ${stopRequested ? "STOPPED" : "FAILED"}`);
+    console.error(`!!  DANGERESQUE RUN ${isStopRequested() ? "STOPPED" : "FAILED"}`);
     console.error(`!!  Worker exit code: ${workerResult.exitCode}`);
     console.error(`!!  Worktree: .claude/worktrees/${workerResult.worktreeName}/`);
     console.error(`!!  Branch:   ${workerResult.branch}`);
@@ -572,7 +598,7 @@ async function cmdRun(args: string[]) {
     // the run — a stale "FAILED" comment from an aborted run is noise, not
     // signal. Real failures (engine crash, exit code from worker logic)
     // still get reported.
-    if (issueNumber && !fixtureUsed && !stopRequested) {
+    if (issueNumber && !fixtureUsed && !isStopRequested()) {
       try {
         postRunComment({
           projectRoot,
@@ -581,9 +607,10 @@ async function cmdRun(args: string[]) {
           worktreeName: workerResult.worktreeName,
           archivePath: workerResult.archivePath,
           workerExitCode: workerResult.exitCode,
-          engine: config.engine,
+          engine: effectiveWorker.engine,
           model: effectiveWorker.model,
           effort: effectiveWorker.effort,
+          reviewEngine: effectiveReview.engine,
           reviewModel: effectiveReview.model,
           reviewEffort: effectiveReview.effort,
         });
@@ -599,6 +626,80 @@ async function cmdRun(args: string[]) {
     process.exit(workerResult.exitCode);
   }
 
+  const outcome = await runPostWorkerPhases({
+    projectRoot,
+    config,
+    plan,
+    issueData,
+    issueNumber,
+    fixtureUsed,
+    mode: effectiveMode,
+    reviewEnabled: review,
+    verifyEnabled,
+    builder,
+    worktreeName: workerResult.worktreeName,
+    branch: workerResult.branch,
+    archivePath: workerResult.archivePath,
+    workerReceipt: workerResult.receipt,
+    isStopRequested,
+  });
+
+  if (outcome.exitCode !== 0) {
+    process.exit(outcome.exitCode);
+  }
+}
+
+interface PostWorkerContext {
+  projectRoot: string;
+  config: DangeresqueConfig;
+  plan: RunPlan;
+  issueData: IssueData;
+  issueNumber?: number;
+  fixtureUsed: boolean;
+  mode: string;
+  reviewEnabled: boolean;
+  verifyEnabled: boolean;
+  builder: ArtifactBuilder;
+  worktreeName: string;
+  branch: string;
+  archivePath: string;
+  workerReceipt: ExecutionReceipt;
+  isStopRequested: () => boolean;
+}
+
+/**
+ * Everything that happens after a successful worker pass: scope classification,
+ * rebase onto origin/main, canonical file-count normalization, pre-review
+ * verification, the review pass, the GitHub summary comment, and the artifact
+ * write.
+ *
+ * Shared verbatim by `dangeresque run` (which just produced the worker output)
+ * and `dangeresque review` (which recovers a run whose review was killed).
+ * One implementation is the point — a rescued review has to be
+ * indistinguishable from an in-line one, gates and artifact included.
+ */
+async function runPostWorkerPhases(
+  ctx: PostWorkerContext,
+): Promise<{ exitCode: number }> {
+  const {
+    projectRoot,
+    config,
+    plan,
+    issueData,
+    issueNumber,
+    fixtureUsed,
+    mode,
+    reviewEnabled,
+    verifyEnabled,
+    builder,
+    worktreeName,
+    branch,
+    archivePath,
+  } = ctx;
+  const effectiveWorker = plan.worker;
+  const effectiveReview = plan.review;
+  const worktreePath = `${projectRoot}/.claude/worktrees/${worktreeName}`;
+
   // Post-worker scope check: classify changed files via the policy engine
   // (allow/deny globs from issue's `dangeresque-scope` blocks + worker's
   // `## Scope Declaration`), then apply project-level opportunistic budget
@@ -606,7 +707,6 @@ async function cmdRun(args: string[]) {
   try {
     const { execSync } = await import("node:child_process");
     const { resolveDiffBase } = await import("./worktree.js");
-    const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
     const diffBase = resolveDiffBase(projectRoot);
     const changedFiles = execSync(`git diff ${diffBase}...HEAD --name-only`, {
       cwd: worktreePath,
@@ -622,8 +722,8 @@ async function cmdRun(args: string[]) {
     let scopeDeclaration: ReturnType<typeof parseScopeDeclaration> = [];
     try {
       const { readFileSync, existsSync } = await import("node:fs");
-      if (existsSync(workerResult.archivePath)) {
-        const md = readFileSync(workerResult.archivePath, "utf-8");
+      if (existsSync(archivePath)) {
+        const md = readFileSync(archivePath, "utf-8");
         scopeDeclaration = parseScopeDeclaration(md);
       }
     } catch {
@@ -669,7 +769,7 @@ async function cmdRun(args: string[]) {
     // adjudicates `outside` entries — printing here would double-noise. For
     // INVESTIGATE/VERIFY (review skipped), surface a single structured line
     // so the operator can spot drift at a glance.
-    if (SKIP_REVIEW_MODES.has(effectiveMode)) {
+    if (SKIP_REVIEW_MODES.has(mode)) {
       console.log(
         `\nScope: in=${scopeReport.in_scope.length} extended=${scopeReport.extended.length} outside=${scopeReport.outside.length}`,
       );
@@ -678,12 +778,16 @@ async function cmdRun(args: string[]) {
     // Silently ignore — worktree state query failures aren't fatal here
   }
 
+  // First checkpoint: the worker's outcome is final and classified. Everything
+  // from here on can be killed by an outside signal (issue #96), and this write
+  // is what lets `dangeresque review` recover instead of starting over.
+  checkpointArtifact(builder, projectRoot, "post_worker");
+
   // Rebase worktree onto latest origin/main before review
   // Prevents false REJECT from reviewer seeing stale-branch diffs
-  if (review) {
+  if (reviewEnabled) {
     try {
       const { execSync } = await import("node:child_process");
-      const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
       execSync("git fetch origin main", { cwd: worktreePath, stdio: "pipe" });
       execSync("git rebase origin/main", { cwd: worktreePath, stdio: "pipe" });
       console.log(`\nRebased worktree onto latest origin/main`);
@@ -691,7 +795,6 @@ async function cmdRun(args: string[]) {
     } catch (e: any) {
       try {
         const { execSync } = await import("node:child_process");
-        const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
         execSync("git rebase --abort", { cwd: worktreePath, stdio: "pipe" });
       } catch {
         /* ignore */
@@ -710,11 +813,10 @@ async function cmdRun(args: string[]) {
   // Warn-and-degrades on any failure; never blocks the run.
   {
     const { resolveDiffBase } = await import("./worktree.js");
-    const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
     const diffBase = resolveDiffBase(projectRoot);
     normalizeSummaryFileCount({
       worktreePath,
-      archivePath: workerResult.archivePath,
+      archivePath,
       diffBase,
       builder,
     });
@@ -726,12 +828,11 @@ async function cmdRun(args: string[]) {
   // entirely — reviewing un-compiling code wastes effort. Warn-style failures
   // record into the artifact and are surfaced to the reviewer's prompt.
   let verificationOutcome: VerificationOutcome | null = null;
-  if (verifyEnabled && config.verify && shouldRunVerify(effectiveMode, config.verify)) {
-    const worktreePath = `${projectRoot}/.claude/worktrees/${workerResult.worktreeName}`;
+  if (verifyEnabled && config.verify && shouldRunVerify(mode, config.verify)) {
     console.log(`\nRunning ${config.verify.commands.length} verification command(s)…`);
     verificationOutcome = runVerification({
       worktreePath,
-      archivePath: workerResult.archivePath,
+      archivePath,
       config: config.verify,
       builder,
     });
@@ -743,9 +844,14 @@ async function cmdRun(args: string[]) {
     builder.recordEvent("verification_skipped", { reason: "no_commands_configured" });
   } else if (config.verify && !config.verify.enabled) {
     builder.recordEvent("verification_skipped", { reason: "disabled_in_config" });
-  } else if (config.verify && !config.verify.modes.includes(effectiveMode)) {
-    builder.recordEvent("verification_skipped", { reason: `mode_not_in_list:${effectiveMode}` });
+  } else if (config.verify && !config.verify.modes.includes(mode)) {
+    builder.recordEvent("verification_skipped", { reason: `mode_not_in_list:${mode}` });
   }
+
+  // Second checkpoint: immediately before the review dispatch. This is the
+  // exact window where an outside SIGTERM stranded bc#679 — a run killed here
+  // now leaves a readable artifact with the verification results intact.
+  checkpointArtifact(builder, projectRoot, "pre_review");
 
   // Review pass — skip for modes that don't produce code changes
   let reviewExitCode: number | undefined;
@@ -755,25 +861,24 @@ async function cmdRun(args: string[]) {
     console.error(`\n${banner}`);
     console.error(`!!  DANGERESQUE RUN FAILED — verification blocked`);
     console.error(`!!  Failing command: ${blockedBy}`);
-    console.error(`!!  Worktree: .claude/worktrees/${workerResult.worktreeName}/`);
-    console.error(`!!  Branch:   ${workerResult.branch}`);
-    console.error(`!!  Artifact: ${workerResult.archivePath}`);
+    console.error(`!!  Worktree: .claude/worktrees/${worktreeName}/`);
+    console.error(`!!  Branch:   ${branch}`);
+    console.error(`!!  Artifact: ${archivePath}`);
     console.error(`!!`);
-    console.error(`!!  Inspect: dangeresque results ${workerResult.branch}`);
-    console.error(`!!  Cleanup: dangeresque discard ${workerResult.branch}`);
+    console.error(`!!  Inspect: dangeresque results ${branch}`);
+    console.error(`!!  Cleanup: dangeresque discard ${branch}`);
     console.error(`${banner}\n`);
     builder.markReviewSkipped(`verification_failed:${blockedBy}`);
-  } else if (review && SKIP_REVIEW_MODES.has(effectiveMode)) {
-    console.log(`\nSkipping review (no code changes in ${effectiveMode} mode)`);
-    builder.markReviewSkipped(`mode=${effectiveMode}`);
-  } else if (review) {
+  } else if (reviewEnabled && SKIP_REVIEW_MODES.has(mode)) {
+    console.log(`\nSkipping review (no code changes in ${mode} mode)`);
+    builder.markReviewSkipped(`mode=${mode}`);
+  } else if (reviewEnabled) {
     const reviewStartedAtMs = Date.now();
     const reviewResult = await runReview(
-      { projectRoot, config, issueData, mode: effectiveMode },
-      workerResult.worktreeName,
-      workerResult.archivePath,
-      workerResult.workerSessionId,
-      workerResult.workerLogPath,
+      { projectRoot, config, plan, issueData, mode },
+      worktreeName,
+      archivePath,
+      ctx.workerReceipt,
       verificationOutcome,
     );
     const reviewEndedAtMs = Date.now();
@@ -785,20 +890,49 @@ async function cmdRun(args: string[]) {
     builder.markReviewSkipped("--no-review");
   }
 
-  // Post summary comment on issue (success path)
+  // A review that exits non-zero did not complete normally — killed by a
+  // signal (bc#679, exit 143) or dead on a transient engine error (bc#667,
+  // exit 1). Both strand the run identically: no reliable verdict, so no merge.
+  // Report it as loudly as a worker failure instead of letting a success-shaped
+  // summary imply the run finished (issue #96). Note a clean review (exit 0) is
+  // never "aborted", even if a stop signal lands while we report it.
+  const reviewAborted = reviewExitCode !== undefined && reviewExitCode !== 0;
+
+  if (reviewAborted) {
+    builder.recordEvent("review_aborted", {
+      exit_code: reviewExitCode,
+      stop_requested: ctx.isStopRequested(),
+    });
+    const banner = "!".repeat(60);
+    console.error(`\n${banner}`);
+    console.error(`!!  DANGERESQUE REVIEW DID NOT COMPLETE — verdict unreliable`);
+    console.error(`!!  Review exit code: ${describeAbnormalExit(reviewExitCode!)}`);
+    console.error(`!!  The worker's changes are committed and intact.`);
+    console.error(`!!  Worktree: .claude/worktrees/${worktreeName}/`);
+    console.error(`!!  Branch:   ${branch}`);
+    console.error(`!!  Artifact: ${archivePath}`);
+    console.error(`!!`);
+    console.error(`!!  Re-run ONLY the review — the worker output is kept:`);
+    console.error(`!!    dangeresque review ${branch}`);
+    console.error(`${banner}\n`);
+  }
+
+  // Post summary comment on issue
   if (issueNumber && !fixtureUsed) {
     try {
       postRunComment({
         projectRoot,
         issueNumber,
-        mode: effectiveMode,
-        worktreeName: workerResult.worktreeName,
-        archivePath: workerResult.archivePath,
-        workerExitCode: workerResult.exitCode,
+        mode,
+        worktreeName,
+        archivePath,
+        workerExitCode: ctx.workerReceipt.exitCode,
         reviewExitCode,
-        engine: config.engine,
+        reviewAborted,
+        engine: effectiveWorker.engine,
         model: effectiveWorker.model,
         effort: effectiveWorker.effort,
+        reviewEngine: effectiveReview.engine,
         reviewModel: effectiveReview.model,
         reviewEffort: effectiveReview.effort,
       });
@@ -814,28 +948,85 @@ async function cmdRun(args: string[]) {
   // Summary
   console.log(`\n${"=".repeat(60)}`);
   console.log(`dangeresque run complete`);
-  console.log(`  Worktree: .claude/worktrees/${workerResult.worktreeName}/`);
-  console.log(`  Branch:   ${workerResult.branch}`);
-  console.log(`  Artifact: ${workerResult.archivePath}`);
+  console.log(`  Worktree: .claude/worktrees/${worktreeName}/`);
+  console.log(`  Branch:   ${branch}`);
+  console.log(`  Artifact: ${archivePath}`);
   if (artifact) {
     console.log(`  Eval:     ${artifact.artifact_paths.json}`);
     console.log(`  Result:   ${artifact.result} (verdict=${artifact.reviewer_verdict})`);
   }
 
-  const header = formatRunHeader(jsonPathForArchive(workerResult.archivePath));
+  const header = formatRunHeader(jsonPathForArchive(archivePath));
   if (header) {
     console.log("");
     console.log(header);
   }
 
   console.log(`\nNext steps:`);
-  console.log(`  Review:  dangeresque results ${workerResult.branch}`);
-  console.log(`  Merge:   dangeresque merge ${workerResult.branch}     (keeps the run report in .dangeresque/runs/)`);
-  console.log(`  Discard: dangeresque discard ${workerResult.branch}   (deletes the run report along with the worktree)`);
+  if (reviewAborted) {
+    console.log(`  Re-review: dangeresque review ${branch}   (keeps the worker's committed output)`);
+  }
+  console.log(`  Review:  dangeresque results ${branch}`);
+  console.log(`  Merge:   dangeresque merge ${branch}     (keeps the run report in .dangeresque/runs/)`);
+  console.log(`  Discard: dangeresque discard ${branch}   (deletes the run report along with the worktree)`);
   console.log("=".repeat(60));
 
-  if (verificationOutcome?.blocked) {
-    process.exit(1);
+  if (verificationOutcome?.blocked || reviewAborted) {
+    return { exitCode: 1 };
+  }
+  return { exitCode: 0 };
+}
+
+/** Render an exit code, naming the signal when the process died to one. */
+function describeAbnormalExit(exitCode: number): string {
+  if (exitCode < 128) return String(exitCode);
+  const signalNumber = exitCode - 128;
+  const name = Object.entries(osConstants.signals).find(
+    ([, num]) => num === signalNumber,
+  )?.[0];
+  return name ? `${exitCode} (killed by ${name})` : `${exitCode} (killed by signal ${signalNumber})`;
+}
+
+/**
+ * Install the SIGTERM/SIGINT handler that lets an external `dangeresque stop`
+ * (or operator Ctrl-C) abort the engine cleanly: we signal the child and let
+ * its `close` event resolve the phase with a non-zero exit code, so the caller
+ * takes its normal failure path. Returns a predicate for whether a stop was
+ * requested — used to distinguish an operator abort from a real failure.
+ */
+function installStopHandler(): () => boolean {
+  let stopRequested = false;
+  const onStopSignal = (signal: NodeJS.Signals) => {
+    if (stopRequested) return;
+    stopRequested = true;
+    console.error(`\nReceived ${signal} — stopping engine and aborting run.`);
+    killActiveEngines("SIGTERM");
+    setTimeout(() => {
+      killActiveEngines("SIGKILL");
+    }, 5000).unref();
+  };
+  process.on("SIGTERM", () => onStopSignal("SIGTERM"));
+  process.on("SIGINT", () => onStopSignal("SIGINT"));
+  return () => stopRequested;
+}
+
+/**
+ * Write the artifact mid-run so a kill leaves a readable record of how far the
+ * run got. Warn-and-degrade: a checkpoint failure must never abort a run that
+ * is otherwise progressing (issue #96).
+ */
+function checkpointArtifact(
+  builder: ArtifactBuilder,
+  projectRoot: string,
+  phase: string,
+): void {
+  builder.recordEvent("artifact_checkpointed", { phase });
+  try {
+    writeArtifact(builder.build(), projectRoot);
+  } catch (err) {
+    console.error(
+      `Warning: failed to checkpoint run evaluation artifact at ${phase}: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
@@ -1000,12 +1191,262 @@ function cmdStatus() {
     console.log(`  Path:   ${wt.path}`);
     console.log(`  HEAD:   ${wt.head.slice(0, 8)}`);
     if (wt.pidInfo) {
-      for (const line of formatPidModelEffort(wt.pidInfo)) console.log(line);
+      for (const line of formatPidExecution(wt.pidInfo)) console.log(line);
     }
     if (wt.pidInfo?.phase) {
       console.log(`  Phase:  ${wt.pidInfo.phase}`);
     }
     console.log();
+  }
+}
+
+/**
+ * Re-run ONLY the review pass against an existing worktree whose worker
+ * finished but whose review never produced a verdict — a review killed by an
+ * outside signal, a transient engine error, or a crashed session (issues #92,
+ * #96). The worker's committed output is left untouched; this replays the same
+ * post-worker pipeline `run` uses, so the resulting artifact is identical in
+ * shape and the merge gate can read a real verdict from it.
+ *
+ * Crash recovery only: a run that already carries a verdict is refused unless
+ * `--force`, so this can never become a quiet "review until it passes" loop.
+ */
+async function cmdReview(args: string[]) {
+  driftWarnIfStale();
+  const projectRoot = resolveProjectRoot();
+  const validation = validateSetup(projectRoot);
+  if (!validation.valid) {
+    console.error("Setup validation failed:");
+    for (const err of validation.errors) console.error(`  - ${err}`);
+    process.exit(1);
+  }
+  const config = loadConfig(projectRoot);
+
+  let force = false;
+  let verifyEnabled = true;
+  let dryRun = false;
+  let target: string | undefined;
+  const runOverrides: RunPlanOverrides = { worker: {}, review: {} };
+
+  const envReviewEngine = process.env.DANGERESQUE_REVIEW_ENGINE?.toLowerCase();
+  if (envReviewEngine && envReviewEngine !== "claude" && envReviewEngine !== "codex") {
+    console.error("DANGERESQUE_REVIEW_ENGINE must be one of: claude, codex");
+    process.exit(1);
+  }
+  if (envReviewEngine === "claude" || envReviewEngine === "codex") {
+    runOverrides.review!.engine = envReviewEngine;
+  }
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--force") {
+      force = true;
+    } else if (arg === "--dry-run") {
+      dryRun = true;
+    } else if (arg === "--no-verify") {
+      verifyEnabled = false;
+    } else if (arg === "--review-engine" && args[i + 1]) {
+      const engine = args[++i].toLowerCase();
+      if (engine !== "claude" && engine !== "codex") {
+        console.error("--review-engine must be one of: claude, codex");
+        process.exit(1);
+      }
+      runOverrides.review!.engine = engine;
+    } else if (arg === "--review-model" && args[i + 1]) {
+      runOverrides.review!.model = args[++i];
+    } else if (arg === "--review-effort" && args[i + 1]) {
+      runOverrides.review!.effort = args[++i];
+    } else if (!arg.startsWith("-") && target === undefined) {
+      target = arg;
+    }
+  }
+
+  const worktrees = listWorktrees(projectRoot);
+  const chosen = await resolvePositionalOrPick(
+    target,
+    worktrees,
+    "finished",
+    "Select a worktree to re-review",
+  );
+  if (!chosen) {
+    console.error(formatMissingTargetError("review", "<branch>", worktrees));
+    process.exit(1);
+  }
+
+  let branch: string;
+  try {
+    assertInMainCheckout(projectRoot, "review");
+    branch = resolveBranch(projectRoot, chosen);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+
+  const worktreeName = branch.replace("worktree-", "");
+  const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
+  const issueNumber = extractIssueNumber(branch);
+  const mode = extractMode(branch);
+
+  const refuse = (reason: string, hints: string[] = []): never => {
+    console.error(`ERROR: refusing to re-review ${branch} because -`);
+    console.error(`- ${reason}`);
+    if (hints.length > 0) {
+      console.error("");
+      for (const hint of hints) console.error(hint);
+    }
+    process.exit(2);
+  };
+
+  if (!existsSync(worktreePath)) {
+    refuse(`its worktree is gone (${worktreePath})`, [
+      "A review needs the worker's worktree. Nothing to recover here.",
+    ]);
+  }
+  if (issueNumber === undefined) {
+    refuse(`no issue number could be derived from the branch name`, [
+      "Review rescue re-fetches the issue to rebuild the reviewer's prompt.",
+      "Only branches named worktree-dangeresque-<mode>-<issue> can be rescued.",
+    ]);
+  }
+
+  const located = locateLatestRun(worktreePath, issueNumber!, mode);
+  const info = worktrees.find((w) => w.branch === branch);
+  const assessment = assessReviewRescue({
+    mode,
+    located,
+    workerRunning: info?.running ?? false,
+    force,
+  });
+  if (!assessment.ok) {
+    const hints =
+      assessment.existingVerdict !== undefined
+        ? [
+            `Inspect it first: dangeresque results ${branch}`,
+            `Override only if that verdict came from a review you know was broken:`,
+            `  dangeresque review ${branch} --force`,
+          ]
+        : [`Inspect the run: dangeresque results ${branch}`];
+    refuse(assessment.reason!, hints);
+  }
+
+  let plan: RunPlan;
+  try {
+    plan = resolveRunPlan(config, runOverrides);
+  } catch (err) {
+    console.error(`Run configuration invalid: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  const runtimeValidation = validateEngineRuntime(plan.review.engine, projectRoot);
+  if (!runtimeValidation.valid) {
+    console.error("Setup validation failed:");
+    for (const err of runtimeValidation.errors) console.error(`  - ${err}`);
+    process.exit(1);
+  }
+  const effortValidation = validateCodexModelEfforts(plan, undefined, true);
+  if (!effortValidation.valid) {
+    console.error("Codex model/effort validation failed:");
+    for (const err of effortValidation.errors) console.error(`  - ${err}`);
+    process.exit(1);
+  }
+
+  let issueData: IssueData;
+  try {
+    issueData = fetchIssue(projectRoot, issueNumber!);
+  } catch (err) {
+    console.error(
+      `Failed to fetch issue #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    console.error("Is `gh` installed and authenticated? Does the issue exist?");
+    process.exit(1);
+  }
+
+  const recovered = recoverWorkerPhase(located!);
+  const checkpoint = located!.artifact;
+  // Prefer what the original run recorded about its own worker; fall back to
+  // the current plan when the kill left no checkpoint behind.
+  const workerEngine = (checkpoint?.engine as Engine | undefined) ?? plan.worker.engine;
+  const workerModel = checkpoint?.model ?? plan.worker.model;
+  const workerEffort = checkpoint?.effort ?? plan.worker.effort;
+
+  console.log(`\ndangeresque — review rescue${dryRun ? " (dry run)" : ""}`);
+  console.log(`  Project: ${projectRoot}`);
+  console.log(`  Issue: #${issueData.number} — ${issueData.title}`);
+  console.log(`  Branch:  ${branch}`);
+  console.log(`  Mode: ${mode}`);
+  console.log(`  Run artifact: ${relative(projectRoot, located!.mdPath)}`);
+  console.log(
+    `  Worker phase: ${recovered.derived ? "reconstructed from artifact file (no checkpoint survived)" : "read from checkpoint"}`,
+  );
+  console.log(`  Review: ${plan.review.engine} · ${plan.review.model} (effort: ${plan.review.effort})`);
+  if (assessment.existingVerdict !== undefined) {
+    console.log(`  Overriding existing verdict: ${assessment.existingVerdict} (--force)`);
+  }
+
+  if (dryRun) {
+    console.log(
+      `\nEligible for rescue. Nothing was changed and no review was dispatched.\n` +
+        `Run it for real with:\n  dangeresque review ${branch}${force ? " --force" : ""}`,
+    );
+    return;
+  }
+
+  const isStopRequested = installStopHandler();
+
+  const builder = new ArtifactBuilder({
+    projectRoot,
+    issueNumber,
+    mode,
+    engine: workerEngine,
+    model: workerModel,
+    effort: workerEffort ?? undefined,
+    reviewEngine: plan.review.engine,
+    reviewModel: plan.review.model,
+    reviewEffort: plan.review.effort,
+    worktreeName,
+    branch,
+    archivePath: located!.mdPath,
+    startedAtMs: recovered.startedAtMs,
+    ...(checkpoint?.run_id ? { runId: checkpoint.run_id } : {}),
+    ...(checkpoint?.lifecycle_events ? { seedEvents: checkpoint.lifecycle_events } : {}),
+  });
+  builder.setWorkerTiming(recovered.startedAtMs, recovered.endedAtMs, recovered.exitCode);
+  builder.recordEvent("review_rescued", {
+    checkpoint_found: checkpoint !== null,
+    worker_timing: recovered.derived ? "reconstructed" : "checkpoint",
+    previous_review_exit_code: checkpoint?.review?.exit_code,
+    ...(assessment.existingVerdict !== undefined
+      ? { overridden_verdict: assessment.existingVerdict, forced: force }
+      : {}),
+  });
+
+  const workerReceipt: ExecutionReceipt = {
+    engine: workerEngine,
+    model: workerModel,
+    effort: workerEffort ?? plan.worker.effort,
+    exitCode: recovered.exitCode,
+  };
+
+  const outcome = await runPostWorkerPhases({
+    projectRoot,
+    config,
+    plan,
+    issueData,
+    issueNumber,
+    fixtureUsed: false,
+    mode,
+    reviewEnabled: true,
+    verifyEnabled,
+    builder,
+    worktreeName,
+    branch,
+    archivePath: located!.mdPath,
+    workerReceipt,
+    isStopRequested,
+  });
+
+  if (outcome.exitCode !== 0) {
+    process.exit(outcome.exitCode);
   }
 }
 

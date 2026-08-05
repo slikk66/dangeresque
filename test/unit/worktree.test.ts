@@ -10,7 +10,7 @@ import {
   parseSummaryBlock,
   formatRunOneLiner,
   formatRunHeader,
-  formatPidModelEffort,
+  formatPidExecution,
   getWorktreeResults,
   mergeWorktree,
   discardWorktree,
@@ -30,10 +30,10 @@ test("extractIssueNumber: dangeresque-prefixed branch → number", () => {
   assert.equal(extractIssueNumber("worktree-dangeresque-investigate-63"), 63);
 });
 
-test("formatPidModelEffort: status shows Codex model and reasoning effort separately", () => {
+test("formatPidExecution: status shows engine, model, and reasoning effort separately", () => {
   assert.deepEqual(
-    formatPidModelEffort({ model: "gpt-5.5", effort: "xhigh" }),
-    ["  Model:  gpt-5.5", "  Effort: xhigh"],
+    formatPidExecution({ engine: "codex", model: "gpt-5.5", effort: "xhigh" }),
+    ["  Engine: codex", "  Model:  gpt-5.5", "  Effort: xhigh"],
   );
 });
 

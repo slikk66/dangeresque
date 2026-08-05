@@ -48,6 +48,9 @@ test("Codex help documents native worker/review effort and GPT-5.5 limits", () =
   const help = usageForEngine("codex");
   assert.match(help, /--effort <level>/);
   assert.match(help, /--review-effort <level>/);
+  assert.match(help, /--review-engine <name>/);
+  assert.match(help, /DANGERESQUE_REVIEW_ENGINE/);
+  assert.match(help, /engineDefaults/);
   assert.match(help, /gpt-5\.5/);
   assert.match(help, /xhigh/);
   assert.match(help, /max.*unsupported|does not support.*max/i);

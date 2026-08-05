@@ -231,6 +231,39 @@ the rebase, the reviewer, or any success summary (see the "Hard-stop on
 worker failure" section in `src/cli.ts`). The worktree is left in place
 for inspection. A failed worker never produces a success artifact.
 
+### Crash recovery: the review is independently re-runnable
+
+A worker can succeed and commit its work only for the review pass to die
+without a verdict — an outside SIGTERM reaping the process group, a session
+teardown, a transient engine error. That run cannot merge (the gate has no
+verdict to read), but the expensive part is already done, so forcing a full
+re-dispatch would burn the whole cost to recover from a small failure.
+
+Two mechanisms make that recoverable:
+
+1. **Artifact checkpoints.** The eval JSON is written after the worker phase
+   and again immediately before the review dispatch, not only at process exit.
+   A kill in that window now leaves a readable artifact describing exactly how
+   far the run got, instead of nothing at all.
+2. **`dangeresque review <branch>`** (`cmdReview` in `src/cli.ts`) replays the
+   post-worker pipeline against the existing worktree: scope check, rebase,
+   summary normalization, verification, review, artifact write.
+
+Both `run` and `review` call the *same* `runPostWorkerPhases` — a rescued
+review is byte-for-byte the same pipeline as an in-line one, so no gate can be
+weaker on the recovery path. The eligibility policy lives in `src/rescue.ts`
+(`assessReviewRescue`) and is deliberately narrow: it refuses a run whose
+worker failed, whose block-policy verification failed, whose mode never
+reviews, or which already carries a verdict. That last refusal is what keeps
+this crash recovery rather than a "review until it passes" loop; `--force`
+overrides it and records the overridden verdict in the artifact.
+
+An abnormal review exit (killed by a signal, or an operator stop) is reported
+as loudly as a worker failure — banner, an issue comment that says REVIEW
+INCOMPLETE and names the recovery command, and a non-zero exit. Previously
+this surfaced only as a footnote under a success-shaped summary, which read
+like a finished run.
+
 ### The human is the merge gate
 
 Nothing touches the main branch until a human runs
@@ -331,14 +364,18 @@ Two deliberate disciplines live in the artifact layer:
 
 ## 5. Engine Abstraction
 
-Dangeresque supports two execution engines: `claude` (default) and `codex`,
-selected via `.dangeresque/config.json` `engine` field or
-`DANGERESQUE_ENGINE` env var.
+Dangeresque supports two execution engines: `claude` and `codex`. Worker and
+reviewer are independent execution phases, selected under `worker` and `review`
+in `.dangeresque/config.json` or with phase-specific CLI/environment overrides.
+`engineDefaults` stores one standing model/effort pin per provider. An engine-only
+override selects that provider's pin; it never carries a model or effort from the
+previous provider. Phase-specific model/effort values remain the highest-precedence
+config values, followed by the selected engine default.
 
 **Orchestration is engine-agnostic.** The CLI command surface, the worktree
 model, the adversarial reviewer, the artifact schema, and the merge flow
-are all identical across engines. The engine split lives in
-`src/runner.ts`, where `runWorker` and `runReview` branch between
+are all identical across engines. `src/config.ts:resolveRunPlan` resolves both
+phases once. A narrow adapter seam in `src/runner.ts` selects between
 `src/runner.ts:buildClaudeWorkerArgs` /
 `src/runner.ts:buildClaudeReviewArgs` and
 `src/runner.ts:buildCodexWorkerArgs` /
@@ -362,10 +399,9 @@ are all identical across engines. The engine split lives in
   worktree.
 
 **Effort is native for both engines.** Claude receives `--effort`; Codex
-receives `-c model_reasoning_effort="<effort>"`. Codex worker/review values
-resolve from engine- and phase-specific config, then generic fallbacks. Before
-dispatch, dangeresque validates each model/effort pair against the installed
-Codex model catalog. Unsupported pairs and `ultra` fail loudly.
+receives `-c model_reasoning_effort="<effort>"`. Before dispatch, dangeresque
+validates every scheduled Codex phase against the installed model catalog.
+Unsupported pairs and `ultra` fail loudly.
 
 **Codex worker commits are owned by dangeresque, not the worker (issue
 #38).** Codex runs with `--full-auto` inside a sandbox that explicitly
@@ -382,9 +418,10 @@ follow-up commit — and commit with a message of the form
 their own message; `commitWorkerChanges` is called only in the codex
 branch.
 
-The engine abstraction is narrow by design: dangeresque makes the worktree,
-permissions, rebase, and review work regardless of which engine executes
-the task, but it does not try to paper over every CLI-level difference.
+The engine seam is narrow by design: adapters own preparation, invocation,
+prompt delivery, and log/session receipts. Core orchestration owns worktrees,
+verification, phase order, artifacts, and merge behavior. This permits all
+four worker/reviewer engine pairings without pretending CLI details are equal.
 
 ### Engine capability matrix
 

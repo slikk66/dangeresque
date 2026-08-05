@@ -1,7 +1,14 @@
 {
-  "model": "claude-opus-4-7[1m]",
-  "codexModel": "gpt-5.4",
-  "codexEffort": "xhigh",
+  "worker": {
+    "engine": "claude",
+    "model": "claude-opus-5[1m]",
+    "effort": "xhigh"
+  },
+  "review": {
+    "engine": "claude",
+    "model": "claude-opus-5[1m]",
+    "effort": "xhigh"
+  },
   "verify": {
     "enabled": true,
     "modes": ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],

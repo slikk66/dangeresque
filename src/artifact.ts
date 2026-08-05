@@ -10,7 +10,7 @@ import type {
   ScopeReport,
 } from "./scope.js";
 
-export const ARTIFACT_SCHEMA_VERSION = "6";
+export const ARTIFACT_SCHEMA_VERSION = "7";
 
 // Modes whose worker output produces a code diff and must therefore carry a
 // `## Scope Declaration` section. Kept in sync with `src/runner.ts` (prompt
@@ -81,6 +81,7 @@ export interface RunArtifact {
   engine: Engine;
   model: string;
   effort: string | null;
+  review_engine?: Engine;
   review_model?: string;
   review_effort?: string;
   worktree_name: string;
@@ -118,6 +119,7 @@ export interface BuilderInit {
   engine: Engine;
   model: string;
   effort?: string;
+  reviewEngine?: Engine;
   reviewModel?: string;
   reviewEffort?: string;
   worktreeName: string;
@@ -125,10 +127,21 @@ export interface BuilderInit {
   archivePath: string;
   /** Epoch-ms timestamp for when the overall run started. Falls back to construction time. */
   startedAtMs?: number;
+  /**
+   * Preserve a prior run's identity. Set by a review rescue that found a
+   * checkpoint, so the rescued artifact stays the same run rather than
+   * appearing in stats as a second one. Falls back to a fresh UUID.
+   */
+  runId?: string;
+  /**
+   * Lifecycle events carried over from a prior run's checkpoint, recorded
+   * ahead of this builder's own events. Timestamps make the ordering explicit.
+   */
+  seedEvents?: LifecycleEvent[];
 }
 
 export class ArtifactBuilder {
-  private readonly runId = randomUUID();
+  private readonly runId: string;
   private readonly startedAtMs: number;
   private readonly init: BuilderInit;
   private readonly events: LifecycleEvent[] = [];
@@ -144,12 +157,15 @@ export class ArtifactBuilder {
 
   constructor(init: BuilderInit) {
     this.init = init;
+    this.runId = init.runId ?? randomUUID();
     this.startedAtMs = init.startedAtMs ?? Date.now();
+    if (init.seedEvents) this.events.push(...init.seedEvents);
     this.recordEvent("run_started", {
       run_id: this.runId,
       issue_number: init.issueNumber ?? null,
       mode: init.mode,
       engine: init.engine,
+      review_engine: init.reviewEngine,
     });
   }
 
@@ -293,6 +309,9 @@ export class ArtifactBuilder {
       engine: this.init.engine,
       model: this.init.model,
       effort: this.init.effort ?? null,
+      ...(reviewRan && this.init.reviewEngine !== undefined
+        ? { review_engine: this.init.reviewEngine }
+        : {}),
       ...(reviewRan && this.init.reviewModel !== undefined
         ? { review_model: this.init.reviewModel }
         : {}),

@@ -1,10 +1,19 @@
 export {
   loadConfig,
+  resolveRunPlan,
   validateSetup,
+  validateEngineRuntime,
   resolveProjectRoot,
   normalizeDispatchGateConfig,
   normalizeMergeGateConfig,
   type DangeresqueConfig,
+  type Engine,
+  type EngineDefaults,
+  type ModelEffortConfig,
+  type PhaseConfig,
+  type ReviewPhaseConfig,
+  type RunPlan,
+  type RunPlanOverrides,
   type DispatchGateConfig,
   type MergeGateConfig,
   type ValidationResult,
@@ -29,6 +38,7 @@ export {
   postRunComment,
   type RunOptions,
   type RunResult,
+  type ExecutionReceipt,
   type IssueData,
 } from "./runner.js";
 
@@ -42,6 +52,17 @@ export {
   type WorktreeOpResult,
   type WorktreePhase,
 } from "./worktree.js";
+
+export {
+  locateLatestRun,
+  assessReviewRescue,
+  recoverWorkerPhase,
+  parseArchiveTimestampMs,
+  type LocatedRun,
+  type ReviewRescueAssessment,
+  type AssessReviewRescueOptions,
+  type RecoveredWorkerPhase,
+} from "./rescue.js";
 
 export { initProject } from "./init.js";
 

@@ -135,15 +135,16 @@ Select per-project in `.dangeresque/config.json`:
 
 ```json
 {
-  "engine": "codex",
-  "codexModel": "gpt-5.5",
-  "codexEffort": "xhigh",
-  "codexReviewModel": "gpt-5.5",
-  "codexReviewEffort": "high"
+  "engineDefaults": {
+    "claude": { "model": "claude-opus-4-7", "effort": "max" },
+    "codex": { "model": "gpt-5.5", "effort": "xhigh" }
+  },
+  "worker": { "engine": "codex" },
+  "review": { "engine": "claude" }
 }
 ```
 
-Or override per-run: `DANGERESQUE_ENGINE=codex dangeresque run --issue 63 --model gpt-5.5 --effort xhigh --review-model gpt-5.5 --review-effort high`. Codex effort is passed natively and validated against the selected model before dispatch.
+Or override per-run: `dangeresque run --issue 63 --engine codex --review-engine claude`. Engine-only switches use the selected `engineDefaults` pin; phase `--model` / `--effort` flags override it. Each Codex phase receives native effort and is validated before dispatch.
 
 For per-engine notes (Codex-specific flags, MCP setup differences) see [`docs/CONFIGURATION.md` §Engines](docs/CONFIGURATION.md#engines-claude-vs-codex).
 
@@ -154,6 +155,8 @@ INVESTIGATE → read → discuss → stage → merge → push → IMPLEMENT → 
 ```
 
 Every issue starts with INVESTIGATE — even one-liners — to verify the hypothesis and land a research artifact the IMPLEMENT can cite. After every merge, push `main` to origin before dispatching the next run; worktrees branch from `origin/main` and stale local-only commits pollute review.
+
+If a review pass dies before producing a verdict (outside signal, session teardown, transient engine error), the worker's committed work is not lost and does not need redoing — `dangeresque review <branch>` re-runs only the review against the existing worktree.
 
 Full eight-step walkthrough with commands: [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
 

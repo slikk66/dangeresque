@@ -1,16 +1,19 @@
-import { spawn, execSync, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, execSync, spawnSync, type ChildProcess, type StdioOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants as osConstants } from "node:os";
 import { join, dirname, relative } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, rmSync } from "node:fs";
 import {
   type DangeresqueConfig,
+  type Engine,
+  type PhaseConfig,
+  type RunPlan,
   type ValidationResult,
   CONFIG_DIR,
   RUNS_DIR,
   projectHash,
 } from "./config.js";
-import { writePidFile, removePidFile, readPidFile, resolveDiffBase, mirrorIssueRuns, parseSummaryBlock } from "./worktree.js";
+import { writePidFile, removePidFile, resolveDiffBase, mirrorIssueRuns, parseSummaryBlock, type PidInfo } from "./worktree.js";
 import type { VerificationOutcome } from "./verify.js";
 
 // --- engine-process tracking ---
@@ -69,6 +72,7 @@ export function exitCodeFromCloseEvent(
 export interface RunOptions {
   projectRoot: string;
   config: DangeresqueConfig;
+  plan: RunPlan;
   name?: string;
   /** Run review pass after worker (default: true) */
   review?: boolean;
@@ -82,11 +86,15 @@ export interface RunResult {
   worktreeName: string;
   branch: string;
   exitCode: number;
-  workerSessionId?: string;
-  /** Codex worker's log path, threaded into the review pass (codex has no session id). */
-  workerLogPath?: string;
+  receipt: ExecutionReceipt;
   /** Absolute path to the run's archive file inside the worktree */
   archivePath: string;
+}
+
+export interface ExecutionReceipt extends PhaseConfig {
+  exitCode: number;
+  sessionId?: string;
+  logPath?: string;
 }
 
 /**
@@ -393,45 +401,6 @@ export function readPromptWithLocal(configDir: string, baseName: string): string
   return canonical;
 }
 
-/**
- * Resolve the model/effort that actually drive a phase, so the same values feed
- * both the engine args and the PID file's status fields (single source of truth).
- */
-export function workerModelEffort(
-  config: DangeresqueConfig,
-): { model: string; effort: string } {
-  if (config.engine === "codex") {
-    return {
-      model: config.codexModel ?? config.model,
-      effort: config.codexEffort ?? config.effort,
-    };
-  }
-  return { model: config.model, effort: config.effort };
-}
-
-export function reviewModelEffort(
-  config: DangeresqueConfig,
-): { model: string; effort: string } {
-  if (config.engine === "codex") {
-    return {
-      model:
-        config.codexReviewModel ??
-        config.reviewModel ??
-        config.codexModel ??
-        config.model,
-      effort:
-        config.codexReviewEffort ??
-        config.reviewEffort ??
-        config.codexEffort ??
-        config.effort,
-    };
-  }
-  return {
-    model: config.reviewModel ?? config.model,
-    effort: config.reviewEffort ?? config.effort,
-  };
-}
-
 export type CodexEffortCatalog = Record<string, string[]>;
 
 function loadCodexEffortCatalog(): CodexEffortCatalog {
@@ -475,10 +444,17 @@ function loadCodexEffortCatalog(): CodexEffortCatalog {
 }
 
 export function validateCodexModelEfforts(
-  config: DangeresqueConfig,
+  plan: RunPlan,
   catalog?: CodexEffortCatalog,
+  includeReview = true,
 ): ValidationResult {
-  if (config.engine !== "codex") return { valid: true, errors: [] };
+  const phases: Array<["Worker" | "Review", PhaseConfig]> = [
+    ["Worker", plan.worker],
+    ...(includeReview ? [["Review", plan.review] as ["Review", PhaseConfig]] : []),
+  ];
+  if (!phases.some(([, phase]) => phase.engine === "codex")) {
+    return { valid: true, errors: [] };
+  }
 
   let resolvedCatalog: CodexEffortCatalog;
   try {
@@ -492,10 +468,8 @@ export function validateCodexModelEfforts(
 
   const errors: string[] = [];
   const checked = new Set<string>();
-  for (const [phase, selection] of [
-    ["Worker", workerModelEffort(config)],
-    ["Review", reviewModelEffort(config)],
-  ] as const) {
+  for (const [phase, selection] of phases) {
+    if (selection.engine !== "codex") continue;
     const pair = `${selection.model}\0${selection.effort}`;
     if (checked.has(pair)) continue;
     checked.add(pair);
@@ -544,7 +518,7 @@ export function buildClaudeWorkerArgs(
     args.push("-p");
   }
 
-  const { model, effort } = workerModelEffort(config);
+  const { model, effort } = opts.plan.worker;
   args.push("--worktree", worktreeName);
   args.push("--model", model);
   if (effort) {
@@ -585,7 +559,7 @@ export function buildClaudeReviewArgs(
   const { config, projectRoot } = opts;
   const configDir = join(projectRoot, CONFIG_DIR);
   const headless = config.headless;
-  const { model: reviewModel, effort: reviewEffort } = reviewModelEffort(config);
+  const { model: reviewModel, effort: reviewEffort } = opts.plan.review;
 
   const args: string[] = [];
 
@@ -717,7 +691,7 @@ export function buildCodexWorkerArgs(
   const configDir = join(opts.projectRoot, CONFIG_DIR);
   const workerPromptContent = readPromptWithLocal(configDir, opts.config.workerPrompt);
   const prompt = workerPromptContent + `\n\n` + buildTaskPrompt(opts, archivePath);
-  const { model, effort } = workerModelEffort(opts.config);
+  const { model, effort } = opts.plan.worker;
 
   const args = [
     "exec",
@@ -750,7 +724,7 @@ export function buildCodexReviewArgs(
     diffStat = "(could not capture diff stat)";
   }
 
-  const { model: reviewModel, effort: reviewEffort } = reviewModelEffort(opts.config);
+  const { model: reviewModel, effort: reviewEffort } = opts.plan.review;
   const configDir = join(opts.projectRoot, CONFIG_DIR);
   const reviewPromptContent = readPromptWithLocal(configDir, opts.config.reviewPrompt);
   const prompt =
@@ -836,13 +810,231 @@ function createCodexLogPath(projectRoot: string, worktreeName: string, phase: "w
   return join(logDir, `${phase}-codex-${timestamp}.jsonl`);
 }
 
-export function runWorker(opts: RunOptions): Promise<RunResult> {
+export interface EngineInvocation {
+  engine: Engine;
+  command: string;
+  args: string[];
+  cwd: string;
+  prompt?: string;
+  detached: boolean;
+  captureLog: boolean;
+  sessionId?: string;
+  logPath?: string;
+}
+
+interface EngineAdapter {
+  prepare(worktreePath: string, config: DangeresqueConfig): void;
+  worker(opts: RunOptions, worktreeName: string, archivePath: string): EngineInvocation;
+  review(
+    opts: RunOptions,
+    worktreeName: string,
+    archivePath: string,
+    verification?: VerificationOutcome | null,
+  ): EngineInvocation;
+  afterWorkerSuccess?(opts: RunOptions, worktreePath: string): void;
+  afterReview?(worktreePath: string): void;
+}
+
+const claudeAdapter: EngineAdapter = {
+  prepare() {},
+  worker(opts, worktreeName, archivePath) {
+    const built = buildClaudeWorkerArgs(opts, worktreeName, archivePath);
+    return {
+      engine: "claude",
+      command: "claude",
+      args: built.args,
+      cwd: opts.projectRoot,
+      ...(opts.config.headless ? { prompt: built.prompt } : {}),
+      detached: opts.config.headless,
+      captureLog: false,
+      sessionId: built.workerSessionId,
+    };
+  },
+  review(opts, worktreeName, archivePath, verification) {
+    const built = buildClaudeReviewArgs(opts, worktreeName, archivePath, verification);
+    return {
+      engine: "claude",
+      command: "claude",
+      args: built.args,
+      cwd: opts.projectRoot,
+      ...(opts.config.headless ? { prompt: built.prompt } : {}),
+      detached: opts.config.headless,
+      captureLog: false,
+      sessionId: built.reviewSessionId,
+    };
+  },
+};
+
+const codexAdapter: EngineAdapter = {
+  prepare(worktreePath, config) {
+    writeCodexRulesFile(worktreePath, config.disallowedTools);
+  },
+  worker(opts, worktreeName, archivePath) {
+    const built = buildCodexWorkerArgs(opts, worktreeName, archivePath);
+    return {
+      engine: "codex",
+      command: "codex",
+      args: built.args,
+      cwd: join(opts.projectRoot, ".claude", "worktrees", worktreeName),
+      prompt: built.prompt,
+      detached: true,
+      captureLog: true,
+      logPath: createCodexLogPath(opts.projectRoot, worktreeName, "worker"),
+    };
+  },
+  review(opts, worktreeName, archivePath, verification) {
+    const built = buildCodexReviewArgs(opts, worktreeName, archivePath, verification);
+    return {
+      engine: "codex",
+      command: "codex",
+      args: built.args,
+      cwd: join(opts.projectRoot, ".claude", "worktrees", worktreeName),
+      prompt: built.prompt,
+      detached: true,
+      captureLog: true,
+      logPath: createCodexLogPath(opts.projectRoot, worktreeName, "review"),
+    };
+  },
+  afterWorkerSuccess(opts, worktreePath) {
+    commitWorkerChanges(
+      worktreePath,
+      opts.issueData.number,
+      opts.mode ?? "INVESTIGATE",
+    );
+  },
+  afterReview(worktreePath) {
+    rmSync(join(worktreePath, ".codex"), { recursive: true, force: true });
+  },
+};
+
+function engineAdapter(engine: Engine): EngineAdapter {
+  return engine === "codex" ? codexAdapter : claudeAdapter;
+}
+
+export function buildWorkerInvocation(
+  opts: RunOptions,
+  worktreeName: string,
+  archivePath: string,
+): EngineInvocation {
+  return engineAdapter(opts.plan.worker.engine).worker(opts, worktreeName, archivePath);
+}
+
+export function buildReviewInvocation(
+  opts: RunOptions,
+  worktreeName: string,
+  archivePath: string,
+  verification?: VerificationOutcome | null,
+): EngineInvocation {
+  return engineAdapter(opts.plan.review.engine).review(
+    opts,
+    worktreeName,
+    archivePath,
+    verification,
+  );
+}
+
+export function executionReceiptPidFields(
+  workerReceipt?: ExecutionReceipt,
+  reviewReceipt?: ExecutionReceipt,
+): Pick<PidInfo, "workerSessionId" | "reviewSessionId" | "workerLogPath" | "reviewLogPath"> {
+  return {
+    workerSessionId: workerReceipt?.sessionId,
+    workerLogPath: workerReceipt?.logPath,
+    reviewSessionId: reviewReceipt?.sessionId,
+    reviewLogPath: reviewReceipt?.logPath,
+  };
+}
+
+function executeInvocation(
+  invocation: EngineInvocation,
+  selection: PhaseConfig,
+  worktreePath: string,
+  archivePath: string,
+  phase: "worker" | "review",
+  phaseStatus: string,
+  workerReceipt?: ExecutionReceipt,
+): Promise<ExecutionReceipt> {
+  return new Promise((resolve, reject) => {
+    const stdio: StdioOptions = invocation.captureLog
+      ? ["pipe", "pipe", "pipe"]
+      : invocation.prompt !== undefined
+        ? ["pipe", "inherit", "inherit"]
+        : "inherit";
+    const child = spawn(invocation.command, invocation.args, {
+      cwd: invocation.cwd,
+      stdio,
+      env: { ...process.env },
+      detached: invocation.detached,
+    });
+    trackEngine(child);
+
+    if (invocation.prompt !== undefined) {
+      child.stdin?.on("error", () => { /* tolerate EPIPE if engine exits before reading */ });
+      child.stdin?.end(invocation.prompt);
+    }
+
+    const logStream = invocation.logPath
+      ? createWriteStream(invocation.logPath, { flags: "a" })
+      : undefined;
+    if (logStream) {
+      child.stdout?.on("data", (chunk: Buffer) => {
+        process.stdout.write(chunk);
+        logStream.write(chunk);
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        process.stderr.write(chunk);
+        logStream.write(chunk);
+      });
+    }
+
+    if (child.pid) {
+      const currentReceipt: ExecutionReceipt = {
+        ...selection,
+        exitCode: 0,
+        ...(invocation.sessionId ? { sessionId: invocation.sessionId } : {}),
+        ...(invocation.logPath ? { logPath: invocation.logPath } : {}),
+      };
+      writePidFile(worktreePath, child.pid, {
+        cliPid: process.pid,
+        engine: invocation.engine,
+        projectHash: projectHash(worktreePath),
+        archivePath,
+        model: selection.model,
+        effort: selection.effort,
+        phase: phaseStatus,
+        ...executionReceiptPidFields(
+          phase === "worker" ? currentReceipt : workerReceipt,
+          phase === "review" ? currentReceipt : undefined,
+        ),
+      });
+    }
+
+    child.on("error", (err: Error) => {
+      logStream?.end();
+      removePidFile(worktreePath);
+      reject(new Error(`Failed to start ${invocation.engine} ${phase}: ${err.message}`));
+    });
+
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+      logStream?.end();
+      removePidFile(worktreePath);
+      const exitCode = exitCodeFromCloseEvent(code, signal);
+      resolve({
+        ...selection,
+        exitCode,
+        ...(invocation.sessionId ? { sessionId: invocation.sessionId } : {}),
+        ...(invocation.logPath ? { logPath: invocation.logPath } : {}),
+      });
+    });
+  });
+}
+
+export async function runWorker(opts: RunOptions): Promise<RunResult> {
   checkRemoteBehind(opts.projectRoot);
 
   const worktreeName = ensureDangeresquePrefix(opts.name ?? `${Date.now()}`);
   const branch = `worktree-${worktreeName}`;
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
-  const hash = projectHash(worktreePath);
 
   // Always create a fresh worktree — throws if one already exists.
   createWorktree(opts.projectRoot, worktreeName, branch);
@@ -859,256 +1051,64 @@ export function runWorker(opts: RunOptions): Promise<RunResult> {
   );
   mkdirSync(dirname(archivePath), { recursive: true });
 
-  if (opts.config.engine === "codex") {
-    writeCodexRulesFile(worktreePath, opts.config.disallowedTools);
-    const { args, prompt } = buildCodexWorkerArgs(opts, worktreeName, archivePath);
-    const logPath = createCodexLogPath(opts.projectRoot, worktreeName, "worker");
+  const selection = opts.plan.worker;
+  const adapter = engineAdapter(selection.engine);
+  adapter.prepare(worktreePath, opts.config);
+  const invocation = buildWorkerInvocation(opts, worktreeName, archivePath);
 
-    return new Promise((resolve, reject) => {
-      console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
-      console.log(`📋 Branch: ${branch}`);
-      console.log(`⚙️  Engine: codex`);
-      const selection = workerModelEffort(opts.config);
-      console.log(`🔧 Model: ${selection.model} (effort: ${selection.effort})`);
-      console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
-      console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
-      console.log(`\n--- Worker session starting ---\n`);
+  console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
+  console.log(`📋 Branch: ${branch}`);
+  console.log(`⚙️  Engine: ${selection.engine}`);
+  console.log(`🔧 Model: ${selection.model} (effort: ${selection.effort})`);
+  console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
+  console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
+  console.log(`\n--- Worker session starting ---\n`);
 
-      // detached:true makes the engine a process-group leader, letting
-      // `dangeresque stop` cascade SIGKILL to grandchildren (e.g. a stuck
-      // Bash tool) via `process.kill(-pid, …)`. Codex always pipes stdio,
-      // so detaching is safe — it does not steal the controlling terminal.
-      const child = spawn("codex", args, {
-        cwd: worktreePath,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env },
-        detached: true,
-      });
-      trackEngine(child);
-
-      child.stdin?.on("error", () => { /* tolerate EPIPE if codex exits before reading */ });
-      child.stdin?.end(prompt);
-
-      const logStream = createWriteStream(logPath, { flags: "a" });
-      child.stdout?.on("data", (chunk: Buffer) => {
-        process.stdout.write(chunk);
-        logStream.write(chunk);
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        process.stderr.write(chunk);
-        logStream.write(chunk);
-      });
-
-      if (child.pid) {
-        writePidFile(worktreePath, child.pid, {
-          cliPid: process.pid,
-          engine: "codex",
-          projectHash: hash,
-          workerLogPath: logPath,
-          archivePath,
-          ...workerModelEffort(opts.config),
-          phase: opts.mode ?? "INVESTIGATE",
-        });
-      }
-
-      child.on("error", (err: Error) => {
-        logStream.end();
-        removePidFile(worktreePath);
-        reject(new Error(`Failed to start codex: ${err.message}`));
-      });
-
-      child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-        logStream.end();
-        removePidFile(worktreePath);
-        const exitCode = exitCodeFromCloseEvent(code, signal);
-        if (exitCode === 0) {
-          commitWorkerChanges(
-            worktreePath,
-            opts.issueData.number,
-            opts.mode ?? "INVESTIGATE"
-          );
-        }
-        resolve({ worktreeName, branch, exitCode, archivePath, workerLogPath: logPath });
-      });
-    });
-  }
-
-  const { args, workerSessionId, prompt } = buildClaudeWorkerArgs(opts, worktreeName, archivePath);
-  const useStdin = opts.config.headless;
-
-  return new Promise((resolve, reject) => {
-    console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
-    console.log(`📋 Branch: ${branch}`);
-    const selection = workerModelEffort(opts.config);
-    console.log(`🔧 Model: ${selection.model} (effort: ${selection.effort})`);
-    console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
-    console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
-    console.log(`\n--- Worker session starting ---\n`);
-
-    // Detach only on the headless path. Interactive claude inherits the
-    // operator's controlling TTY ("inherit"), and detaching there steals
-    // terminal control. The headless path pipes stdin and inherits
-    // stdout/stderr, which is safe to detach.
-    const child = spawn("claude", args, {
-      cwd: opts.projectRoot,
-      stdio: useStdin ? ["pipe", "inherit", "inherit"] : "inherit",
-      env: { ...process.env },
-      detached: useStdin,
-    });
-    trackEngine(child);
-
-    if (useStdin) {
-      child.stdin?.on("error", () => { /* tolerate EPIPE if claude exits before reading */ });
-      child.stdin?.end(prompt);
-    }
-
-    if (child.pid) {
-      try {
-        writePidFile(worktreePath, child.pid, {
-          cliPid: process.pid,
-          workerSessionId,
-          projectHash: hash,
-          engine: "claude",
-          archivePath,
-          ...workerModelEffort(opts.config),
-          phase: opts.mode ?? "INVESTIGATE",
-        });
-      } catch {
-        /* worktree not ready yet — ok */
-      }
-    }
-
-    child.on("error", (err: Error) => {
-      removePidFile(worktreePath);
-      reject(new Error(`Failed to start claude: ${err.message}`));
-    });
-
-    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-      removePidFile(worktreePath);
-      const exitCode = exitCodeFromCloseEvent(code, signal);
-      resolve({
-        worktreeName,
-        branch,
-        exitCode,
-        workerSessionId,
-        archivePath,
-      });
-    });
-  });
+  const receipt = await executeInvocation(
+    invocation,
+    selection,
+    worktreePath,
+    archivePath,
+    "worker",
+    opts.mode ?? "INVESTIGATE",
+  );
+  if (receipt.exitCode === 0) adapter.afterWorkerSuccess?.(opts, worktreePath);
+  return { worktreeName, branch, exitCode: receipt.exitCode, receipt, archivePath };
 }
 
-export function runReview(
+export async function runReview(
   opts: RunOptions,
   worktreeName: string,
   archivePath: string,
-  workerSessionId?: string,
-  workerLogPath?: string,
+  workerReceipt: ExecutionReceipt,
   verification?: VerificationOutcome | null,
 ): Promise<RunResult> {
   const branch = `worktree-${worktreeName}`;
   const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
-  const hash = projectHash(worktreePath);
+  const selection = opts.plan.review;
+  const adapter = engineAdapter(selection.engine);
+  adapter.prepare(worktreePath, opts.config);
+  const invocation = buildReviewInvocation(opts, worktreeName, archivePath, verification);
 
-  if (opts.config.engine === "codex") {
-    const { args, prompt } = buildCodexReviewArgs(opts, worktreeName, archivePath, verification);
-    const logPath = createCodexLogPath(opts.projectRoot, worktreeName, "review");
+  console.log(`\n--- Review session starting ---`);
+  console.log(`⚙️  Engine: ${selection.engine}`);
+  console.log(`🔧 Model: ${selection.model} (effort: ${selection.effort})\n`);
 
-    return new Promise((resolve, reject) => {
-      console.log(`\n--- Review session starting ---\n`);
-
-      const child = spawn("codex", args, {
-        cwd: worktreePath,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env },
-        detached: true,
-      });
-      trackEngine(child);
-
-      child.stdin?.on("error", () => { /* tolerate EPIPE if codex exits before reading */ });
-      child.stdin?.end(prompt);
-
-      const logStream = createWriteStream(logPath, { flags: "a" });
-      child.stdout?.on("data", (chunk: Buffer) => {
-        process.stdout.write(chunk);
-        logStream.write(chunk);
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        process.stderr.write(chunk);
-        logStream.write(chunk);
-      });
-
-      if (child.pid) {
-        const existing = readPidFile(worktreePath);
-        writePidFile(worktreePath, child.pid, {
-          cliPid: process.pid,
-          engine: "codex",
-          projectHash: hash,
-          workerLogPath: workerLogPath ?? existing?.workerLogPath,
-          reviewLogPath: logPath,
-          archivePath,
-          ...reviewModelEffort(opts.config),
-          phase: "REVIEW",
-        });
-      }
-
-      child.on("error", (err: Error) => {
-        logStream.end();
-        removePidFile(worktreePath);
-        reject(new Error(`Failed to start codex review: ${err.message}`));
-      });
-
-      child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-        logStream.end();
-        removePidFile(worktreePath);
-        const exitCode = exitCodeFromCloseEvent(code, signal);
-        resolve({ worktreeName, branch, exitCode, archivePath });
-      });
-    });
+  let receipt: ExecutionReceipt;
+  try {
+    receipt = await executeInvocation(
+      invocation,
+      selection,
+      worktreePath,
+      archivePath,
+      "review",
+      "REVIEW",
+      workerReceipt,
+    );
+  } finally {
+    adapter.afterReview?.(worktreePath);
   }
-
-  const { args, reviewSessionId, prompt } = buildClaudeReviewArgs(opts, worktreeName, archivePath, verification);
-  const useStdin = opts.config.headless;
-
-  return new Promise((resolve, reject) => {
-    console.log(`\n--- Review session starting ---\n`);
-
-    const child = spawn("claude", args, {
-      cwd: opts.projectRoot,
-      stdio: useStdin ? ["pipe", "inherit", "inherit"] : "inherit",
-      env: { ...process.env },
-      detached: useStdin,
-    });
-    trackEngine(child);
-
-    if (useStdin) {
-      child.stdin?.on("error", () => { /* tolerate EPIPE if claude exits before reading */ });
-      child.stdin?.end(prompt);
-    }
-
-    if (child.pid) {
-      writePidFile(worktreePath, child.pid, {
-        cliPid: process.pid,
-        reviewSessionId,
-        workerSessionId,
-        projectHash: hash,
-        engine: "claude",
-        archivePath,
-        ...reviewModelEffort(opts.config),
-        phase: "REVIEW",
-      });
-    }
-
-    child.on("error", (err: Error) => {
-      removePidFile(worktreePath);
-      reject(new Error(`Failed to start claude review: ${err.message}`));
-    });
-
-    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-      removePidFile(worktreePath);
-      const exitCode = exitCodeFromCloseEvent(code, signal);
-      resolve({ worktreeName, branch, exitCode, archivePath });
-    });
-  });
+  return { worktreeName, branch, exitCode: receipt.exitCode, receipt, archivePath };
 }
 
 export interface CommentOptions {
@@ -1119,18 +1119,28 @@ export interface CommentOptions {
   archivePath: string;
   workerExitCode: number;
   reviewExitCode?: number;
+  /**
+   * The review process died without producing a verdict (killed by a signal, or
+   * an operator stop). The run is incomplete regardless of the worker's success,
+   * so the comment must say so instead of reading like a finished run.
+   */
+  reviewAborted?: boolean;
   engine?: string;
+  reviewEngine?: string;
   model?: string;
   effort?: string;
   reviewModel?: string;
   reviewEffort?: string;
 }
 
-function buildRunTag(mode: string, opts: CommentOptions): string {
+export function buildRunTag(mode: string, opts: CommentOptions): string {
   const parts = [`dangeresque ${mode}`];
   if (opts.engine) parts.push(`engine=${opts.engine}`);
   if (opts.model) parts.push(`model=${opts.model}`);
   if (opts.effort) parts.push(`effort=${opts.effort}`);
+  if (opts.reviewEngine && opts.reviewEngine !== opts.engine) {
+    parts.push(`review-engine=${opts.reviewEngine}`);
+  }
   if (opts.reviewModel && opts.reviewModel !== opts.model) {
     parts.push(`review-model=${opts.reviewModel}`);
   }
@@ -1168,13 +1178,32 @@ export function postRunComment(opts: CommentOptions): void {
     const summaryBlock = summary
       ? `<!-- SUMMARY -->\n${summary}\n<!-- /SUMMARY -->`
       : `_(no SUMMARY block found in artifact)_`;
-    const reviewNote = reviewExitCode !== undefined && reviewExitCode !== 0
-      ? `\n\n⚠️  Review process exited with code ${reviewExitCode} — full artifact may be incomplete.`
-      : "";
-    comment =
-      `${tag}\n\n${summaryBlock}\n\n` +
-      `Local artifact: \`${archiveRel}\` ` +
-      `(\`dangeresque results --issue ${issueNumber}\`)${reviewNote}`;
+
+    if (opts.reviewAborted) {
+      // The worker's output is intact and committed; only the review died.
+      // Lead with that, and name the one command that recovers it — an
+      // orchestrator reading this must not conclude a re-dispatch is needed.
+      comment =
+        `${tag} ⚠️  REVIEW DID NOT COMPLETE\n\n` +
+        `The worker finished and its changes are committed on \`worktree-${worktreeName}\`, ` +
+        `but the review pass exited ${reviewExitCode} without completing, so this run has no ` +
+        `reliable verdict. Merge gates will refuse it until a review completes.\n\n` +
+        `**Do not re-dispatch the worker — the implementation is done.** Re-run only the review:\n\n` +
+        "```\n" +
+        `dangeresque review worktree-${worktreeName}\n` +
+        "```\n\n" +
+        `The worker's summary below is unreviewed and unverified by the reviewer:\n\n` +
+        `${summaryBlock}\n\n` +
+        `Local artifact: \`${archiveRel}\``;
+    } else {
+      const reviewNote = reviewExitCode !== undefined && reviewExitCode !== 0
+        ? `\n\n⚠️  Review process exited with code ${reviewExitCode} — full artifact may be incomplete.`
+        : "";
+      comment =
+        `${tag}\n\n${summaryBlock}\n\n` +
+        `Local artifact: \`${archiveRel}\` ` +
+        `(\`dangeresque results --issue ${issueNumber}\`)${reviewNote}`;
+    }
   }
 
   const result = spawnSync(
@@ -1189,7 +1218,9 @@ export function postRunComment(opts: CommentOptions): void {
   );
 
   if (result.status === 0) {
-    console.log(`Posted ${workerExitCode !== 0 ? "FAILURE" : "summary"} comment on issue #${issueNumber}`);
+    const kind =
+      workerExitCode !== 0 ? "FAILURE" : opts.reviewAborted ? "REVIEW-INCOMPLETE" : "summary";
+    console.log(`Posted ${kind} comment on issue #${issueNumber}`);
   } else {
     console.error(
       `Failed to post comment on #${issueNumber}: ${result.stderr}`

@@ -330,12 +330,12 @@ test("initProject: bootstraps AGENTS.md when engine=codex and no agent rules fil
   const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
   const origLog = console.log;
   console.log = () => {};
-  // Pre-seed config.json with engine=codex so init's pointer step picks AGENTS.md.
+  // Pre-seed Codex worker so init's pointer step picks AGENTS.md.
   const configDir = join(scratch, ".dangeresque");
   mkdirSync(configDir, { recursive: true });
   writeFileSync(
     join(configDir, "config.json"),
-    JSON.stringify({ engine: "codex" }, null, 2),
+    JSON.stringify({ worker: { engine: "codex", model: "gpt-5.5", effort: "xhigh" } }, null, 2),
   );
   try {
     initProject(scratch);
@@ -349,6 +349,47 @@ test("initProject: bootstraps AGENTS.md when engine=codex and no agent rules fil
       !existsSync(join(scratch, "CLAUDE.md")),
       "CLAUDE.md must NOT be created when engine=codex",
     );
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: mixed engines bootstrap both rules pointers", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  const configDir = join(scratch, ".dangeresque");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(
+    join(configDir, "config.json"),
+    JSON.stringify({
+      worker: { engine: "codex", model: "gpt-5.5", effort: "xhigh" },
+      review: { engine: "claude", model: "claude-opus-4-7", effort: "max" },
+    }),
+  );
+  try {
+    initProject(scratch);
+    assert.ok(readFileSync(join(scratch, "AGENTS.md"), "utf-8").includes("DANGERESQUE-START"));
+    assert.ok(readFileSync(join(scratch, "CLAUDE.md"), "utf-8").includes("DANGERESQUE-START"));
+  } finally {
+    console.log = origLog;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("initProject: refreshes canonical config.example.json", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "dangeresque-init-smoke-"));
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    initProject(scratch);
+    const example = join(scratch, ".dangeresque", "config.example.json");
+    writeFileSync(example, '{"engine":"stale"}\n');
+    initProject(scratch);
+    const parsed = JSON.parse(readFileSync(example, "utf-8"));
+    assert.equal(parsed.worker.engine, "codex");
+    assert.equal(parsed.review.engine, "claude");
   } finally {
     console.log = origLog;
     rmSync(scratch, { recursive: true, force: true });

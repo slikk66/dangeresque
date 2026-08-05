@@ -8,7 +8,7 @@ export function usageForEngine(engine: Engine): string {
   const engineRunNotes =
     engine === "codex"
       ? "  --effort <level>  Override native Codex reasoning effort; validated against selected model\n"
-      : "  --effort <level>  Override effort level (default: max) [low, medium, high|xhigh, max]\n";
+      : "  --effort <level>  Override worker effort [low, medium, high|xhigh, max]\n";
 
   return `
 dangeresque — bounded AFK Claude Code or Codex runs with human review
@@ -16,6 +16,7 @@ ${engineLine}
 
 Commands:
   run [options]                        Execute worker + review pass
+  review <branch> [options]            Re-run ONLY the review pass on a finished worker whose review died (killed process, engine error) — keeps the committed work; refuses a run that already has a verdict unless --force
   logs <branch> [options]              Pretty-print session transcript
   results <branch>                     Show run results from a worktree
   results --issue <N> [--all]          Show archived results for an issue
@@ -45,15 +46,25 @@ Run options:
   --no-verify       Skip pre-review verification commands (compile/test/lint)
   --interactive     Run interactively (default: headless with -p)
   --force           Bypass pre-flight gates (same-issue worktree, stale main)
-  --model <model>   Override model (default: ${engine === "codex" ? "gpt-5.4" : "claude-opus-4-7"})
-${engineRunNotes}  --review-model <model>  Override model for review pass (default: matches --model)
-  --review-effort <level> Override effort for review pass (default: matches --effort)
-  Advanced: --engine <name> (hidden), DANGERESQUE_ENGINE env var
+  --engine <name>   Worker engine: claude or codex (uses engineDefaults pin)
+  --model <model>   Override worker model
+${engineRunNotes}  --review-engine <name> Override review engine; uses engineDefaults pin
+  --review-model <model>  Override review model
+  --review-effort <level> Override review effort
+  Env: DANGERESQUE_ENGINE, DANGERESQUE_REVIEW_ENGINE
   --help            Show this help
+
+Review options (crash recovery — the worker's committed output is kept):
+  --dry-run         Report whether the run is rescuable; dispatch nothing
+  --force           Re-review a run that already has a verdict
+  --no-verify       Skip pre-review verification commands
+  --review-engine <name> / --review-model <model> / --review-effort <level>
 
 Examples:
   dangeresque run --issue 63
   dangeresque run --issue 63 --mode IMPLEMENT
+  dangeresque run --issue 63 --mode IMPLEMENT --engine codex --review-engine claude
+  dangeresque review worktree-dangeresque-implement-63
   dangeresque results investigate-63
   dangeresque stage 63 --comment "root cause confirmed" --mode IMPLEMENT
   dangeresque init

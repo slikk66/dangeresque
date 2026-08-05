@@ -42,27 +42,32 @@ Bundled model catalog:
 
 `ultra` includes automatic delegation, so it is not merely a larger single-agent
 reasoning budget. Supported values are model-dependent. Dangeresque's generic
-Claude effort defaults to `max`; a Codex configuration must select a compatible
-`codexEffort` or explicitly set a compatible generic `effort`.
+Claude effort defaults to `max`; every Codex phase must select a compatible
+effort in its `worker` or `review` profile.
 
 ## Live verification
 
-This completed successfully and returned `OK`:
+These completed successfully and returned `OK`:
 
 ```sh
 codex exec --ephemeral --ignore-user-config --skip-git-repo-check \
   --sandbox read-only --strict-config --json --model gpt-5.4 \
   -c 'model_reasoning_effort="xhigh"' --cd /private/tmp \
   'Reply exactly: OK. Do not use tools.'
+
+codex exec --ephemeral --ignore-user-config --skip-git-repo-check \
+  --sandbox read-only --strict-config --json --model gpt-5.5 \
+  -c 'model_reasoning_effort="xhigh"' --cd /private/tmp \
+  'Reply exactly: OK. Do not use tools.'
 ```
 
-The completed turn reported 32 reasoning output tokens. This verifies CLI config
+The GPT-5.5 turn reported 15 reasoning output tokens. This verifies CLI config
 parsing and API/model acceptance, not comparative quality.
 
 ## Implemented
 
-Dangeresque now passes `model_reasoning_effort` natively for both Codex worker
-and review runs. It validates against the installed Codex model catalog and
+Dangeresque passes `model_reasoning_effort` natively for every Codex phase. It
+validates against the installed Codex model catalog and
 fails before dispatch when incompatible. It does not silently map effort values.
 `ultra` is rejected because it enables delegation.
 

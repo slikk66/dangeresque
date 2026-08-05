@@ -84,6 +84,30 @@ The worker reads the issue + your staged comment + prior run files for the same 
 dangeresque merge implement-63
 ```
 
+## 7b. If the review died before it produced a verdict
+
+A worker can finish and commit its work only for the review pass to be killed —
+an outside signal, a session teardown, a transient engine error. The run has no
+verdict, so `dangeresque merge` refuses it. **Do not re-dispatch the worker; the
+implementation is already done.** Re-run just the review:
+
+```bash
+# Is this run rescuable? Changes nothing, dispatches nothing.
+dangeresque review implement-63 --dry-run
+
+# Re-run verification + review against the existing worktree, write the verdict
+dangeresque review implement-63
+```
+
+This replays the same post-worker pipeline `run` uses, so the resulting artifact
+is indistinguishable from an uninterrupted run and the merge gate reads a real
+verdict from it.
+
+It is crash recovery, not a re-review button: a run that already carries a
+verdict is refused. `--force` overrides that, and records the verdict it
+overrode in the artifact — reach for it only when you know the earlier review
+itself was broken.
+
 ## 8. Continue or close
 
 - **Push** your main branch with the merged changes

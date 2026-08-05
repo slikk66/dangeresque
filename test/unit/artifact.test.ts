@@ -109,6 +109,9 @@ test("ArtifactBuilder: review skipped → verdict=skipped", () => {
       mode: "INVESTIGATE",
       engine: "claude",
       model: "m",
+      reviewEngine: "codex",
+      reviewModel: "gpt-5.5",
+      reviewEffort: "xhigh",
       worktreeName: "wt",
       branch: "br",
       archivePath,
@@ -119,6 +122,7 @@ test("ArtifactBuilder: review skipped → verdict=skipped", () => {
     assert.equal(artifact.reviewer_verdict, "skipped");
     assert.equal(artifact.review?.skipped, true);
     assert.equal(artifact.review?.skip_reason, "caller opted out");
+    assert.equal(artifact.review_engine, undefined);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -136,6 +140,9 @@ test("ArtifactBuilder: scope outside + reviewer accept → success (scope is tel
       mode: "IMPLEMENT",
       engine: "claude",
       model: "m",
+      reviewEngine: "codex",
+      reviewModel: "gpt-5.5",
+      reviewEffort: "xhigh",
       worktreeName: "wt",
       branch: "br",
       archivePath,
@@ -149,6 +156,8 @@ test("ArtifactBuilder: scope outside + reviewer accept → success (scope is tel
     });
     const artifact = builder.build();
     assert.equal(artifact.result, "success");
+    assert.equal(artifact.review_engine, "codex");
+    assert.equal(artifact.review_model, "gpt-5.5");
     assert.ok(!artifact.failure_categories.includes("scope_outside"));
     assert.deepEqual(artifact.failure_categories, []);
     assert.deepEqual(artifact.scope_report?.outside, ["unrelated.ts"]);
@@ -530,6 +539,72 @@ test("ArtifactBuilder: populated scope_declaration suppresses warn for IMPLEMENT
     assert.deepEqual(artifact.scope_declaration, [
       { path: "src/foo.ts", category: "declared", rationale: "primary change" },
     ]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: a review rescue preserves the original run's identity and history", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "# Results\n**Verdict:** ACCEPT\n");
+    const builder = new ArtifactBuilder({
+      projectRoot: tmp,
+      issueNumber: 679,
+      issueUrl: null,
+      mode: "IMPLEMENT",
+      engine: "claude",
+      model: "claude-opus-5",
+      worktreeName: "dangeresque-implement-679",
+      branch: "worktree-dangeresque-implement-679",
+      archivePath,
+      runId: "original-run-id",
+      seedEvents: [
+        { ts: "2026-08-05T06:01:25.000Z", event: "run_started" },
+        { ts: "2026-08-05T06:40:02.000Z", event: "worker_completed" },
+      ],
+    });
+    builder.setWorkerTiming(100, 200, 0);
+    builder.setReviewTiming(300, 400, 0);
+    const artifact = builder.build();
+
+    assert.equal(
+      artifact.run_id,
+      "original-run-id",
+      "a rescued review continues the same run rather than appearing as a second one",
+    );
+    const events = artifact.lifecycle_events.map((e) => e.event);
+    assert.equal(events[0], "run_started");
+    assert.equal(events[1], "worker_completed");
+    assert.ok(
+      events.indexOf("worker_completed") < events.lastIndexOf("run_started"),
+      "carried-over events precede the rescue's own run_started",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: without runId each build is a distinct run", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const archivePath = join(tmp, "run.md");
+    writeFileSync(archivePath, "# Results\n");
+    const init = {
+      projectRoot: tmp,
+      issueNumber: 1,
+      issueUrl: null,
+      mode: "IMPLEMENT" as const,
+      engine: "claude" as const,
+      model: "m",
+      worktreeName: "wt",
+      branch: "br",
+      archivePath,
+    };
+    const first = new ArtifactBuilder(init).build();
+    const second = new ArtifactBuilder(init).build();
+    assert.notEqual(first.run_id, second.run_id);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

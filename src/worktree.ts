@@ -72,8 +72,9 @@ export interface PidInfo {
   phase?: string;
 }
 
-export function formatPidModelEffort(pidInfo: Pick<PidInfo, "model" | "effort">): string[] {
+export function formatPidExecution(pidInfo: Pick<PidInfo, "engine" | "model" | "effort">): string[] {
   const lines: string[] = [];
+  if (pidInfo.engine) lines.push(`  Engine: ${pidInfo.engine}`);
   if (pidInfo.model) lines.push(`  Model:  ${pidInfo.model}`);
   if (pidInfo.effort) lines.push(`  Effort: ${pidInfo.effort}`);
   return lines;

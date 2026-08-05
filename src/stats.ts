@@ -45,6 +45,7 @@ export interface StatsSummary {
   byResult: Record<ResultClassification, number>;
   byVerdict: Record<ReviewerVerdict, number>;
   byEngine: Record<string, number>;
+  byReviewEngine: Record<string, number>;
   byMode: Record<string, { total: number; success: number }>;
   byModel: Record<string, number>;
   failureCategories: Record<string, number>;
@@ -155,6 +156,7 @@ export function computeStats(artifacts: RunArtifact[]): StatsSummary {
     unknown: 0,
   };
   const byEngine: Record<string, number> = { claude: 0, codex: 0 };
+  const byReviewEngine: Record<string, number> = { claude: 0, codex: 0 };
   const byMode: Record<string, { total: number; success: number }> = {};
   const byModel: Record<string, number> = {};
   const failureCategories: Record<string, number> = {};
@@ -186,6 +188,9 @@ export function computeStats(artifacts: RunArtifact[]): StatsSummary {
     }
     if (a.review && !a.review.skipped) {
       reviewRanByMode[a.mode] = (reviewRanByMode[a.mode] ?? 0) + 1;
+      if (a.review_engine) {
+        byReviewEngine[a.review_engine] = (byReviewEngine[a.review_engine] ?? 0) + 1;
+      }
     }
   }
 
@@ -210,6 +215,7 @@ export function computeStats(artifacts: RunArtifact[]): StatsSummary {
     byResult,
     byVerdict,
     byEngine,
+    byReviewEngine,
     byMode,
     byModel,
     failureCategories,
@@ -258,7 +264,7 @@ export function formatStats(summary: StatsSummary, extras: FormatExtras): string
   }
 
   lines.push("");
-  lines.push("By engine:");
+  lines.push("By worker engine:");
   for (const k of KNOWN_ENGINES) {
     const count = summary.byEngine[k] ?? 0;
     lines.push(`  ${pad(k, 20)}${padLeft(String(count), 6)}`);
@@ -268,6 +274,12 @@ export function formatStats(summary: StatsSummary, extras: FormatExtras): string
     .sort();
   for (const k of extraEngines) {
     lines.push(`  ${pad(k, 20)}${padLeft(String(summary.byEngine[k]), 6)}`);
+  }
+
+  lines.push("");
+  lines.push("By review engine:");
+  for (const k of KNOWN_ENGINES) {
+    lines.push(`  ${pad(k, 20)}${padLeft(String(summary.byReviewEngine[k] ?? 0), 6)}`);
   }
 
   lines.push("");

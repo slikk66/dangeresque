@@ -16,6 +16,13 @@ function makeRoot(): string {
   return mkdtempSync(join(tmpdir(), "dangeresque-doctor-"));
 }
 
+function seedValidProject(projectRoot: string): void {
+  const configDir = join(projectRoot, ".dangeresque");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, "worker-prompt.md"), "worker");
+  writeFileSync(join(configDir, "review-prompt.md"), "review");
+}
+
 function writeBuildInfo(root: string, body: unknown): void {
   mkdirSync(join(root, "dist"), { recursive: true });
   writeFileSync(join(root, "dist", "build-info.json"), JSON.stringify(body));
@@ -46,7 +53,7 @@ test("doctor: all-pass synthetic environment", () => {
       built_at: "2026-05-03T00:00:00.000Z",
       schema_version: ARTIFACT_SCHEMA_VERSION,
     });
-    mkdirSync(join(projectRoot, ".dangeresque"), { recursive: true });
+    seedValidProject(projectRoot);
 
     const report = runDoctorChecks({
       projectRoot,
@@ -58,6 +65,7 @@ test("doctor: all-pass synthetic environment", () => {
     assert.equal(check(report, "schema-version").status, "pass");
     assert.equal(check(report, "gh-cli-available").status, "pass");
     assert.equal(check(report, "dangeresque-initialized").status, "pass");
+    assert.equal(check(report, "dangeresque-config-valid").status, "pass");
   } finally {
     rmSync(packageRoot, { recursive: true, force: true });
     rmSync(projectRoot, { recursive: true, force: true });
@@ -68,7 +76,7 @@ test("doctor: missing build-info → build-info-present and dist-matches-head WA
   const packageRoot = makeRoot();
   const projectRoot = makeRoot();
   try {
-    mkdirSync(join(projectRoot, ".dangeresque"), { recursive: true });
+    seedValidProject(projectRoot);
     const report = runDoctorChecks({
       projectRoot,
       root: packageRoot,
@@ -93,7 +101,7 @@ test("doctor: drift scenario → dist-matches-head WARN with built/HEAD detail",
       built_at: "2026-05-03T00:00:00.000Z",
       schema_version: ARTIFACT_SCHEMA_VERSION,
     });
-    mkdirSync(join(projectRoot, ".dangeresque"), { recursive: true });
+    seedValidProject(projectRoot);
 
     const report = runDoctorChecks({
       projectRoot,
@@ -127,6 +135,37 @@ test("doctor: missing .dangeresque/ → dangeresque-initialized WARN", () => {
       ghProbe: () => true,
     });
     assert.equal(check(report, "dangeresque-initialized").status, "warn");
+    assert.equal(check(report, "dangeresque-config-valid").status, "warn");
+  } finally {
+    rmSync(packageRoot, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("doctor: rejected legacy config produces config-valid FAIL", () => {
+  const packageRoot = makeRoot();
+  const projectRoot = makeRoot();
+  try {
+    const head = gitInit(packageRoot);
+    writeBuildInfo(packageRoot, {
+      commit: head,
+      built_at: "2026-05-03T00:00:00.000Z",
+      schema_version: ARTIFACT_SCHEMA_VERSION,
+    });
+    seedValidProject(projectRoot);
+    writeFileSync(
+      join(projectRoot, ".dangeresque", "config.json"),
+      JSON.stringify({ model: "claude-opus", effort: "max" }),
+    );
+
+    const report = runDoctorChecks({
+      projectRoot,
+      root: packageRoot,
+      ghProbe: () => true,
+    });
+    const c = check(report, "dangeresque-config-valid");
+    assert.equal(c.status, "fail");
+    assert.match(c.detail, /Legacy flat engine config/);
   } finally {
     rmSync(packageRoot, { recursive: true, force: true });
     rmSync(projectRoot, { recursive: true, force: true });
@@ -143,7 +182,7 @@ test("doctor: gh missing → gh-cli-available WARN, others unaffected", () => {
       built_at: "2026-05-03T00:00:00.000Z",
       schema_version: ARTIFACT_SCHEMA_VERSION,
     });
-    mkdirSync(join(projectRoot, ".dangeresque"), { recursive: true });
+    seedValidProject(projectRoot);
     const report = runDoctorChecks({
       projectRoot,
       root: packageRoot,
@@ -168,7 +207,7 @@ test("doctor: schema-version mismatch → schema-version WARN", () => {
       built_at: "2026-05-03T00:00:00.000Z",
       schema_version: "999",
     });
-    mkdirSync(join(projectRoot, ".dangeresque"), { recursive: true });
+    seedValidProject(projectRoot);
     const report = runDoctorChecks({
       projectRoot,
       root: packageRoot,
@@ -192,7 +231,7 @@ test("doctor: non-git package root → dist-matches-head PASS (skipped)", () => 
       built_at: "2026-05-03T00:00:00.000Z",
       schema_version: ARTIFACT_SCHEMA_VERSION,
     });
-    mkdirSync(join(projectRoot, ".dangeresque"), { recursive: true });
+    seedValidProject(projectRoot);
     const report = runDoctorChecks({
       projectRoot,
       root: packageRoot,

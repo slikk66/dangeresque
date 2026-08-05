@@ -57,6 +57,7 @@ test("computeStats: empty input → zeroed counters", () => {
     unknown: 0,
   });
   assert.deepEqual(s.byEngine, { claude: 0, codex: 0 });
+  assert.deepEqual(s.byReviewEngine, { claude: 0, codex: 0 });
   assert.deepEqual(s.byMode, {});
   assert.equal(s.workerDurationsMs.median, 0);
   assert.equal(s.totalDurationsMs.p95, 0);
@@ -95,6 +96,22 @@ test("computeStats: aggregates results, verdicts, engines, modes, models, failur
   assert.equal(s.byModel["gpt-5.4"], 1);
   assert.equal(s.failureCategories.scope_outside, 1);
   assert.equal(s.failureCategories.reviewer_rejected, 1);
+});
+
+test("computeStats: aggregates reviewer engines independently", () => {
+  const review = {
+    skipped: false,
+    started_at: "2026-01-01T00:05:00.000Z",
+    ended_at: "2026-01-01T00:06:00.000Z",
+    duration_ms: 60000,
+    exit_code: 0,
+  };
+  const s = computeStats([
+    mkArtifact({ engine: "codex", review_engine: "claude", review }),
+    mkArtifact({ engine: "claude", review_engine: "codex", review }),
+  ]);
+  assert.deepEqual(s.byEngine, { claude: 1, codex: 1 });
+  assert.deepEqual(s.byReviewEngine, { claude: 1, codex: 1 });
 });
 
 test("computeStats: median + p95 durations", () => {
@@ -359,7 +376,8 @@ test("formatStats: output contains all required sections, no ANSI, fits 80 cols"
     "Skipped:",
     "Results:",
     "Reviewer verdicts:",
-    "By engine:",
+    "By worker engine:",
+    "By review engine:",
     "By mode (success rate):",
     "By model:",
     "Failure categories:",
@@ -451,7 +469,7 @@ test("formatStats: zero-match with filters emits Note line", () => {
     filesScanned: 10,
   });
   assert.match(text, /Note: no artifacts match filters \(--issue 999\)/);
-  assert.ok(text.includes("By engine:"), "stable shape — sections still present");
+  assert.ok(text.includes("By worker engine:"), "stable shape — sections still present");
 });
 
 test("formatStats: unsupported schema versions surfaced in Skipped line", () => {
@@ -734,7 +752,7 @@ test("cli stats: real repo prints non-zero counts and all sections", () => {
     assert.match(out, /Run Evaluation Stats/);
     assert.match(out, /Results:/);
     assert.match(out, /Reviewer verdicts:/);
-    assert.match(out, /By engine:/);
+    assert.match(out, /By worker engine:/);
     assert.match(out, /By mode \(success rate\):/);
     assert.match(out, /By model:/);
     assert.match(out, /Failure categories:/);
@@ -767,7 +785,7 @@ test("cli stats: --engine codex filter is accepted and renders all sections", ()
       { cwd: tmp, encoding: "utf-8" },
     );
     assert.match(out, /Filters: --engine codex/);
-    assert.match(out, /By engine:/);
+    assert.match(out, /By worker engine:/);
     assert.match(out, /By mode \(success rate\):/);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -831,7 +849,7 @@ test("cli stats: --issue with no match shows zero-counter shape + note", () => {
     assert.match(out, /Filters: --issue 999999/);
     assert.match(out, /Total artifacts: 0/);
     assert.match(out, /Note: no artifacts match filters \(--issue 999999\)/);
-    assert.match(out, /By engine:/);
+    assert.match(out, /By worker engine:/);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

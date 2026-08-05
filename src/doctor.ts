@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { detectDrift, packageRoot, type DriftDetails } from "./build-info.js";
 import { ARTIFACT_SCHEMA_VERSION } from "./artifact.js";
-import { CONFIG_DIR } from "./config.js";
+import { CONFIG_DIR, validateSetup } from "./config.js";
 
 export type CheckStatus = "pass" | "warn" | "fail";
 
@@ -146,6 +146,30 @@ function checkDangeresqueInitialized(projectRoot: string): DoctorCheck {
   };
 }
 
+function checkDangeresqueConfig(projectRoot: string): DoctorCheck {
+  const configDir = join(projectRoot, CONFIG_DIR);
+  if (!existsSync(configDir)) {
+    return {
+      name: "dangeresque-config-valid",
+      status: "warn",
+      detail: "not checked because .dangeresque/ is missing",
+    };
+  }
+  const validation = validateSetup(projectRoot);
+  if (!validation.valid) {
+    return {
+      name: "dangeresque-config-valid",
+      status: "fail",
+      detail: validation.errors.join("; "),
+    };
+  }
+  return {
+    name: "dangeresque-config-valid",
+    status: "pass",
+    detail: "config and prompt files pass run preflight validation",
+  };
+}
+
 export function runDoctorChecks(opts: DoctorOptions): DoctorReport {
   const root = opts.root ?? packageRoot();
   const drift = detectDrift({ root });
@@ -157,6 +181,7 @@ export function runDoctorChecks(opts: DoctorOptions): DoctorReport {
     checkSchemaVersion(drift),
     checkGhCli(ghProbe),
     checkDangeresqueInitialized(opts.projectRoot),
+    checkDangeresqueConfig(opts.projectRoot),
   ];
 
   return { checks, packageRoot: root, projectRoot: opts.projectRoot };
@@ -186,6 +211,6 @@ export function formatDoctorReport(report: DoctorReport): string {
     `Summary: ${counts.pass} pass · ${counts.warn} warn · ${counts.fail} fail`,
   );
   lines.push("");
-  lines.push("Exit codes: 0 normal · 1 if --strict and any WARN · 2 on internal error");
+  lines.push("Exit codes: 0 normal · 1 on FAIL or --strict WARN · 2 on internal error");
   return lines.join("\n") + "\n";
 }

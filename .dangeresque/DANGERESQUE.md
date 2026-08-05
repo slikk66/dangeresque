@@ -95,9 +95,11 @@ workflow loop:
 | Verb                                | Purpose                                                  |
 |-------------------------------------|----------------------------------------------------------|
 | `dangeresque run --issue <N>`       | Dispatch a worker (default mode: INVESTIGATE)            |
+| `dangeresque review <branch>`       | Re-run ONLY the review on a finished worker whose review died; keeps the committed work. `--dry-run` reports eligibility; `--force` re-reviews a run that already has a verdict |
 | `dangeresque results --issue <N>`   | Read the latest archived run for an issue                |
 | `dangeresque stage <N>`             | Post a `[staged]` comment to steer the next worker       |
 | `dangeresque merge <branch>`        | Merge worktree into main; **KEEPS the run report**       |
+| `dangeresque merge --rescue`        | Merge over a reject/needs_human_review verdict on a USER-approved `[micro-fix: USER-approved]` commit; verify gates STILL run |
 | `dangeresque discard <branch>`      | Drop worktree + branch; **DELETES the run report**       |
 | `dangeresque stop <branch>`         | Stop a running worker; leaves the worktree intact        |
 | `dangeresque logs <branch>`         | Snapshot or follow worker (or review) transcript         |
@@ -115,6 +117,22 @@ run, dangeresque posts ONE comment on the GitHub Issue containing only the
 artifact's `<!-- SUMMARY -->` block plus the local artifact path; the full
 body never leaves the host — read it via `dangeresque results --issue <N>`
 or directly under `.dangeresque/runs/issue-<N>/`.
+
+**If a review dies, do NOT re-dispatch the worker.** A worker can finish and
+commit its work only for the review pass to be killed (outside signal, engine
+error, session teardown). The run then has no verdict, so merge gates refuse it
+— but the implementation is done and re-running it burns the whole cost again.
+Recover the review alone:
+
+```
+dangeresque review <branch> --dry-run   # is it rescuable?
+dangeresque review <branch>             # re-runs verify + review, writes the verdict
+```
+
+It replays the same post-worker pipeline `run` uses (rebase, verification,
+review, artifact), so the result is indistinguishable from an uninterrupted run.
+It refuses a run that already has a verdict — that is crash recovery, not a
+re-roll of a decision you did not like.
 
 **Don't truncate or close the orchestrator's stdout.** `dangeresque run` is a
 long-running orchestrator that streams output across multiple phases — worker

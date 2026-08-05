@@ -1,24 +1,24 @@
 {
-  "_doc": "Example .dangeresque/config.json — copy to config.json and edit. All fields are optional; sensible defaults apply when omitted.",
+  "_doc": "Example .dangeresque/config.json — copy to config.json and edit. engineDefaults stores standing provider pins; worker/review select engines and may override model/effort per phase. Omit review to inherit worker.",
 
-  "engine": "claude",
-  "model": "claude-opus-4-7",
-  "effort": "max",
-  "reviewModel": "claude-opus-4-7",
-  "reviewEffort": "max",
+  "engineDefaults": {
+    "claude": { "model": "claude-opus-4-7", "effort": "max" },
+    "codex": { "model": "gpt-5.5", "effort": "xhigh" }
+  },
 
-  "_doc_codex": "Codex overrides. Generic model/effort and reviewModel/reviewEffort are fallbacks. Values are checked against the installed Codex model catalog before dispatch. gpt-5.4 and gpt-5.5 support low/medium/high/xhigh, not max. ultra is rejected because it enables delegation.",
-  "codexModel": "gpt-5.5",
-  "codexEffort": "xhigh",
-  "codexReviewModel": "gpt-5.5",
-  "codexReviewEffort": "xhigh",
+  "worker": {
+    "engine": "codex"
+  },
+  "review": {
+    "engine": "claude"
+  },
+
+  "_doc_codex": "Every scheduled Codex phase is checked against the installed model catalog before dispatch. gpt-5.4 and gpt-5.5 support low/medium/high/xhigh, not max. ultra is rejected because it enables delegation.",
 
   "_doc_verify": "Pre-review verification: dangeresque runs each command in the worktree between the worker exit (post-rebase, post-file-count-normalize) and the review pass. Catches drift between worker prose claims (\"yarn build passes\") and code reality. Empty `commands` array (default) means no-op; opt in by listing commands. The CLI runs them, NOT the engine — `allowedTools` does not constrain them.",
   "verify": {
     "enabled": true,
-    "_doc_modes": "Modes that trigger verification. INVESTIGATE is excluded by default since it produces no code changes.",
     "modes": ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
-    "_doc_commands": "Per-command policy: name (unique id used in artifact + SUMMARY), cmd (shell string), on_failure ('block' skips review and fails the run; 'warn' continues), timeout_ms (defaults to 300000 = 5min).",
     "commands": [
       { "name": "install", "cmd": "yarn install --immutable", "on_failure": "block", "timeout_ms": 300000 },
       { "name": "compile", "cmd": "yarn build",               "on_failure": "block", "timeout_ms": 300000 },
@@ -40,9 +40,7 @@
   "_doc_dispatchGate": "Pre-worker enforcement gate. Runs BEFORE runWorker for configured modes and refuses to dispatch (exit 2) if any blocking check fails. Independent of reviewer output — this fires at the physical dispatch surface, so consumer policy cannot be bypassed by model verdicts. Absent block = gate off. Malformed config throws at load time (fail closed). --force bypasses only the built-in `requireInvestigateBeforeImplement`; project commands always run and their `on_failure` governs. Commands run in projectRoot with DANGERESQUE_ISSUE + DANGERESQUE_MODE env vars.",
   "dispatchGate": {
     "enabled": false,
-    "_doc_modes": "Which dispatched modes trigger the gate. Default = all supported modes.",
     "modes": ["INVESTIGATE", "IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
-    "_doc_requireInvestigateBeforeImplement": "Built-in: refuse IMPLEMENT dispatch when no prior INVESTIGATE artifact exists at .dangeresque/runs/issue-<N>/. --force bypasses.",
     "requireInvestigateBeforeImplement": true,
     "commands": [
       { "name": "issue-policy", "cmd": "./scripts/dangeresque/check-issue.sh", "on_failure": "block", "timeout_ms": 30000 }
@@ -52,9 +50,7 @@
   "_doc_mergeGate": "Pre-merge enforcement gate. Runs BEFORE `git merge` inside mergeWorktree and refuses (exit 2, gateRefusal) if any blocking check fails. Also injects DANGERESQUE_MERGE=1 into the git merge environment so consumer git hooks can distinguish dangeresque merges from direct commits. Absent block = gate off. Commands run in projectRoot with DANGERESQUE_ISSUE + DANGERESQUE_MODE + DANGERESQUE_MERGE=1 env vars.",
   "mergeGate": {
     "enabled": false,
-    "_doc_modes": "Merged-worktree modes that trigger the gate. Default = code-changing modes only; INVESTIGATE/VERIFY are no-op merges and pass through.",
     "modes": ["IMPLEMENT", "REFACTOR", "TEST"],
-    "_doc_requireAcceptedImplement": "Built-in: require the latest -${MODE}.json artifact matching the merged branch's own mode (as resolved by extractMode) to show review.skipped=false AND reviewer_verdict='accept'. Reads worktree first (fresh mode-M run), then projectRoot ONLY when worktree has zero mode-M artifacts (e.g. repeat REFACTOR round on same issue). Missing / unreadable / skipped / non-accept → refuse (fail closed). Field name retained for config compatibility even though semantics are now mode-agnostic.",
     "requireAcceptedImplement": true,
     "commands": [
       { "name": "release-notes-present", "cmd": "./scripts/dangeresque/check-release-notes.sh", "on_failure": "block", "timeout_ms": 30000 }

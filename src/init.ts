@@ -15,6 +15,7 @@ import {
   agentMdCandidates,
   ensurePointer,
   loadConfig,
+  resolveRunPlan,
 } from "./config.js";
 import { BRIEF_MARKDOWN } from "./brief.js";
 
@@ -218,6 +219,14 @@ export function initProject(projectRoot: string): void {
     if (file === "claude-settings.json") continue; // handled separately
     if (splitLocal.has(file)) continue; // installed by copyWithLocalOverlay alongside its canonical
 
+    if (file === "config.example.json") {
+      const destPath = join(configDir, file);
+      copyFileSync(join(templatesDir, file), destPath);
+      console.log(`  Wrote    ${CONFIG_DIR}/${file}`);
+      configCopied++;
+      continue;
+    }
+
     if (splitBase.has(file)) {
       const action = copyWithLocalOverlay(
         templatesDir,
@@ -316,20 +325,22 @@ export function initProject(projectRoot: string): void {
   writeFileSync(dangeresqueMdPath, BRIEF_MARKDOWN);
   console.log(`  Wrote    ${CONFIG_DIR}/DANGERESQUE.md`);
 
-  const engine = loadConfig(projectRoot).engine;
-  const candidates = agentMdCandidates(projectRoot, engine);
-  const existing = candidates.filter((p) => existsSync(p));
   const pointerActions: { path: string; action: string }[] = [];
 
-  if (existing.length === 0) {
-    const target = candidates[0];
-    writeFileSync(
-      target,
-      `${POINTER_BLOCK}\n# Project Rules\n\n<!-- Add your project's build/test/architecture notes here. -->\n`,
-    );
-    pointerActions.push({ path: target, action: "created" });
-    console.log(`\nCreated ${target} with dangeresque pointer.`);
-  } else {
+  const plan = resolveRunPlan(loadConfig(projectRoot));
+  for (const engine of new Set([plan.worker.engine, plan.review.engine])) {
+    const candidates = agentMdCandidates(projectRoot, engine);
+    const existing = candidates.filter((p) => existsSync(p));
+    if (existing.length === 0) {
+      const target = candidates[0];
+      writeFileSync(
+        target,
+        `${POINTER_BLOCK}\n# Project Rules\n\n<!-- Add your project's build/test/architecture notes here. -->\n`,
+      );
+      pointerActions.push({ path: target, action: "created" });
+      console.log(`\nCreated ${target} with dangeresque pointer.`);
+      continue;
+    }
     for (const path of existing) {
       const before = readFileSync(path, "utf-8");
       const { content: after, action } = ensurePointer(before);

@@ -88,20 +88,41 @@ export function ensurePointer(content: string): {
 
 export type Engine = "claude" | "codex";
 
+export interface PhaseConfig {
+  engine: Engine;
+  model: string;
+  effort: string;
+}
+
+export type ModelEffortConfig = Omit<PhaseConfig, "engine">;
+export type EngineDefaults = Record<Engine, ModelEffortConfig>;
+
+export type ReviewPhaseConfig = Partial<PhaseConfig>;
+
+export interface RunPlan {
+  worker: PhaseConfig;
+  review: PhaseConfig;
+}
+
+export interface RunPlanOverrides {
+  worker?: Partial<PhaseConfig>;
+  review?: Partial<PhaseConfig>;
+}
+
 /** Convert absolute path to claude project hash (e.g. /Users/foo/.bar → -Users-foo--bar) */
 export function projectHash(cwd: string): string {
   return cwd.replace(/[/.]/g, "-");
 }
 
 export interface DangeresqueConfig {
-  /** Execution engine (default: claude) */
-  engine: Engine;
-  /** Model to use */
-  model: string;
+  /** Standing model/effort pins used when a phase selects or switches engine. */
+  engineDefaults: EngineDefaults;
+  /** Worker execution profile. */
+  worker: PhaseConfig;
+  /** Review execution profile. Omitted fields inherit the resolved worker. */
+  review?: ReviewPhaseConfig;
   /** Permission mode (engine-specific) */
   permissionMode: string;
-  /** Effort level (engine-specific) */
-  effort: string;
   /** Run headless (default: true). Set false for interactive mode where supported. */
   headless: boolean;
   /** Allowed tools patterns */
@@ -114,18 +135,6 @@ export interface DangeresqueConfig {
   reviewPrompt: string;
   /** Enable macOS notifications via hooks (default: true) */
   notifications: boolean;
-  /** Model for review pass (falls back to `model` when unset) */
-  reviewModel?: string;
-  /** Effort level for review pass (falls back to `effort` when unset) */
-  reviewEffort?: string;
-  /** Model when engine is codex (falls back to `model` when unset) */
-  codexModel?: string;
-  /** Effort when engine is codex (falls back to `effort` when unset) */
-  codexEffort?: string;
-  /** Review-pass model when engine is codex (falls back to `reviewModel`, then `codexModel`, then `model`) */
-  codexReviewModel?: string;
-  /** Review-pass effort when engine is codex (falls back to `reviewEffort`, then `codexEffort`, then `effort`) */
-  codexReviewEffort?: string;
   /** Pre-review verification commands (compile/test/lint) run in the worktree. */
   verify?: VerifyConfig;
   /** Scope subsystem config (allow-list policy + opportunistic-fix budget). */
@@ -180,6 +189,11 @@ export const DEFAULT_DISPATCH_GATE_MODES = [
 // change semantics). A shared export would couple three unrelated call sites.
 export const DEFAULT_MERGE_GATE_MODES = ["IMPLEMENT", "REFACTOR", "TEST"];
 
+// Modes that produce no code changes, so no review pass is ever dispatched.
+// Shared by the run pipeline and the review-rescue path, which must refuse a
+// rescue for a mode whose review was skipped by design rather than killed.
+export const SKIP_REVIEW_MODES = new Set(["INVESTIGATE", "VERIFY"]);
+
 export interface ScopeOpportunisticConfig {
   enabled: boolean;
   maxFiles: number;
@@ -192,10 +206,22 @@ export interface ScopeConfig {
 }
 
 const DEFAULT_CONFIG: DangeresqueConfig = {
-  engine: "claude",
-  model: "claude-opus-4-7",
+  engineDefaults: {
+    claude: {
+      model: "claude-opus-4-7",
+      effort: "max",
+    },
+    codex: {
+      model: "gpt-5.5",
+      effort: "xhigh",
+    },
+  },
+  worker: {
+    engine: "claude",
+    model: "claude-opus-4-7",
+    effort: "max",
+  },
   permissionMode: "acceptEdits",
-  effort: "max",
   headless: true,
   // MCP allow rules must name the server (mcp__<server> or mcp__<server>__*);
   // bare `mcp__*` is not honored by claude-code. Run `dangeresque allow mcp`
@@ -263,8 +289,38 @@ export function loadConfig(projectRoot: string): DangeresqueConfig {
       scope: defaultScopeConfig(),
     };
   }
-  const raw = JSON.parse(readFileSync(configPath, "utf-8"));
-  const merged: DangeresqueConfig = { ...DEFAULT_CONFIG, ...raw };
+  const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("config.json must contain a JSON object");
+  }
+  const raw = parsed as Record<string, unknown>;
+  const legacyKeys = [
+    "engine",
+    "model",
+    "effort",
+    "reviewModel",
+    "reviewEffort",
+    "codexModel",
+    "codexEffort",
+    "codexReviewModel",
+    "codexReviewEffort",
+  ].filter((key) => key in raw);
+  if (legacyKeys.length > 0) {
+    throw new Error(
+      `Legacy flat engine config is not supported: ${legacyKeys.join(", ")}. ` +
+        `Move engine/model/effort under "worker" and "review".`,
+    );
+  }
+  const engineDefaults = normalizeEngineDefaults(raw.engineDefaults);
+  const worker = normalizeWorkerPhase(raw.worker, engineDefaults);
+  const review = normalizeReviewPhase(raw.review);
+  const merged: DangeresqueConfig = {
+    ...DEFAULT_CONFIG,
+    ...raw,
+    engineDefaults,
+    worker,
+    ...(review === undefined ? {} : { review }),
+  } as DangeresqueConfig;
   // Tool lists extend defaults rather than replace them: the user's config.json
   // is purely additions. Empty/missing user array leaves defaults untouched.
   merged.allowedTools = mergeStringList(
@@ -282,36 +338,165 @@ export function loadConfig(projectRoot: string): DangeresqueConfig {
   return merged;
 }
 
-export interface EngineRunOverrides {
-  model?: string;
-  effort?: string;
-  reviewModel?: string;
-  reviewEffort?: string;
+export function resolveRunPlan(
+  config: DangeresqueConfig,
+  overrides: RunPlanOverrides = {},
+): RunPlan {
+  const worker = resolvePhaseOverride(
+    "worker",
+    config.worker,
+    overrides.worker,
+    config.engineDefaults,
+  );
+
+  const configuredReviewEngine = config.review?.engine ?? config.worker.engine;
+  const reviewEngine =
+    overrides.review?.engine ?? config.review?.engine ?? worker.engine;
+  const reviewBase =
+    reviewEngine === worker.engine
+      ? worker
+      : { engine: reviewEngine, ...config.engineDefaults[reviewEngine] };
+  const configuredReview =
+    config.review && reviewEngine === configuredReviewEngine
+      ? { ...reviewBase, ...config.review, engine: reviewEngine }
+      : reviewBase;
+  const review: PhaseConfig = {
+    engine: reviewEngine,
+    model: overrides.review?.model ?? configuredReview.model,
+    effort: overrides.review?.effort ?? configuredReview.effort,
+  };
+  assertResolvedPhase("review", review);
+  return { worker, review };
 }
 
-export function applyEngineRunOverrides(
-  config: DangeresqueConfig,
-  overrides: EngineRunOverrides,
-): void {
-  if (config.engine === "codex") {
-    if (overrides.model !== undefined) config.codexModel = overrides.model;
-    if (overrides.effort !== undefined) config.codexEffort = overrides.effort;
-    if (overrides.reviewModel !== undefined) {
-      config.codexReviewModel = overrides.reviewModel;
-    }
-    if (overrides.reviewEffort !== undefined) {
-      config.codexReviewEffort = overrides.reviewEffort;
-    }
-    return;
-  }
+function resolvePhaseOverride(
+  name: "worker" | "review",
+  configured: PhaseConfig,
+  override: Partial<PhaseConfig> | undefined,
+  engineDefaults: EngineDefaults,
+): PhaseConfig {
+  const engine = override?.engine ?? configured.engine;
+  const base =
+    engine === configured.engine
+      ? configured
+      : { engine, ...engineDefaults[engine] };
+  const phase: PhaseConfig = {
+    engine,
+    model: override?.model ?? base.model,
+    effort: override?.effort ?? base.effort,
+  };
+  assertResolvedPhase(name, phase);
+  return phase;
+}
 
-  if (overrides.model !== undefined) config.model = overrides.model;
-  if (overrides.effort !== undefined) config.effort = overrides.effort;
-  if (overrides.reviewModel !== undefined) {
-    config.reviewModel = overrides.reviewModel;
+function normalizeEngineDefaults(raw: unknown): EngineDefaults {
+  if (raw === undefined) {
+    return {
+      claude: { ...DEFAULT_CONFIG.engineDefaults.claude },
+      codex: { ...DEFAULT_CONFIG.engineDefaults.codex },
+    };
   }
-  if (overrides.reviewEffort !== undefined) {
-    config.reviewEffort = overrides.reviewEffort;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("engineDefaults must be an object");
+  }
+  const input = raw as Record<string, unknown>;
+  for (const key of Object.keys(input)) {
+    if (key !== "claude" && key !== "codex") {
+      throw new Error(
+        `engineDefaults has unknown engine '${key}' — allowed: claude, codex`,
+      );
+    }
+  }
+  const result: EngineDefaults = {
+    claude: { ...DEFAULT_CONFIG.engineDefaults.claude },
+    codex: { ...DEFAULT_CONFIG.engineDefaults.codex },
+  };
+  for (const engine of ["claude", "codex"] as const) {
+    const value = input[engine];
+    if (value === undefined) continue;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`engineDefaults.${engine} must be an object`);
+    }
+    const profile = value as Record<string, unknown>;
+    for (const key of Object.keys(profile)) {
+      if (key !== "model" && key !== "effort") {
+        throw new Error(
+          `engineDefaults.${engine} has unknown field '${key}' — allowed: model, effort`,
+        );
+      }
+    }
+    for (const key of ["model", "effort"] as const) {
+      if (typeof profile[key] !== "string" || profile[key].trim() === "") {
+        throw new Error(
+          `engineDefaults.${engine}.${key} must be a non-empty string`,
+        );
+      }
+    }
+    result[engine] = profile as unknown as ModelEffortConfig;
+  }
+  return result;
+}
+
+function normalizeWorkerPhase(
+  raw: unknown,
+  engineDefaults: EngineDefaults,
+): PhaseConfig {
+  if (raw === undefined) return { ...DEFAULT_CONFIG.worker };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("worker must be an object");
+  }
+  assertPhaseKeys("worker", raw as Record<string, unknown>);
+  const input = raw as Partial<PhaseConfig>;
+  const engine = input.engine ?? DEFAULT_CONFIG.worker.engine;
+  if (engine !== "claude" && engine !== "codex") {
+    throw new Error(`Invalid worker.engine '${engine}' (expected 'claude' or 'codex')`);
+  }
+  const worker = {
+    engine,
+    ...engineDefaults[engine],
+    ...input,
+  };
+  assertResolvedPhase("worker", worker);
+  return worker;
+}
+
+function normalizeReviewPhase(raw: unknown): ReviewPhaseConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("review must be an object");
+  }
+  const review = raw as Record<string, unknown>;
+  assertPhaseKeys("review", review);
+  for (const key of ["engine", "model", "effort"] as const) {
+    if (review[key] !== undefined && typeof review[key] !== "string") {
+      throw new Error(`review.${key} must be a non-empty string`);
+    }
+    if (typeof review[key] === "string" && review[key].trim() === "") {
+      throw new Error(`review.${key} must be a non-empty string`);
+    }
+  }
+  if (review.engine !== undefined && review.engine !== "claude" && review.engine !== "codex") {
+    throw new Error(`Invalid review.engine '${review.engine}' (expected 'claude' or 'codex')`);
+  }
+  return review as ReviewPhaseConfig;
+}
+
+function assertPhaseKeys(name: "worker" | "review", phase: Record<string, unknown>): void {
+  for (const key of Object.keys(phase)) {
+    if (key !== "engine" && key !== "model" && key !== "effort") {
+      throw new Error(`${name} has unknown field '${key}' — allowed: engine, model, effort`);
+    }
+  }
+}
+
+function assertResolvedPhase(name: "worker" | "review", phase: PhaseConfig): void {
+  if (phase.engine !== "claude" && phase.engine !== "codex") {
+    throw new Error(`Invalid ${name}.engine '${phase.engine}' (expected 'claude' or 'codex')`);
+  }
+  for (const key of ["model", "effort"] as const) {
+    if (typeof phase[key] !== "string" || phase[key].trim() === "") {
+      throw new Error(`${name}.${key} must be a non-empty string`);
+    }
   }
 }
 
@@ -607,12 +792,13 @@ export function validateSetup(projectRoot: string): ValidationResult {
     return { valid: false, errors };
   }
 
-  const config = loadConfig(projectRoot);
-
-  if (!["claude", "codex"].includes(config.engine)) {
-    errors.push(
-      `Invalid engine '${config.engine}' (expected 'claude' or 'codex')`,
-    );
+  let config: DangeresqueConfig;
+  try {
+    config = loadConfig(projectRoot);
+    resolveRunPlan(config);
+  } catch (err) {
+    errors.push(err instanceof Error ? err.message : String(err));
+    return { valid: false, errors };
   }
 
   const workerPromptPath = join(configDir, config.workerPrompt);
