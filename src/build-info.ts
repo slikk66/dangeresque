@@ -14,6 +14,8 @@ export type DriftReason =
   | "no-git-repo"
   | "no-build-commit"
   | "match"
+  /** Commit moved but nothing under src/ did — dist is still current. */
+  | "src-unchanged"
   | "drift"
   | "git-error";
 
@@ -77,7 +79,27 @@ export function detectDrift(opts: { root?: string } = {}): DriftDetails {
     return { drift: false, reason: "git-error", buildInfo };
   }
   if (buildInfo.commit !== headCommit) {
-    return { drift: true, reason: "drift", buildInfo, headCommit };
+    // A different commit does not by itself mean dist/ is stale. `yarn build`
+    // stamps the commit that was checked out AT BUILD TIME, so the ordinary
+    // build → commit → run sequence always lands here with dist/ byte-identical
+    // to the source it was built from. Comparing commits answers the wrong
+    // question; what matters is whether anything under src/ actually moved.
+    //
+    // Crying wolf here is not harmless: it is the same banner that warns about
+    // genuinely stale code writing wrong-schema artifacts, and an operator who
+    // sees it on every normal commit learns to scroll past it.
+    //
+    // Fail closed — a src/ diff, an unknown commit (amend, rebase, shallow
+    // clone), or any git error all fall through to drift.
+    try {
+      execSync(
+        `git diff --quiet ${buildInfo.commit} ${headCommit} -- src`,
+        { cwd: root, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+      );
+      return { drift: false, reason: "src-unchanged", buildInfo, headCommit };
+    } catch {
+      return { drift: true, reason: "drift", buildInfo, headCommit };
+    }
   }
   return { drift: false, reason: "match", buildInfo, headCommit };
 }

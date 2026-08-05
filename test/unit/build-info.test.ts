@@ -160,3 +160,87 @@ test("detectDrift: build-info has null commit → no drift, reason no-build-comm
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("detectDrift: commit moved but src/ untouched → no drift (the build→commit→run sequence)", () => {
+  const root = makeRoot();
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "a.ts"), "export const a = 1;\n");
+    execSync("git init -q", { cwd: root, stdio: "pipe" });
+    execSync("git add -A && git -c user.email=t@t -c user.name=t commit -q -m src", {
+      cwd: root, stdio: "pipe", shell: "/bin/bash",
+    });
+    const builtCommit = execSync("git rev-parse HEAD", { cwd: root, encoding: "utf-8" }).trim();
+    writeBuildInfo(root, {
+      commit: builtCommit,
+      built_at: "2026-08-05T00:00:00.000Z",
+      schema_version: "7",
+    });
+
+    // Commit something OUTSIDE src/ — exactly what happens when you build,
+    // then commit docs/tests, then dispatch a run.
+    writeFileSync(join(root, "README.md"), "# docs\n");
+    execSync("git add -A && git -c user.email=t@t -c user.name=t commit -q -m docs", {
+      cwd: root, stdio: "pipe", shell: "/bin/bash",
+    });
+    const head = execSync("git rev-parse HEAD", { cwd: root, encoding: "utf-8" }).trim();
+
+    const d = detectDrift({ root });
+    assert.notEqual(builtCommit, head, "precondition: the commit really did move");
+    assert.equal(d.drift, false, "dist is byte-identical to the source it was built from");
+    assert.equal(d.reason, "src-unchanged");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("detectDrift: commit moved AND src/ changed → still drift", () => {
+  const root = makeRoot();
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "a.ts"), "export const a = 1;\n");
+    execSync("git init -q", { cwd: root, stdio: "pipe" });
+    execSync("git add -A && git -c user.email=t@t -c user.name=t commit -q -m src", {
+      cwd: root, stdio: "pipe", shell: "/bin/bash",
+    });
+    const builtCommit = execSync("git rev-parse HEAD", { cwd: root, encoding: "utf-8" }).trim();
+    writeBuildInfo(root, {
+      commit: builtCommit,
+      built_at: "2026-08-05T00:00:00.000Z",
+      schema_version: "7",
+    });
+
+    writeFileSync(join(root, "src", "a.ts"), "export const a = 2;\n");
+    execSync("git add -A && git -c user.email=t@t -c user.name=t commit -q -m edit", {
+      cwd: root, stdio: "pipe", shell: "/bin/bash",
+    });
+
+    const d = detectDrift({ root });
+    assert.equal(d.drift, true, "real staleness must still be caught");
+    assert.equal(d.reason, "drift");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("detectDrift: unknown build commit (amend/rebase) fails closed to drift", () => {
+  const root = makeRoot();
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "a.ts"), "export const a = 1;\n");
+    execSync("git init -q", { cwd: root, stdio: "pipe" });
+    execSync("git add -A && git -c user.email=t@t -c user.name=t commit -q -m src", {
+      cwd: root, stdio: "pipe", shell: "/bin/bash",
+    });
+    writeBuildInfo(root, {
+      commit: "0000000000000000000000000000000000000000",
+      built_at: "2026-08-05T00:00:00.000Z",
+      schema_version: "7",
+    });
+    const d = detectDrift({ root });
+    assert.equal(d.drift, true);
+    assert.equal(d.reason, "drift");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -86,8 +86,16 @@ function checkDistMatchesHead(drift: DriftDetails): DoctorCheck {
       detail: `drift: dist built from ${built} but HEAD is ${head}. Run \`yarn build\`.`,
     };
   }
-  // match
   const head = drift.headCommit?.slice(0, 8) ?? "unknown";
+  if (drift.reason === "src-unchanged") {
+    const built = drift.buildInfo?.commit?.slice(0, 8) ?? "null";
+    return {
+      name: "dist-matches-head",
+      status: "pass",
+      detail: `dist built from ${built}, HEAD is ${head} — no src/ changes between them`,
+    };
+  }
+  // match
   return {
     name: "dist-matches-head",
     status: "pass",

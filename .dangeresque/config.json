@@ -11,7 +11,12 @@
   },
   "verify": {
     "enabled": true,
-    "modes": ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
+    "modes": [
+      "IMPLEMENT",
+      "REFACTOR",
+      "TEST",
+      "VERIFY"
+    ],
     "commands": [
       {
         "name": "install",
@@ -51,5 +56,27 @@
     "Bash(gh label *)",
     "Bash(yarn *)",
     "Bash(node *)"
-  ]
+  ],
+  "dispatchGate": {
+    "enabled": true,
+    "modes": [
+      "INVESTIGATE",
+      "IMPLEMENT",
+      "REFACTOR",
+      "TEST",
+      "VERIFY"
+    ],
+    "requireInvestigateBeforeImplement": true,
+    "commands": []
+  },
+  "mergeGate": {
+    "enabled": true,
+    "modes": [
+      "IMPLEMENT",
+      "REFACTOR",
+      "TEST"
+    ],
+    "requireAcceptedImplement": true,
+    "commands": []
+  }
 }
