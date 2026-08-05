@@ -24,6 +24,9 @@ import {
   stopWorktree,
   runPreflightChecks,
   findSentinelCommits,
+  uncommittedPaths,
+  formatUncommittedPaths,
+  rebaseWorktreeOntoOrigin,
   type WorktreeInfo,
 } from "#dist/worktree.js";
 
@@ -309,25 +312,276 @@ test("mergeWorktree: merge conflict → phase=merge, headAdvanced=false, main un
   }
 });
 
-test("mergeWorktree: cleanup fails (untracked file) → phase=cleanup, headAdvanced=true, recovery in message", () => {
+// --- issue #93: uncommitted work must stop the merge, not survive it ---
+
+test("mergeWorktree: untracked file in worktree → gateRefusal before the merge, main untouched", () => {
   const dir = makeRepo();
   try {
     const worktreePath = addWorktree(dir, "delta", "worktree-delta");
     writeFileSync(join(worktreePath, "untracked.log"), "stray log\n");
+    const headBeforeCall = execSync("git rev-parse HEAD", env(dir)).toString().trim();
 
     const result = mergeWorktree(dir, "worktree-delta");
+
+    assert.equal(result.success, false);
+    assert.equal(result.phase, "gate");
+    assert.equal(result.gateRefusal, true);
+    assert.match(result.message, /uncommitted change/i);
+    assert.match(result.message, /untracked\.log/);
+    assert.match(result.message, /dangeresque merge/);
+
+    // The merge never ran and the worktree is intact — nothing to salvage.
+    assert.equal(execSync("git rev-parse HEAD", env(dir)).toString().trim(), headBeforeCall);
+    assert.equal(existsSync(worktreePath), true);
+    assert.equal(existsSync(join(worktreePath, "untracked.log")), true);
+    assert.equal(branchExists(dir, "worktree-delta"), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: uncommitted IMPLEMENT diff → refusal names the rescue and forbids --force", () => {
+  const dir = makeRepo();
+  try {
+    // bc#530 shape: worker branch has ZERO commits and the whole accepted diff
+    // sits in the working tree.
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-93",
+      "worktree-dangeresque-implement-93",
+      { advance: false },
+    );
+    writeFileSync(join(worktreePath, "feature.ts"), "export const accepted = true;\n");
+
+    const result = mergeWorktree(dir, "worktree-dangeresque-implement-93");
+
+    assert.equal(result.success, false);
+    assert.equal(result.gateRefusal, true);
+    assert.match(result.message, /feature\.ts/);
+    // The rescue: commit on the worker branch, then merge again.
+    assert.match(result.message, /git -C .* add -A/);
+    assert.match(result.message, /commit -m "capture worker output for issue #93"/);
+    // The data-loss edge: force-removal must never read as advice here.
+    assert.doesNotMatch(result.message, /^(?!.*DO NOT).*git worktree remove --force/m);
+    assert.match(result.message, /DO NOT run 'git worktree remove --force'/);
+
+    // Applying the printed rescue makes the merge work.
+    execSync("git add -A", env(worktreePath));
+    execSync('git commit -m "capture worker output for issue #93"', env(worktreePath));
+    const retry = mergeWorktree(dir, "worktree-dangeresque-implement-93");
+    assert.equal(retry.success, true, retry.message);
+    assert.equal(retry.headAdvanced, true);
+    assert.equal(readFileSync(join(dir, "feature.ts"), "utf-8"), "export const accepted = true;\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: unreadable worktree git status → fails closed with gateRefusal", () => {
+  const dir = makeRepo();
+  try {
+    // A regular FILE where the worktree should be: existsSync passes, the PID
+    // gate passes (no pid file), and git cannot run there at all.
+    mkdirSync(join(dir, ".claude", "worktrees"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "worktrees", "phantom"), "not a worktree\n");
+    execSync("git branch worktree-phantom", env(dir));
+
+    const result = mergeWorktree(dir, "worktree-phantom");
+
+    assert.equal(result.success, false);
+    assert.equal(result.gateRefusal, true);
+    assert.match(result.message, /could not read the worktree's git status/i);
+    assert.match(result.message, /fail closed/);
+    assert.equal(branchExists(dir, "worktree-phantom"), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: IMPLEMENT branch with no commits → merge says plainly that nothing shipped", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(
+      dir,
+      "dangeresque-implement-555",
+      "worktree-dangeresque-implement-555",
+      { advance: false },
+    );
+
+    const result = mergeWorktree(dir, "worktree-dangeresque-implement-555");
+
+    assert.equal(result.success, true, result.message);
+    assert.equal(result.phase, "noop");
+    assert.match(result.message, /nothing shipped/i);
+    assert.match(result.message, /IMPLEMENT/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: cleanup failure over a CLEAN worktree still advises force-removal", async () => {
+  const dir = makeRepo();
+  let child: ChildProcess | undefined;
+  try {
+    const worktreePath = addWorktree(dir, "clean-cleanup", "worktree-clean-cleanup");
+    child = spawnLongRunningChild();
+    lockWorktree(dir, worktreePath, `claude session clean-cleanup (pid ${child.pid} start now)`);
+
+    const result = mergeWorktree(dir, "worktree-clean-cleanup");
+
     assert.equal(result.success, false);
     assert.equal(result.phase, "cleanup");
     assert.equal(result.headAdvanced, true);
-    assert.ok(result.headAfter);
-    assert.match(result.message, /Merge succeeded/);
-    assert.match(result.message, new RegExp(result.headAfter!.slice(0, 7)));
     assert.match(result.message, /Worktree cleanup failed/i);
+    assert.match(result.message, /no uncommitted work/);
     assert.match(result.message, /git worktree remove --force/);
-    assert.match(result.message, /worktree-delta/);
+  } finally {
+    if (child?.pid) {
+      child.kill("SIGKILL");
+      await awaitDead(child.pid);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
-    const headAfterCall = execSync("git rev-parse HEAD", env(dir)).toString().trim();
-    assert.equal(headAfterCall, result.headAfter);
+// --- uncommittedPaths / formatUncommittedPaths ---
+
+test("uncommittedPaths: clean worktree → empty, ignored files excluded", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "clean", "worktree-clean");
+    writeFileSync(join(worktreePath, ".gitignore"), "ignored/\n");
+    execSync("git add .gitignore", env(worktreePath));
+    execSync('git commit -m "ignore"', env(worktreePath));
+    mkdirSync(join(worktreePath, "ignored"), { recursive: true });
+    writeFileSync(join(worktreePath, "ignored", "build.js"), "noise\n");
+
+    assert.deepEqual(uncommittedPaths(worktreePath), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("uncommittedPaths: modifications, untracked files and deletions all count", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "dirty", "worktree-dirty");
+    writeFileSync(join(worktreePath, "tracked.ts"), "v1\n");
+    execSync("git add tracked.ts", env(worktreePath));
+    execSync('git commit -m "baseline"', env(worktreePath));
+
+    writeFileSync(join(worktreePath, "tracked.ts"), "v2\n");
+    writeFileSync(join(worktreePath, "brand-new.ts"), "new\n");
+    rmSync(join(worktreePath, "dirty.txt"));
+
+    const paths = uncommittedPaths(worktreePath).join("\n");
+    assert.match(paths, / M tracked\.ts/);
+    assert.match(paths, /\?\? brand-new\.ts/);
+    assert.match(paths, /D dirty\.txt/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("uncommittedPaths: dangeresque's own PID file is not worker output", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "pidonly", "worktree-pidonly");
+    writeFileSync(join(worktreePath, ".dangeresque.pid"), "{}\n");
+
+    assert.deepEqual(uncommittedPaths(worktreePath), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("uncommittedPaths: not a git worktree → throws (callers must fail closed)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-nogit-"));
+  try {
+    assert.throws(() => uncommittedPaths(dir));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("formatUncommittedPaths: caps the listing and says how many were dropped", () => {
+  const many = Array.from({ length: 25 }, (_, i) => `?? file-${i}.ts`);
+  const out = formatUncommittedPaths(many, 3);
+  assert.equal(out.split("\n").length, 4);
+  assert.match(out, /… and 22 more/);
+});
+
+// --- rebaseWorktreeOntoOrigin ---
+
+test("rebaseWorktreeOntoOrigin: dirty tree → skipped_dirty, NOT a conflict", () => {
+  const { local, remote } = makeRepoWithRemote();
+  try {
+    const worktreePath = addWorktree(local, "rebase-dirty", "worktree-rebase-dirty");
+    writeFileSync(join(worktreePath, "uncommitted.ts"), "worker output\n");
+
+    const outcome = rebaseWorktreeOntoOrigin(worktreePath);
+
+    assert.equal(outcome.status, "skipped_dirty");
+    assert.ok(outcome.status === "skipped_dirty" && outcome.paths.length === 1);
+    // The tree is left exactly as the worker left it.
+    assert.equal(readFileSync(join(worktreePath, "uncommitted.ts"), "utf-8"), "worker output\n");
+  } finally {
+    rmSync(local, { recursive: true, force: true });
+    rmSync(remote, { recursive: true, force: true });
+  }
+});
+
+test("rebaseWorktreeOntoOrigin: clean tree, upstream unmoved → rebased", () => {
+  const { local, remote } = makeRepoWithRemote();
+  try {
+    const worktreePath = addWorktree(local, "rebase-clean", "worktree-rebase-clean");
+
+    const outcome = rebaseWorktreeOntoOrigin(worktreePath);
+
+    assert.equal(outcome.status, "rebased");
+  } finally {
+    rmSync(local, { recursive: true, force: true });
+    rmSync(remote, { recursive: true, force: true });
+  }
+});
+
+test("rebaseWorktreeOntoOrigin: genuinely conflicting commits → conflict, rebase aborted", () => {
+  const { local, remote } = makeRepoWithRemote();
+  try {
+    const worktreePath = addWorktree(local, "rebase-conflict", "worktree-rebase-conflict", {
+      advance: false,
+    });
+    writeFileSync(join(worktreePath, "shared.txt"), "worker version\n");
+    execSync("git add shared.txt", env(worktreePath));
+    execSync('git commit -m "worker edit"', env(worktreePath));
+
+    // Advance origin/main with a conflicting change.
+    writeFileSync(join(local, "shared.txt"), "main version\n");
+    execSync("git add shared.txt", env(local));
+    execSync('git commit -m "main edit"', env(local));
+    execSync("git push origin main", env(local));
+
+    const outcome = rebaseWorktreeOntoOrigin(worktreePath);
+
+    assert.equal(outcome.status, "conflict");
+    // Aborted: the branch is back on its own commit, no rebase in progress.
+    assert.throws(() => execSync("git rev-parse -q --verify REBASE_HEAD", env(worktreePath)));
+    assert.equal(readFileSync(join(worktreePath, "shared.txt"), "utf-8"), "worker version\n");
+  } finally {
+    rmSync(local, { recursive: true, force: true });
+    rmSync(remote, { recursive: true, force: true });
+  }
+});
+
+test("rebaseWorktreeOntoOrigin: no origin remote → fetch_failed, not a conflict", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(dir, "no-remote", "worktree-no-remote");
+
+    const outcome = rebaseWorktreeOntoOrigin(worktreePath);
+
+    assert.equal(outcome.status, "fetch_failed");
+    assert.ok(outcome.status === "fetch_failed" && outcome.error.length > 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

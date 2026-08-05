@@ -12,7 +12,7 @@ import {
   type RunPlan,
   type RunPlanOverrides,
 } from "./config.js";
-import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, killActiveEngines, validateCodexModelEfforts, type ExecutionReceipt, type IssueData } from "./runner.js";
+import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, killActiveEngines, validateCodexModelEfforts, captureWorkerChanges, type ExecutionReceipt, type IssueData } from "./runner.js";
 import {
   locateLatestRun,
   assessReviewRescue,
@@ -47,6 +47,9 @@ import {
   formatPidExecution,
   extractIssueNumber,
   extractMode,
+  uncommittedPaths,
+  formatUncommittedPaths,
+  rebaseWorktreeOntoOrigin,
   type WorktreeInfo,
   type WorktreeFilter,
 } from "./worktree.js";
@@ -225,7 +228,7 @@ Results:
   success
     The worker exited successfully and produced its run artifact. Either the reviewer accepted the run, or review did not run and no scope violations were recorded.
   partial_success
-    The worker exited successfully and produced its run artifact, but the run still needs attention. This is used when review errored, review returned needs_human_review or unknown, or review was skipped while scope violations were recorded.
+    The worker exited successfully and produced its run artifact, but the run still needs attention. This is used when review errored, review returned needs_human_review or unknown, review was skipped while scope violations were recorded, or the run left uncommitted work behind (see uncommitted_worker_changes).
   failure
     The worker failed, the run artifact was missing, or the reviewer explicitly rejected the run.
 
@@ -240,6 +243,10 @@ Failure categories:
     reviewer verdict controls the result.
   verification_failed
     A pre-review verification command configured with on_failure="block" exited non-zero (or timed out). The review pass is skipped when this happens because reviewing un-compiling or test-failing code wastes effort. Inspect the run artifact's "## Verification" section for the failing command and its captured stderr.
+  uncommitted_worker_changes
+    The run finished with changes the branch's commits do not carry: dangeresque could not capture the worker's tree, or something stayed uncommitted through the capture. The reviewer reads the working tree but \`git merge\` ships commits, so such a run is never a success no matter what the verdict says. Recover by committing the leftover work on the worker branch, then merging.
+  rebase_conflict
+    The pre-review rebase onto origin/main hit a real conflict and was aborted; the reviewer saw the pre-rebase diff. A rebase that was skipped (dirty worktree, no reachable origin) is NOT this category — it records a rebase_skipped lifecycle event instead.
 
 Reviewer verdicts:
   accept
@@ -672,10 +679,10 @@ interface PostWorkerContext {
 }
 
 /**
- * Everything that happens after a successful worker pass: scope classification,
- * rebase onto origin/main, canonical file-count normalization, pre-review
- * verification, the review pass, the GitHub summary comment, and the artifact
- * write.
+ * Everything that happens after a successful worker pass: capture of the
+ * worker's tree, scope classification, rebase onto origin/main, canonical
+ * file-count normalization, pre-review verification, the review pass, the
+ * GitHub summary comment, and the artifact write.
  *
  * Shared verbatim by `dangeresque run` (which just produced the worker output)
  * and `dangeresque review` (which recovers a run whose review was killed).
@@ -703,6 +710,63 @@ async function runPostWorkerPhases(
   const effectiveWorker = plan.worker;
   const effectiveReview = plan.review;
   const worktreePath = `${projectRoot}/.claude/worktrees/${worktreeName}`;
+
+  // Capture FIRST (issue #93). Everything below this line reads the branch's
+  // commits — the scope check three-dot diff, the rebase, `git merge` at the
+  // end of the workflow — while the reviewer and the file-count normalizer
+  // read the working tree. A worker whose own git commands were denied leaves
+  // those two views disagreeing: the reviewer accepts a diff that ships
+  // nothing. Committing here is what makes them the same tree, and it must
+  // precede the rebase, which refuses outright over a dirty tree.
+  //
+  // Guarded on worker success, matching where this used to live (the codex
+  // adapter's afterWorkerSuccess hook): capturing a crashed worker's partial
+  // tree is a separate policy question, not this fix.
+  let uncommitted: string[] = [];
+  if (ctx.workerReceipt.exitCode === 0) {
+    // The receipt's engine, not the plan's: on the `review` rescue path the
+    // plan describes THIS invocation, while the receipt describes the worker
+    // that actually produced the tree being captured.
+    const workerEngine = ctx.workerReceipt.engine;
+    const capture = captureWorkerChanges(worktreePath, {
+      issueNumber: issueData.number,
+      mode,
+      engine: workerEngine,
+    });
+    if (capture.error) {
+      console.error(`\n⚠️  Could not capture the worker's changes: ${capture.error}`);
+      builder.recordEvent("worker_changes_capture_failed", { error: capture.error });
+    } else if (capture.committed) {
+      console.log(
+        `\n📦 Captured ${capture.files.length} uncommitted file(s) from the ${workerEngine} worker into a commit on ${branch}`,
+      );
+      builder.recordEvent("worker_changes_captured", {
+        files_changed: capture.files.length,
+        engine: workerEngine,
+      });
+    }
+  }
+
+  // Whatever survived capture is work the branch does not carry. Detect it
+  // explicitly instead of letting the rebase discover it and report it as a
+  // merge conflict.
+  try {
+    uncommitted = uncommittedPaths(worktreePath);
+  } catch (err) {
+    console.warn(
+      `\nWarning: could not read worktree status: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (uncommitted.length > 0) {
+    console.error(
+      `\n⚠️  ${uncommitted.length} change(s) remain uncommitted in the worktree — ` +
+        `a merge would ship none of them:\n${formatUncommittedPaths(uncommitted)}`,
+    );
+    builder.recordEvent("worktree_dirty_after_capture", {
+      count: uncommitted.length,
+      paths: uncommitted.slice(0, 20),
+    });
+  }
 
   // Post-worker scope check: classify changed files via the policy engine
   // (allow/deny globs from issue's `dangeresque-scope` blocks + worker's
@@ -787,26 +851,46 @@ async function runPostWorkerPhases(
   // is what lets `dangeresque review` recover instead of starting over.
   checkpointArtifact(builder, projectRoot, "post_worker");
 
-  // Rebase worktree onto latest origin/main before review
-  // Prevents false REJECT from reviewer seeing stale-branch diffs
+  // Rebase worktree onto latest origin/main before review.
+  // Prevents false REJECT from reviewer seeing stale-branch diffs.
+  // Every failure mode is now named for what it is: this block used to print
+  // and record "conflict" for all of them, including a dirty tree (which makes
+  // git refuse to start the rebase at all) and a failed fetch (#93).
   if (reviewEnabled) {
-    try {
-      const { execSync } = await import("node:child_process");
-      execSync("git fetch origin main", { cwd: worktreePath, stdio: "pipe" });
-      execSync("git rebase origin/main", { cwd: worktreePath, stdio: "pipe" });
-      console.log(`\nRebased worktree onto latest origin/main`);
-      builder.recordEvent("rebase_completed");
-    } catch (e: any) {
-      try {
-        const { execSync } = await import("node:child_process");
-        execSync("git rebase --abort", { cwd: worktreePath, stdio: "pipe" });
-      } catch {
-        /* ignore */
-      }
-      console.warn(
-        `\n⚠️  Rebase failed (conflict) — reviewer will see original diff`,
-      );
-      builder.recordEvent("rebase_failed");
+    const outcome = rebaseWorktreeOntoOrigin(worktreePath);
+    switch (outcome.status) {
+      case "rebased":
+        console.log(`\nRebased worktree onto latest origin/main`);
+        builder.recordEvent("rebase_completed");
+        break;
+      case "skipped_dirty":
+        console.warn(
+          `\n⚠️  Rebase skipped — ${outcome.paths.length} uncommitted change(s) in the worktree ` +
+            `(git refuses to rebase a dirty tree). This is NOT a merge conflict.`,
+        );
+        builder.recordEvent("rebase_skipped", {
+          reason: "dirty_worktree",
+          uncommitted: outcome.paths.length,
+        });
+        break;
+      case "fetch_failed":
+        console.warn(
+          `\n⚠️  Rebase skipped — could not fetch origin/main: ${outcome.error}`,
+        );
+        builder.recordEvent("rebase_skipped", { reason: "fetch_failed", error: outcome.error });
+        break;
+      case "conflict":
+        console.warn(
+          `\n⚠️  Rebase hit a conflict (aborted) — reviewer will see original diff:\n${outcome.error}`,
+        );
+        builder.recordEvent("rebase_failed", { conflict: true, error: outcome.error });
+        break;
+      case "failed":
+        console.warn(
+          `\n⚠️  Rebase failed (no conflict — git refused to run it):\n${outcome.error}`,
+        );
+        builder.recordEvent("rebase_failed", { conflict: false, error: outcome.error });
+        break;
     }
   }
 

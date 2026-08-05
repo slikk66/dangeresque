@@ -49,6 +49,13 @@ export type FailureCategory =
   | "review_nonzero_exit"
   | "no_run_artifact"
   | "rebase_conflict"
+  /**
+   * Work the branch does not carry: capture failed, or something in the
+   * worktree stayed uncommitted through it (issue #93). Distinct from
+   * `rebase_conflict`, which this used to be mislabelled as — a dirty tree
+   * makes git refuse to START a rebase, which is not a conflict.
+   */
+  | "uncommitted_worker_changes"
   | "scope_outside"
   | "reviewer_rejected"
   | "verification_failed"
@@ -269,6 +276,7 @@ export class ArtifactBuilder {
       reviewerVerdict,
       outsideCount,
       verificationBlocked,
+      uncommittedWorkerChanges: hasUncommittedWorkerChanges(this.events),
     });
 
     const summary = buildSummaryLine({
@@ -417,10 +425,29 @@ function deriveFailureCategories(opts: {
     opts.outsideCount > 0;
   if (scopeContributedToDowngrade) categories.push("scope_outside");
   if (opts.reviewerVerdict === "reject") categories.push("reviewer_rejected");
-  if (opts.events.some((e) => e.event === "rebase_failed")) {
+  if (hasUncommittedWorkerChanges(opts.events)) {
+    categories.push("uncommitted_worker_changes");
+  }
+  // `conflict: false` is the honest new signal for a rebase git refused to
+  // run. Older artifacts carry no `conflict` key at all, so a bare
+  // `rebase_failed` keeps its historical meaning.
+  const rebaseFailed = opts.events.find((e) => e.event === "rebase_failed");
+  if (rebaseFailed && rebaseFailed.data?.conflict !== false) {
     categories.push("rebase_conflict");
   }
   return categories;
+}
+
+/**
+ * True when the run left work outside the branch's commits — the state that
+ * lets a reviewer ACCEPT a diff `git merge` will not ship (issue #93).
+ */
+function hasUncommittedWorkerChanges(events: LifecycleEvent[]): boolean {
+  return events.some(
+    (e) =>
+      e.event === "worktree_dirty_after_capture" ||
+      e.event === "worker_changes_capture_failed",
+  );
 }
 
 function isVerificationBlocked(results: VerificationResult[] | null): boolean {
@@ -435,6 +462,7 @@ function deriveResult(opts: {
   reviewerVerdict: ReviewerVerdict;
   outsideCount: number;
   verificationBlocked: boolean;
+  uncommittedWorkerChanges: boolean;
 }): ResultClassification {
   if (opts.workerExitCode !== 0) return "failure";
   if (!opts.archiveExists) return "failure";
@@ -444,6 +472,14 @@ function deriveResult(opts: {
 
   if (reviewRan && opts.review!.exit_code !== 0) {
     return "partial_success";
+  }
+
+  // Work that no commit carries cannot be a `success`, whatever the reviewer
+  // said about it: the reviewer read the working tree, and `git merge` will
+  // ship the commits. bc#530 scored success/verdict=accept on a diff that
+  // existed in no commit (issue #93) — this is the line that stops that.
+  if (opts.uncommittedWorkerChanges) {
+    return opts.reviewerVerdict === "reject" && reviewRan ? "failure" : "partial_success";
   }
 
   if (reviewRan) {

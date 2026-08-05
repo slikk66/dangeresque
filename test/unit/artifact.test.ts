@@ -229,6 +229,115 @@ test("ArtifactBuilder: review skipped + no scope outside → success", () => {
   }
 });
 
+// --- issue #93: work the branch does not carry ---
+
+function acceptedImplementBuilder(tmp: string): ArtifactBuilder {
+  const archivePath = join(tmp, "run.md");
+  writeFileSync(archivePath, "**Verdict:** ACCEPT\n");
+  const builder = new ArtifactBuilder({
+    projectRoot: tmp,
+    issueNumber: 93,
+    issueUrl: null,
+    mode: "IMPLEMENT",
+    engine: "claude",
+    model: "m",
+    worktreeName: "wt",
+    branch: "worktree-dangeresque-implement-93",
+    archivePath,
+  });
+  builder.setWorkerTiming(100, 200, 0);
+  builder.setReviewTiming(200, 300, 0);
+  return builder;
+}
+
+test("ArtifactBuilder: accepted run with a dirty worktree → partial_success + uncommitted_worker_changes", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const builder = acceptedImplementBuilder(tmp);
+    builder.recordEvent("worktree_dirty_after_capture", { count: 3 });
+    const artifact = builder.build();
+
+    assert.equal(artifact.reviewer_verdict, "accept");
+    // The bc#530 shape: reviewer accepted a diff that lives in no commit.
+    assert.notEqual(artifact.result, "success");
+    assert.equal(artifact.result, "partial_success");
+    assert.ok(artifact.failure_categories.includes("uncommitted_worker_changes"));
+    assert.ok(!artifact.failure_categories.includes("rebase_conflict"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: capture failure → uncommitted_worker_changes", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const builder = acceptedImplementBuilder(tmp);
+    builder.recordEvent("worker_changes_capture_failed", { error: "index.lock" });
+    const artifact = builder.build();
+
+    assert.equal(artifact.result, "partial_success");
+    assert.ok(artifact.failure_categories.includes("uncommitted_worker_changes"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: capture that committed cleanly leaves the run a plain success", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const builder = acceptedImplementBuilder(tmp);
+    builder.recordEvent("worker_changes_captured", { files_changed: 4, engine: "claude" });
+    builder.recordEvent("rebase_completed");
+    const artifact = builder.build();
+
+    assert.equal(artifact.result, "success");
+    assert.deepEqual(artifact.failure_categories, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: rebase git refused to run (conflict:false) is NOT a rebase_conflict", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const builder = acceptedImplementBuilder(tmp);
+    builder.recordEvent("rebase_failed", { conflict: false, error: "cannot rebase" });
+    const artifact = builder.build();
+
+    assert.ok(!artifact.failure_categories.includes("rebase_conflict"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: real rebase conflict → rebase_conflict, and bare legacy events still map", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const builder = acceptedImplementBuilder(tmp);
+    builder.recordEvent("rebase_failed", { conflict: true, error: "CONFLICT (content)" });
+    assert.ok(builder.build().failure_categories.includes("rebase_conflict"));
+
+    const legacy = acceptedImplementBuilder(tmp);
+    legacy.recordEvent("rebase_failed");
+    assert.ok(legacy.build().failure_categories.includes("rebase_conflict"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: rebase skipped over a dirty tree is never a rebase_conflict", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  try {
+    const builder = acceptedImplementBuilder(tmp);
+    builder.recordEvent("rebase_skipped", { reason: "dirty_worktree", uncommitted: 2 });
+    const artifact = builder.build();
+
+    assert.ok(!artifact.failure_categories.includes("rebase_conflict"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("ArtifactBuilder: reviewer reject → failure + reviewer_rejected (scope irrelevant)", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
   try {

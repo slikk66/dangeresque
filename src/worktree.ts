@@ -43,6 +43,122 @@ export function resolveDiffBase(projectRoot: string): string {
   }
 }
 
+/**
+ * Paths in a worktree that no commit on its branch carries: tracked
+ * modifications plus untracked-and-not-ignored files, each as a raw
+ * `git status --porcelain` line (`" M src/a.ts"`, `"?? src/b.ts"`).
+ *
+ * Gitignored paths never appear, which makes this exactly the right predicate
+ * for two questions dangeresque had no answer to before (issue #93):
+ *  - "would `git rebase` refuse because the tree is dirty?" (it requires a
+ *    clean tree BEFORE deciding there is nothing to do, so a dirty tree fails
+ *    the rebase even when upstream never moved — and that is not a conflict)
+ *  - "would `git merge` ship nothing while a non-force `git worktree remove`
+ *    refuses to delete the leftovers?" (same file set, both times)
+ *
+ * dangeresque's own PID file is filtered out — transient run state the CLI
+ * writes and removes itself, never worker output.
+ *
+ * Throws when git itself fails. Callers on the data-loss path must fail
+ * closed rather than read an error as "clean".
+ */
+export function uncommittedPaths(worktreePath: string): string[] {
+  const out = execSync("git status --porcelain --untracked-files=all", {
+    cwd: worktreePath,
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  return out
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .filter((line) => {
+      const path = line.slice(3).replace(/^"|"$/g, "");
+      return path !== PID_FILE;
+    });
+}
+
+/** Human-readable excerpt of a porcelain listing, capped so messages stay readable. */
+export function formatUncommittedPaths(paths: string[], limit = 20): string {
+  const shown = paths.slice(0, limit).map((p) => `  ${p}`);
+  if (paths.length > limit) shown.push(`  … and ${paths.length - limit} more`);
+  return shown.join("\n");
+}
+
+export type RebaseOutcome =
+  | { status: "rebased" }
+  | { status: "skipped_dirty"; paths: string[] }
+  | { status: "fetch_failed"; error: string }
+  | { status: "conflict"; error: string }
+  | { status: "failed"; error: string };
+
+/**
+ * Rebase a worktree onto `origin/<mainBranch>` before review, so the reviewer
+ * never sees stale-branch phantom deletions.
+ *
+ * Every non-success answer is distinguished, because the caller used to collapse
+ * all of them into "conflict" (issue #93): a dirty tree makes `git rebase`
+ * refuse to START, which is neither a conflict nor something `--abort` can fix,
+ * and a missing remote makes the `fetch` fail before a rebase is even attempted.
+ * Both were recorded as merge conflicts against runs that had none.
+ *
+ * Dirty trees are detected up front and the rebase is skipped rather than
+ * attempted: it cannot succeed, and the failure would be indistinguishable.
+ */
+export function rebaseWorktreeOntoOrigin(
+  worktreePath: string,
+  mainBranch = "main",
+): RebaseOutcome {
+  const dirty = (() => {
+    try {
+      return uncommittedPaths(worktreePath);
+    } catch {
+      return [];
+    }
+  })();
+  if (dirty.length > 0) return { status: "skipped_dirty", paths: dirty };
+
+  try {
+    execSync(`git fetch origin ${mainBranch}`, { cwd: worktreePath, stdio: "pipe" });
+  } catch (err) {
+    return { status: "fetch_failed", error: errText(err) };
+  }
+
+  try {
+    execSync(`git rebase origin/${mainBranch}`, { cwd: worktreePath, stdio: "pipe" });
+    return { status: "rebased" };
+  } catch (err) {
+    // REBASE_HEAD exists only once a rebase has started and stopped on a
+    // conflicted commit — the one state `--abort` is for, and the only one
+    // that deserves the word "conflict".
+    let conflicted = false;
+    try {
+      execSync("git rev-parse -q --verify REBASE_HEAD", { cwd: worktreePath, stdio: "pipe" });
+      conflicted = true;
+    } catch {
+      /* rebase never started, or already unwound itself */
+    }
+    if (conflicted) {
+      try {
+        execSync("git rebase --abort", { cwd: worktreePath, stdio: "pipe" });
+      } catch {
+        /* best effort — the outcome below still reports the conflict */
+      }
+      return { status: "conflict", error: errText(err) };
+    }
+    return { status: "failed", error: errText(err) };
+  }
+}
+
+function errText(err: unknown): string {
+  if (err && typeof err === "object" && "stderr" in err) {
+    const stderr = (err as { stderr?: Buffer | string }).stderr;
+    const text = stderr === undefined ? "" : stderr.toString().trim();
+    if (text) return text;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 export interface PidInfo {
   /** Engine child PID (claude / codex). */
   pid: number;
@@ -696,6 +812,11 @@ export function extractMode(branch: string): string {
   return modeMatch ? modeMatch[1].toUpperCase() : "UNKNOWN";
 }
 
+// Modes whose worker output is expected to land as commits. Deliberately a
+// local literal (src/artifact.ts keeps its own) so merge-reporting semantics
+// and artifact semantics can drift independently.
+const CODE_CHANGING_MODES = new Set(["IMPLEMENT", "REFACTOR", "TEST"]);
+
 /**
  * Commits on `branch` not reachable from HEAD (the main checkout) whose message
  * carries MICRO_FIX_SENTINEL — the USER-approved micro-fixes that authorize a
@@ -742,6 +863,95 @@ export interface WorktreeOpResult {
   gateRefusal?: boolean;
 }
 
+/**
+ * The uncommitted-work merge gate (issue #93). Returns a refusal when the
+ * worktree holds work no commit carries — or when git cannot answer, which
+ * fails closed: "I don't know" must not be read as "clean" on the one path
+ * that can destroy an accepted diff.
+ *
+ * The message names the rescue verbatim (commit on the worker branch, merge
+ * again) because that is precisely what all three manual rescues did, and the
+ * gates then passed normally.
+ */
+function dirtyWorktreeRefusal(
+  branch: string,
+  worktreePath: string,
+): WorktreeOpResult | null {
+  let dirty: string[];
+  try {
+    dirty = uncommittedPaths(worktreePath);
+  } catch (err) {
+    return {
+      success: false,
+      phase: "gate",
+      gateRefusal: true,
+      message:
+        `ERROR: refusing to merge ${branch} because -\n` +
+        `- could not read the worktree's git status, so whether it holds uncommitted\n` +
+        `  work is unknown (fail closed): ${err instanceof Error ? err.message : String(err)}\n\n` +
+        `Check it by hand, then merge again:\n` +
+        `  git -C "${worktreePath}" status`,
+    };
+  }
+  if (dirty.length === 0) return null;
+
+  const issueNumber = extractIssueNumber(branch);
+  const captureMessage = `capture worker output${issueNumber !== undefined ? ` for issue #${issueNumber}` : ""}`;
+  return {
+    success: false,
+    phase: "gate",
+    gateRefusal: true,
+    message:
+      `ERROR: refusing to merge ${branch} because -\n` +
+      `- its worktree holds ${dirty.length} uncommitted change(s), and a merge ships commits only.\n` +
+      `  Merging now would report success while shipping none of this work.\n\n` +
+      `Uncommitted in ${worktreePath}:\n` +
+      `${formatUncommittedPaths(dirty)}\n\n` +
+      `Nothing is lost — the files are still on disk. Commit them onto the worker\n` +
+      `branch, then merge again (the run's gates pass normally afterwards):\n` +
+      `  git -C "${worktreePath}" add -A\n` +
+      `  git -C "${worktreePath}" commit -m "${captureMessage}"\n` +
+      `  dangeresque merge ${shortBranchForRemediation(branch)}\n\n` +
+      `DO NOT run 'git worktree remove --force' or 'dangeresque discard' on this\n` +
+      `worktree first — both delete the uncommitted work permanently.`,
+  };
+}
+
+/**
+ * Recovery advice for a failed `git worktree remove`. Branches on whether the
+ * worktree still holds uncommitted work, because the two situations need
+ * opposite instructions and the old message gave the dangerous one to both:
+ * `git worktree remove --force` over an accepted-but-uncommitted diff deletes
+ * it permanently (issue #93). Hedging it with "if safe" is not enough — the
+ * line arrives after a message that just said the merge finished.
+ */
+function cleanupRecoveryAdvice(worktreePath: string, branch: string): string {
+  const dirty = (() => {
+    try {
+      return uncommittedPaths(worktreePath);
+    } catch {
+      return [];
+    }
+  })();
+
+  if (dirty.length > 0) {
+    return (
+      `STOP — ${dirty.length} uncommitted change(s) live in that worktree:\n` +
+      `${formatUncommittedPaths(dirty)}\n` +
+      `Do NOT 'git worktree remove --force' and do NOT 'dangeresque discard' — either deletes them.\n` +
+      `Recovery: (1) save the work: git -C "${worktreePath}" add -A && git -C "${worktreePath}" commit\n` +
+      `          (2) then re-run 'dangeresque merge ${shortBranchForRemediation(branch)}'.`
+    );
+  }
+
+  return (
+    `Recovery (the worktree carries no uncommitted work — checked just now):\n` +
+    `  (1) 'git worktree unlock "${worktreePath}"' if it is still locked, then\n` +
+    `  (2) 'git worktree remove --force "${worktreePath}"', then\n` +
+    `  (3) 'git branch -D ${branch}'.`
+  );
+}
+
 export function mergeWorktree(
   projectRoot: string,
   branch: string,
@@ -769,6 +979,16 @@ export function mergeWorktree(
           `  dangeresque stop ${short}`,
       };
     }
+
+    // Gate: refuse if the worktree still holds uncommitted work (issue #93).
+    // `git merge` only ships commits, so merging here would report success
+    // while shipping nothing — and the non-force `git worktree remove` two
+    // phases down would then refuse to delete the very files that hold the
+    // run's accepted diff. Three receipts (bubble-craps #680/#530/#643) all
+    // ended in a hand-run rescue from exactly this state. Refuse before the
+    // merge so nothing is destroyed and the recovery is one commit away.
+    const dirtyGate = dirtyWorktreeRefusal(branch, worktreePath);
+    if (dirtyGate) return dirtyGate;
   }
 
   // mergeGate: project-owned pre-merge enforcement. Runs after the running-
@@ -1011,11 +1231,8 @@ export function mergeWorktree(
         headAfter,
         message:
           `${mergeOutcome}. ` +
-          `Worktree cleanup failed: ${err instanceof Error ? err.message : String(err)}. ` +
-          `Recovery: (1) inspect ${worktreePath} for uncommitted work, ` +
-          `(2) 'git worktree unlock "${worktreePath}"' if it is still locked, then ` +
-          `'git worktree remove --force "${worktreePath}"' if safe, ` +
-          `(3) 'git branch -D ${branch}'.`,
+          `Worktree cleanup failed: ${err instanceof Error ? err.message : String(err)}.\n` +
+          cleanupRecoveryAdvice(worktreePath, branch),
       };
     }
   }
@@ -1045,6 +1262,16 @@ export function mergeWorktree(
     };
   }
 
+  // A no-op merge is the expected shape for INVESTIGATE/VERIFY, and a
+  // contradiction for a mode whose whole job is to produce a diff. It reaches
+  // here only with a clean worktree (the dirty gate above refuses otherwise),
+  // so nothing was lost — but "Merged: no code changes" read as success is how
+  // bc#643 stayed invisible until cleanup. Say it plainly instead.
+  const noCodeShipped =
+    noopMerge && CODE_CHANGING_MODES.has(extractMode(branch))
+      ? `WARNING: ${extractMode(branch)} is a code-changing mode but this branch carried no commits — nothing shipped. Its work was either merged earlier or never committed. `
+      : "";
+
   return {
     success: true,
     phase: noopMerge ? "noop" : "merge",
@@ -1052,7 +1279,7 @@ export function mergeWorktree(
     headBefore,
     headAfter,
     message: noopMerge
-      ? `Merged ${branch}: no code changes (HEAD unchanged at ${headBefore.slice(0, 7)}). ${mirrorNote}${rescueNote}`.trim()
+      ? `Merged ${branch}: no code changes (HEAD unchanged at ${headBefore.slice(0, 7)}). ${noCodeShipped}${mirrorNote}${rescueNote}`.trim()
       : `Merged ${branch} into main. Main: ${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}. ${mirrorNote}${rescueNote}`.trim(),
   };
 }

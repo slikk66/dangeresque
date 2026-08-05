@@ -11,6 +11,7 @@ import {
   type ValidationResult,
   CONFIG_DIR,
   RUNS_DIR,
+  PID_FILE,
   projectHash,
 } from "./config.js";
 import { writePidFile, removePidFile, resolveDiffBase, mirrorIssueRuns, parseSummaryBlock, formatResultsGuidance, type PidInfo } from "./worktree.js";
@@ -112,15 +113,37 @@ export function computeRunArchivePath(
   return join(worktreePath, CONFIG_DIR, RUNS_DIR, `issue-${issueNumber}`, `${timestamp}-${mode}.md`);
 }
 
+export interface WorkerCaptureResult {
+  /** True iff this call created a commit. */
+  committed: boolean;
+  /** Files that went into that commit (empty when nothing was staged). */
+  files: string[];
+  /** Set when capture failed. The worktree is left exactly as the worker left it. */
+  error?: string;
+}
+
 /**
- * Capture a worker's code changes into a single commit on its branch.
+ * Capture whatever the worker did NOT commit into a single commit on its
+ * branch, from the dangeresque parent process (full host permissions).
  *
- * Codex under `--full-auto` runs inside a sandbox that denies writes to the
- * linked-worktree gitdir at `<main-checkout>/.git/worktrees/<name>/`, so
- * `git add` / `git commit` from inside the worker always fail. This helper
- * runs from the dangeresque parent process (which has full host permissions)
- * to salvage the worker's file changes. Claude workers commit themselves and
- * do not need this path.
+ * Runs for BOTH engines and BEFORE anything reads the branch (issue #93).
+ * Neither engine can be trusted to have committed its own work:
+ * - codex under `--full-auto` runs in a sandbox that denies writes to the
+ *   linked-worktree gitdir at `<main-checkout>/.git/worktrees/<name>/`, so its
+ *   `git add`/`git commit` always fail. This has always been true.
+ * - claude workers usually self-commit, but a commit command the permission
+ *   layer refuses (e.g. any form carrying `$(...)`, which is rejected before
+ *   allowlist matching and therefore cannot be granted) leaves the whole diff
+ *   in the working tree. Three bubble-craps receipts ended there, and every
+ *   downstream reader — rebase, scope check, `git merge` — reads commits.
+ *
+ * Idempotent by construction: a worker that committed its own work stages
+ * nothing, so this returns `{committed: false}` and changes nothing.
+ *
+ * Never throws. A capture failure must not abort the post-worker pipeline —
+ * the artifact, the review, and the operator-facing report are exactly what
+ * the operator needs in order to rescue the tree by hand. The caller records
+ * the error and the run is classified honestly instead.
  *
  * Scope rules:
  * - `git add -A` captures every tracked/untracked change in the worktree.
@@ -130,11 +153,11 @@ export function computeRunArchivePath(
  *   exclude pathspec is defensive — keeps any pre-existing tracked entries
  *   out of the worker's commit during the migration window for older repos.
  */
-export function commitWorkerChanges(
+export function captureWorkerChanges(
   worktreePath: string,
-  issueNumber: number,
-  mode: string
-): void {
+  opts: { issueNumber: number; mode: string; engine: Engine },
+): WorkerCaptureResult {
+  const { issueNumber, mode, engine } = opts;
   try {
     // Bare `git add -A` (no pathspec): with an explicit pathspec — even an
     // exclude-only one — git treats matched IGNORED dirs as named targets and
@@ -148,30 +171,42 @@ export function commitWorkerChanges(
     execSync(`git add -A`, {
       cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
     });
-    execSync(`git reset -q -- .codex .dangeresque/runs`, {
+    // `git reset` with a pathspec that matches nothing is a no-op, not an
+    // error — so this stays a single call for every engine. The PID file is
+    // dangeresque's own transient run state and is not gitignored in consumer
+    // projects; a stale one (killed run) would otherwise ride the commit.
+    execSync(`git reset -q -- .codex .dangeresque/runs ${PID_FILE}`, {
       cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
     });
     // Delete the codex session-state dir outright: left untracked, it blocks
     // the merge path's non-force `git worktree remove` (first live IMPLEMENT
     // run, bc#603 — merge landed but cleanup failed). The run artifact lives
     // in .dangeresque/runs (mirrored by merge), so nothing of value is lost.
-    rmSync(join(worktreePath, ".codex"), { recursive: true, force: true });
+    // Codex-only: dangeresque injects that directory, so only dangeresque
+    // gets to delete it.
+    if (engine === "codex") {
+      rmSync(join(worktreePath, ".codex"), { recursive: true, force: true });
+    }
     const staged = execSync("git diff --cached --name-only", {
       cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
     }).trim();
-    if (!staged) return;
-    const message = `codex ${mode} worker: issue #${issueNumber}`;
+    if (!staged) return { committed: false, files: [] };
+    const message = `dangeresque: capture ${engine} ${mode} worker output for issue #${issueNumber}`;
     execSync(`git commit -m "${message}"`, {
       cwd: worktreePath, encoding: "utf-8", stdio: "pipe",
     });
+    return { committed: true, files: staged.split("\n").filter(Boolean) };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `dangeresque: failed to commit codex worker changes in ${worktreePath} ` +
-      `(issue #${issueNumber}, mode ${mode}). ` +
-      `Worker output remains in the worktree for manual salvage. ` +
-      `Underlying error: ${detail}`
-    );
+    return {
+      committed: false,
+      files: [],
+      error:
+        `dangeresque: failed to capture ${engine} worker changes in ${worktreePath} ` +
+        `(issue #${issueNumber}, mode ${mode}). ` +
+        `Worker output remains in the worktree for manual salvage. ` +
+        `Underlying error: ${detail}`,
+    };
   }
 }
 
@@ -831,7 +866,6 @@ interface EngineAdapter {
     archivePath: string,
     verification?: VerificationOutcome | null,
   ): EngineInvocation;
-  afterWorkerSuccess?(opts: RunOptions, worktreePath: string): void;
   afterReview?(worktreePath: string): void;
 }
 
@@ -894,13 +928,6 @@ const codexAdapter: EngineAdapter = {
       captureLog: true,
       logPath: createCodexLogPath(opts.projectRoot, worktreeName, "review"),
     };
-  },
-  afterWorkerSuccess(opts, worktreePath) {
-    commitWorkerChanges(
-      worktreePath,
-      opts.issueData.number,
-      opts.mode ?? "INVESTIGATE",
-    );
   },
   afterReview(worktreePath) {
     rmSync(join(worktreePath, ".codex"), { recursive: true, force: true });
@@ -1082,7 +1109,9 @@ export async function runWorker(opts: RunOptions): Promise<RunResult> {
     "worker",
     opts.mode ?? "INVESTIGATE",
   );
-  if (receipt.exitCode === 0) adapter.afterWorkerSuccess?.(opts, worktreePath);
+  // No capture step here: capturing the worker's tree is the first thing
+  // `runPostWorkerPhases` does, so `dangeresque review` (which never calls
+  // runWorker) gets it too, and so it lands BEFORE the rebase either way.
   return { worktreeName, branch, exitCode: receipt.exitCode, receipt, archivePath };
 }
 

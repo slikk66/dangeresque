@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   loadIssueFixture,
   computeRunArchivePath,
-  commitWorkerChanges,
+  captureWorkerChanges,
   formatIssueComments,
   bashPatternToPrefixRule,
   buildCodexRulesContent,
@@ -138,34 +138,132 @@ function headFiles(dir: string): string[] {
   }).trim().split("\n").filter(Boolean);
 }
 
-test("commitWorkerChanges: stages + commits worker file changes", () => {
+const CAPTURE = { issueNumber: 99, mode: "IMPLEMENT", engine: "codex" as const };
+
+test("captureWorkerChanges: stages + commits worker file changes", () => {
   const dir = makeRepo();
   try {
     writeFileSync(join(dir, "src.ts"), "export const x = 1;\n");
     const before = commitCount(dir);
 
-    commitWorkerChanges(dir, 99, "IMPLEMENT");
+    const result = captureWorkerChanges(dir, CAPTURE);
 
+    assert.equal(result.committed, true);
+    assert.deepEqual(result.files, ["src.ts"]);
+    assert.equal(result.error, undefined);
     assert.equal(commitCount(dir), before + 1);
-    assert.equal(headMessage(dir), "codex IMPLEMENT worker: issue #99");
+    assert.equal(
+      headMessage(dir),
+      "dangeresque: capture codex IMPLEMENT worker output for issue #99",
+    );
     assert.deepEqual(headFiles(dir), ["src.ts"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("commitWorkerChanges: no changes → no-op", () => {
+// The #93 case: a claude worker whose own `git commit` was denied. Nothing
+// codex-specific may be required for capture to work — in particular there is
+// no `.codex/` directory in the tree.
+test("captureWorkerChanges: claude worker with no .codex dir → still commits", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, "feature.ts"), "export const shipped = true;\n");
+    const before = commitCount(dir);
+
+    const result = captureWorkerChanges(dir, {
+      issueNumber: 93,
+      mode: "IMPLEMENT",
+      engine: "claude",
+    });
+
+    assert.equal(result.committed, true);
+    assert.equal(result.error, undefined);
+    assert.equal(commitCount(dir), before + 1);
+    assert.equal(
+      headMessage(dir),
+      "dangeresque: capture claude IMPLEMENT worker output for issue #93",
+    );
+    assert.deepEqual(headFiles(dir), ["feature.ts"]);
+    assert.equal(
+      execSync("git status --porcelain", { cwd: dir, encoding: "utf-8", stdio: "pipe" }).trim(),
+      "",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("captureWorkerChanges: claude worker that self-committed → no second commit", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, "self.ts"), "export const x = 1;\n");
+    execSync("git add self.ts", { cwd: dir, encoding: "utf-8", stdio: "pipe" });
+    execSync('git commit -m "worker did its own commit"', {
+      cwd: dir, encoding: "utf-8", stdio: "pipe",
+    });
+    const before = commitCount(dir);
+
+    const result = captureWorkerChanges(dir, {
+      issueNumber: 93, mode: "IMPLEMENT", engine: "claude",
+    });
+
+    assert.equal(result.committed, false);
+    assert.deepEqual(result.files, []);
+    assert.equal(commitCount(dir), before);
+    assert.equal(headMessage(dir), "worker did its own commit");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("captureWorkerChanges: not a git repo → returns error, never throws", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-capture-nogit-"));
+  try {
+    writeFileSync(join(dir, "loose.ts"), "orphan\n");
+    const result = captureWorkerChanges(dir, {
+      issueNumber: 93, mode: "IMPLEMENT", engine: "claude",
+    });
+    assert.equal(result.committed, false);
+    assert.ok(result.error, "expected an error string");
+    assert.match(result.error!, /failed to capture claude worker changes/);
+    assert.match(result.error!, /manual salvage/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("captureWorkerChanges: a stale PID file never rides the worker's commit", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, "work.ts"), "export const x = 1;\n");
+    writeFileSync(join(dir, ".dangeresque.pid"), '{"pid":1}\n');
+
+    const result = captureWorkerChanges(dir, {
+      issueNumber: 93, mode: "IMPLEMENT", engine: "claude",
+    });
+
+    assert.equal(result.committed, true);
+    assert.deepEqual(result.files, ["work.ts"]);
+    assert.deepEqual(headFiles(dir), ["work.ts"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("captureWorkerChanges: no changes → no-op", () => {
   const dir = makeRepo();
   try {
     const before = commitCount(dir);
-    commitWorkerChanges(dir, 99, "IMPLEMENT");
+    const result = captureWorkerChanges(dir, CAPTURE);
+    assert.equal(result.committed, false);
     assert.equal(commitCount(dir), before);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("commitWorkerChanges: excludes .dangeresque/runs/ artifacts", () => {
+test("captureWorkerChanges: excludes .dangeresque/runs/ artifacts", () => {
   const dir = makeRepo();
   try {
     writeFileSync(join(dir, "code.ts"), "export const y = 2;\n");
@@ -175,7 +273,7 @@ test("commitWorkerChanges: excludes .dangeresque/runs/ artifacts", () => {
       "# artifact\n"
     );
 
-    commitWorkerChanges(dir, 99, "IMPLEMENT");
+    captureWorkerChanges(dir, CAPTURE);
 
     const files = headFiles(dir);
     assert.deepEqual(files, ["code.ts"]);
@@ -188,7 +286,7 @@ test("commitWorkerChanges: excludes .dangeresque/runs/ artifacts", () => {
   }
 });
 
-test("commitWorkerChanges: only artifact present → no commit (artifact excluded)", () => {
+test("captureWorkerChanges: only artifact present → no commit (artifact excluded)", () => {
   const dir = makeRepo();
   try {
     mkdirSync(join(dir, ".dangeresque", "runs", "issue-99"), { recursive: true });
@@ -198,7 +296,7 @@ test("commitWorkerChanges: only artifact present → no commit (artifact exclude
     );
     const before = commitCount(dir);
 
-    commitWorkerChanges(dir, 99, "IMPLEMENT");
+    captureWorkerChanges(dir, CAPTURE);
 
     assert.equal(commitCount(dir), before);
   } finally {
@@ -206,7 +304,7 @@ test("commitWorkerChanges: only artifact present → no commit (artifact exclude
   }
 });
 
-test("commitWorkerChanges: captures deletions + modifications, not only new files", () => {
+test("captureWorkerChanges: captures deletions + modifications, not only new files", () => {
   const dir = makeRepo();
   try {
     writeFileSync(join(dir, "keep.ts"), "old\n");
@@ -218,10 +316,13 @@ test("commitWorkerChanges: captures deletions + modifications, not only new file
     rmSync(join(dir, "gone.ts"));
     const before = commitCount(dir);
 
-    commitWorkerChanges(dir, 7, "REFACTOR");
+    captureWorkerChanges(dir, { issueNumber: 7, mode: "REFACTOR", engine: "codex" });
 
     assert.equal(commitCount(dir), before + 1);
-    assert.equal(headMessage(dir), "codex REFACTOR worker: issue #7");
+    assert.equal(
+      headMessage(dir),
+      "dangeresque: capture codex REFACTOR worker output for issue #7",
+    );
     const files = headFiles(dir).sort();
     assert.deepEqual(files, ["gone.ts", "keep.ts"]);
   } finally {

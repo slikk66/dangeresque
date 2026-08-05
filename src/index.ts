@@ -36,10 +36,12 @@ export {
   fetchIssue,
   loadIssueFixture,
   postRunComment,
+  captureWorkerChanges,
   type RunOptions,
   type RunResult,
   type ExecutionReceipt,
   type IssueData,
+  type WorkerCaptureResult,
 } from "./runner.js";
 
 export {
@@ -48,9 +50,13 @@ export {
   discardWorktree,
   getWorktreeResults,
   formatRunHeader,
+  uncommittedPaths,
+  formatUncommittedPaths,
+  rebaseWorktreeOntoOrigin,
   type WorktreeInfo,
   type WorktreeOpResult,
   type WorktreePhase,
+  type RebaseOutcome,
 } from "./worktree.js";
 
 export {

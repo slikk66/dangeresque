@@ -15,9 +15,17 @@ const cliSourcePath = join(projectRoot, "src", "cli.ts");
 
 function dispatchCases(): string[] {
   const source = readFileSync(cliSourcePath, "utf-8");
-  // Extract every `case "<verb>":` from the dispatch switch in main().
+  // Extract every `case "<verb>":` from the dispatch switch in main() — and
+  // ONLY that switch. cli.ts has other switches (e.g. rebase-outcome
+  // classification), whose cases are not CLI verbs and must not be required
+  // to appear in --help.
+  const start = source.indexOf("switch (command) {");
+  assert.notEqual(start, -1, "could not find the dispatch switch in src/cli.ts");
+  const end = source.indexOf("\n  }", start);
+  assert.notEqual(end, -1, "could not find the end of the dispatch switch");
+  const dispatchBlock = source.slice(start, end);
   // The switch values are short alphanumeric verb names (no quotes or escapes inside).
-  const matches = [...source.matchAll(/case "([a-z][a-z0-9_-]*)":/g)];
+  const matches = [...dispatchBlock.matchAll(/case "([a-z][a-z0-9_-]*)":/g)];
   return matches.map((m) => m[1]);
 }
 

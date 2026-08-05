@@ -208,19 +208,42 @@ running an adversarial review against un-compiling code. Spending Claude
 calls reviewing an empty diff is waste, and a skipped review is recorded
 in the run artifact with a reason so it's visible downstream.
 
-### Layer 5 — Rebase Before Review
+### Layer 5 — Capture, Then Rebase Before Review
 
-Between worker and reviewer, the worktree is rebased onto `origin/main` (see
-the "Rebase worktree onto latest origin/main" section in `src/cli.ts`).
-This matters because multiple workers can run in parallel on different
-issues, and another worker's branch may have merged to main since this
-worktree was created. Without the rebase, `git diff main`
-would show *this* worker's changes plus the diff from whatever branches
-landed in the meantime, and the reviewer would misread unrelated merges as
-scope violations or regressions. If the rebase conflicts, dangeresque aborts
-the rebase and logs a `rebase_failed` lifecycle event — the reviewer will
-see the pre-rebase diff and can flag the conflict, but no work is silently
-lost.
+**Capture comes first.** The very first thing `runPostWorkerPhases` does is
+commit whatever the worker left uncommitted (`captureWorkerChanges` in
+`src/runner.ts`). Everything downstream of that line reads *commits* — the
+scope check's three-dot diff, the rebase, and ultimately `git merge` — while
+the reviewer and the file-count normalizer read the *working tree*. If those
+two views disagree, a reviewer can ACCEPT a diff that ships nothing, which is
+exactly what issue #93 was: three runs where a worker's own `git commit` was
+refused, and the accepted diff sat in the worktree with the branch carrying
+zero commits. Capture is idempotent — a worker that committed its own work
+stages nothing — and runs for both engines, so `dangeresque review` gets it
+too.
+
+Between worker and reviewer, the worktree is then rebased onto `origin/main`
+(`rebaseWorktreeOntoOrigin` in `src/worktree.ts`). This matters because
+multiple workers can run in parallel on different issues, and another worker's
+branch may have merged to main since this worktree was created. Without the
+rebase, `git diff main` would show *this* worker's changes plus the diff from
+whatever branches landed in the meantime, and the reviewer would misread
+unrelated merges as scope violations or regressions.
+
+Each way a rebase can fail to happen is recorded as itself, because they call
+for different responses and used to be collapsed into one:
+
+| Outcome | Lifecycle event | Failure category |
+| --- | --- | --- |
+| Rebased | `rebase_completed` | — |
+| Tree still dirty after capture (git refuses to *start* a rebase) | `rebase_skipped` (`reason: dirty_worktree`) | `uncommitted_worker_changes` |
+| `git fetch origin main` failed (no remote, offline) | `rebase_skipped` (`reason: fetch_failed`) | — |
+| Real conflict, rebase aborted | `rebase_failed` (`conflict: true`) | `rebase_conflict` |
+| git refused for another reason | `rebase_failed` (`conflict: false`) | — |
+
+In every case the reviewer sees the pre-rebase diff and no work is silently
+lost. A run that reaches the end with work outside its commits can never be
+classified `success` — see `uncommitted_worker_changes` in `src/artifact.ts`.
 
 ### Hard stop on worker failure
 
@@ -273,6 +296,18 @@ verifies that `HEAD` actually moved (a no-op merge is a failure, not a
 silent success), and then removes the worktree and branch.
 `dangeresque discard <branch>` throws the worktree and branch away entirely,
 run artifact included — that's the whole point of discard.
+
+**Merge refuses over uncommitted work (issue #93).** Before the `git merge`,
+`mergeWorktree` asks `uncommittedPaths` whether the worktree still holds work
+no commit carries, and refuses (`gateRefusal`, exit 2) if it does — listing
+the paths and naming the rescue: commit them on the worker branch, merge
+again. This is a data-loss gate, so it fails closed: if `git status` itself
+cannot be read, the merge is refused rather than assumed safe. The refusal
+runs *before* the merge precisely so the recovery is trivial; the old
+behavior merged nothing, reported "No commits merged" as success, then failed
+worktree cleanup and advised `git worktree remove --force`, which would have
+deleted the accepted diff. That advice is now conditional: over a dirty
+worktree the message says the opposite, in as many words.
 
 ## 4. Observability & Evaluation
 
@@ -403,20 +438,31 @@ receives `-c model_reasoning_effort="<effort>"`. Before dispatch, dangeresque
 validates every scheduled Codex phase against the installed model catalog.
 Unsupported pairs and `ultra` fail loudly.
 
-**Codex worker commits are owned by dangeresque, not the worker (issue
-#38).** Codex runs with `--full-auto` inside a sandbox that explicitly
-marks the linked-worktree gitdir at `<main-checkout>/.git/worktrees/<name>/`
-as read-only, so `git add` / `git commit` from inside a codex worker always
-fail with `Operation not permitted` on `index.lock`. The restriction is
-hardcoded in codex-rs and has no public config escape that does not
-regress security. Dangeresque's parent Node process has full host
-permissions, so after a successful codex worker exit it runs
-`commitWorkerChanges` (see `src/runner.ts`) to stage every change in the
-worktree — excluding `.dangeresque/runs/` so the artifact stays in its own
-follow-up commit — and commit with a message of the form
-`codex <MODE> worker: issue #<N>`. Claude workers commit themselves with
-their own message; `commitWorkerChanges` is called only in the codex
-branch.
+**Worker commits are owned by dangeresque, not the worker (issues #38,
+#93).** Neither engine can be relied on to commit its own output, for
+different reasons:
+
+- **codex** runs with `--full-auto` inside a sandbox that explicitly marks
+  the linked-worktree gitdir at `<main-checkout>/.git/worktrees/<name>/` as
+  read-only, so `git add` / `git commit` from inside a codex worker always
+  fail with `Operation not permitted` on `index.lock`. The restriction is
+  hardcoded in codex-rs and has no public config escape that does not regress
+  security. This is true of every codex run.
+- **claude** workers usually self-commit, but a commit command the permission
+  layer refuses leaves the entire diff in the working tree. Command
+  substitution (`$(...)`) is rejected before allowlist matching and therefore
+  cannot be granted by any `allowedTools` entry — and the canonical form for
+  a multi-line commit message is `git commit -m "$(cat <<'EOF' … EOF)"`.
+  Three bubble-craps runs ended with an accepted diff and a branch carrying
+  zero commits.
+
+Dangeresque's parent Node process has full host permissions, so
+`captureWorkerChanges` (see `src/runner.ts`) stages every change in the
+worktree — excluding `.dangeresque/runs/`, the injected `.codex/` session
+state, and the PID file — and commits it with a message of the form
+`dangeresque: capture <engine> <MODE> worker output for issue #<N>`. It runs
+for both engines as the first step of `runPostWorkerPhases`, and it is a
+no-op on a worker that already committed its own work.
 
 The engine seam is narrow by design: adapters own preparation, invocation,
 prompt delivery, and log/session receipts. Core orchestration owns worktrees,

@@ -93,4 +93,13 @@ dangeresque migrate
 
 Every run writes a markdown run result file plus a structured JSON evaluation artifact. Terms derived from worker exit code, review phase, run artifact presence, scope classification (`scope_report.outside`), verification outcomes, and parsed reviewer verdicts: `success`, `partial_success`, `failure`, `scope_outside`, `verification_failed`, and `reviewer_verdict` ∈ {`accept`, `reject`, `needs_human_review`, `skipped`, `unknown`}. Review is automatically skipped for `INVESTIGATE`/`VERIFY`, when verification blocks (a `block`-policy command failed), and manually skipped by `--no-review`. The `scope_outside` failure category is emitted only when review was skipped — when review ran, the reviewer verdict controls the result (see [`docs/SCOPE.md`](SCOPE.md)).
 
+One failure category is not derived from any of those inputs:
+`uncommitted_worker_changes` marks a run that finished with work the branch's
+commits do not carry — capture failed, or something stayed uncommitted through
+it (issue #93). Such a run can never be classified `success`, whatever the
+reviewer said, because the reviewer read the working tree and `git merge` ships
+commits. Adding this value did **not** bump `ARTIFACT_SCHEMA_VERSION`: no field
+was added, renamed or dropped, so every v7 artifact on disk is still a valid v7
+artifact and has nothing to migrate.
+
 For full definitions, run `dangeresque stats --glossary`. For design rationale, see [`docs/DESIGN.md` §4 Observability & Evaluation](DESIGN.md#4-observability--evaluation).
