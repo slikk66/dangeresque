@@ -153,6 +153,7 @@ test("ArtifactBuilder: scope outside + reviewer accept → success (scope is tel
       in_scope: [],
       extended: [],
       outside: ["unrelated.ts"],
+      declaration_status: "parsed",
     });
     const artifact = builder.build();
     assert.equal(artifact.result, "success");
@@ -193,6 +194,7 @@ test("ArtifactBuilder: scope outside + review skipped → partial_success + scop
       in_scope: [],
       extended: [],
       outside: ["unrelated.ts"],
+      declaration_status: "parsed",
     });
     const artifact = builder.build();
     assert.equal(artifact.result, "partial_success");
@@ -360,6 +362,7 @@ test("ArtifactBuilder: reviewer reject → failure + reviewer_rejected (scope ir
       in_scope: [],
       extended: [],
       outside: ["unrelated.ts"],
+      declaration_status: "parsed",
     });
     const artifact = builder.build();
     assert.equal(artifact.result, "failure");
@@ -392,6 +395,7 @@ test("ArtifactBuilder: reviewer needs_human_review → partial_success (no scope
       in_scope: [],
       extended: [],
       outside: ["unrelated.ts"],
+      declaration_status: "parsed",
     });
     const artifact = builder.build();
     assert.equal(artifact.result, "partial_success");
@@ -425,6 +429,7 @@ test("ArtifactBuilder: reviewer verdict unknown (no verdict line) → partial_su
       in_scope: [],
       extended: [],
       outside: ["unrelated.ts"],
+      declaration_status: "parsed",
     });
     const artifact = builder.build();
     assert.equal(artifact.result, "partial_success");
@@ -458,6 +463,7 @@ test("ArtifactBuilder: review nonzero exit → partial_success + review_nonzero_
       in_scope: [],
       extended: [],
       outside: ["unrelated.ts"],
+      declaration_status: "parsed",
     });
     const artifact = builder.build();
     assert.equal(artifact.result, "partial_success");

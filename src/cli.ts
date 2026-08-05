@@ -69,10 +69,11 @@ import {
 import { migrateAllArtifacts } from "./migrate.js";
 import {
   parseScopeBlocks,
-  parseScopeDeclaration,
+  parseScopeDeclarationSection,
   classifyChanges,
   matchesGlob,
   type ScopeReport,
+  type ScopeDeclarationParse,
 } from "./scope.js";
 import type { ScopeOpportunisticConfig } from "./config.js";
 import { detectDrift } from "./build-info.js";
@@ -137,7 +138,7 @@ function applyOpportunisticBudget(
   }
 
   if (!cfg.enabled) {
-    return { in_scope: inScope, extended, outside };
+    return carryScopeMeta(report, inScope, extended, outside);
   }
 
   // Pass 2: maxFiles cap on opportunistic entries.
@@ -172,7 +173,24 @@ function applyOpportunisticBudget(
     else finalExtended.push(extended[i]);
   }
 
-  return { in_scope: inScope, extended: finalExtended, outside };
+  return carryScopeMeta(report, inScope, finalExtended, outside);
+}
+
+// The budget engine re-buckets files; it learns nothing new about the worker's
+// declaration, so those fields ride through untouched.
+function carryScopeMeta(
+  source: ScopeReport,
+  inScope: ScopeReport["in_scope"],
+  extended: ScopeReport["extended"],
+  outside: ScopeReport["outside"],
+): ScopeReport {
+  return {
+    in_scope: inScope,
+    extended,
+    outside,
+    declaration_status: source.declaration_status,
+    ...(source.diagnostics ? { diagnostics: source.diagnostics } : {}),
+  };
 }
 
 function currentHelpEngine(): Engine {
@@ -787,20 +805,25 @@ async function runPostWorkerPhases(
 
     const haystack = issueData.body + formatIssueComments(issueData);
     const scopeBlock = parseScopeBlocks(haystack);
-    let scopeDeclaration: ReturnType<typeof parseScopeDeclaration> = [];
+    let declarationParse: ScopeDeclarationParse = {
+      status: "missing",
+      entries: [],
+    };
     try {
       const { readFileSync, existsSync } = await import("node:fs");
       if (existsSync(archivePath)) {
         const md = readFileSync(archivePath, "utf-8");
-        scopeDeclaration = parseScopeDeclaration(md);
+        declarationParse = parseScopeDeclarationSection(md);
       }
     } catch {
       /* ignore — declaration parse failures are non-fatal */
     }
+    const scopeDeclaration = declarationParse.entries;
     let scopeReport = classifyChanges({
       changedFiles,
       block: scopeBlock,
       declaration: scopeDeclaration,
+      declarationStatus: declarationParse.status,
     });
 
     const opportunisticCfg = config.scope?.opportunistic;
@@ -831,6 +854,7 @@ async function runPostWorkerPhases(
       in_scope: scopeReport.in_scope.length,
       extended: scopeReport.extended.length,
       outside: scopeReport.outside.length,
+      declaration_status: scopeReport.declaration_status,
     });
 
     // Demote the operator-facing warning. For code-changing modes the reviewer

@@ -3,9 +3,21 @@ import assert from "node:assert/strict";
 import {
   parseScopeBlocks,
   parseScopeDeclaration,
+  parseScopeDeclarationSection,
+  buildDeclarationResolver,
   classifyChanges,
   matchesGlob,
 } from "#dist/scope.js";
+
+const NO_BLOCK = { allow: [], deny: [], diagnostics: [] };
+
+function declared(...paths: string[]) {
+  return paths.map((path) => ({
+    path,
+    rationale: "declared by the worker",
+    category: "declared" as const,
+  }));
+}
 
 test("parseScopeBlocks: single block, allow + deny", () => {
   const text = [
@@ -412,6 +424,406 @@ test("classifyChanges: rename src + dest classified independently", () => {
   });
   assert.deepEqual(report.in_scope, ["src/new/Mod.ts"]);
   assert.deepEqual(report.outside, ["src/old/Mod.ts"]);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #90 — declaration matcher. This repo's own artifacts all score
+// outside=0, so every shape below is modelled on a real bubble-craps run.
+// ---------------------------------------------------------------------------
+
+test("resolver: multi-root — sub-project-relative rows match repo-root git paths (bc#536)", () => {
+  const changed = [
+    "realbubblecraps.com-astro/infra/modules/appsync/index.ts",
+    "realbubblecraps.com-astro/infra/modules/lambda-ssr/index.ts",
+  ];
+  const report = classifyChanges({
+    changedFiles: changed,
+    block: NO_BLOCK,
+    declaration: declared(
+      "infra/modules/appsync/index.ts",
+      "infra/modules/lambda-ssr/index.ts",
+    ),
+  });
+  assert.deepEqual(report.outside, []);
+  assert.deepEqual(report.in_scope, changed);
+});
+
+test("resolver: two-prefix run — one worker spanning two sub-projects (bc#610)", () => {
+  const changed = [
+    "Bubble Craps/Assets/UI/PayoutAnnouncer.cs",
+    "Bubble Craps/Assets/UI/BreakdownRowBinder.cs",
+    "realbubblecraps.com-astro/src/pages/index.astro",
+    "realbubblecraps.com-astro/src/lib/format.ts",
+  ];
+  const report = classifyChanges({
+    changedFiles: changed,
+    block: NO_BLOCK,
+    declaration: declared(
+      "UI/PayoutAnnouncer.cs",
+      "UI/BreakdownRowBinder.cs",
+      "src/pages/index.astro",
+      "src/lib/format.ts",
+    ),
+  });
+  assert.deepEqual(report.outside, [], "both sub-project prefixes must resolve");
+  assert.equal(report.in_scope.length, 4);
+});
+
+test("resolver: a lone row may NOT cross a directory boundary on its own say-so", () => {
+  const resolver = buildDeclarationResolver(
+    ["sub/src/config.ts"],
+    declared("src/config.ts"),
+  );
+  assert.equal(
+    resolver.resolve("sub/src/config.ts"),
+    undefined,
+    "self-attestation must not license a prefix",
+  );
+});
+
+test("resolver: two mutually-attesting rows DO license the shared prefix", () => {
+  const resolver = buildDeclarationResolver(
+    ["sub/src/config.ts", "sub/src/other.ts"],
+    declared("src/config.ts", "src/other.ts"),
+  );
+  assert.equal(resolver.resolve("sub/src/config.ts")?.path, "src/config.ts");
+  assert.equal(resolver.resolve("sub/src/other.ts")?.path, "src/other.ts");
+});
+
+test("resolver: prefix concatenation is exact, not fuzzy suffix", () => {
+  const resolver = buildDeclarationResolver(
+    ["vendor/notsrc/config.ts", "vendor/src/other.ts", "vendor/src/third.ts"],
+    declared("src/config.ts", "src/other.ts", "src/third.ts"),
+  );
+  // `vendor/` is attested twice over, so every row may use it — but
+  // `vendor/` + `src/config.ts` is still not `vendor/notsrc/config.ts`.
+  assert.equal(resolver.resolve("vendor/notsrc/config.ts"), undefined);
+  assert.equal(resolver.resolve("vendor/src/other.ts")?.path, "src/other.ts");
+  assert.equal(resolver.resolve("vendor/src/third.ts")?.path, "src/third.ts");
+});
+
+test("resolver: leading ellipsis (bc#676)", () => {
+  const file =
+    "realbubblecraps.com-astro/infra/modules/lambda-match-orchestrator/src/config.ts";
+  const resolver = buildDeclarationResolver(
+    [file],
+    declared(".../lambda-match-orchestrator/src/config.ts"),
+  );
+  assert.equal(resolver.resolve(file)?.category, "declared");
+});
+
+test("resolver: mid-string ellipsis (bc#539)", () => {
+  const resolver = buildDeclarationResolver(
+    ["docs/adr/0055-match-session-render-state.md"],
+    declared("docs/adr/0055-...md"),
+  );
+  assert.equal(
+    resolver.resolve("docs/adr/0055-match-session-render-state.md")?.path,
+    "docs/adr/0055-...md",
+  );
+});
+
+test("resolver: ellipsis stays anchored at the end the row did not elide", () => {
+  const tailMiss = buildDeclarationResolver(
+    ["docs/adr/0055-notes.mdx"],
+    declared("docs/adr/0055-...md"),
+  );
+  assert.equal(tailMiss.resolve("docs/adr/0055-notes.mdx"), undefined);
+
+  const headMiss = buildDeclarationResolver(
+    ["sub/docs/adr/x.md"],
+    declared("docs/...md"),
+  );
+  assert.equal(headMiss.resolve("sub/docs/adr/x.md"), undefined);
+
+  const extMiss = buildDeclarationResolver(
+    ["pkg/src/config.tsx"],
+    declared(".../src/config.ts"),
+  );
+  assert.equal(extMiss.resolve("pkg/src/config.tsx"), undefined);
+});
+
+test("resolver: normalizes leading ./ and / on both sides", () => {
+  const resolver = buildDeclarationResolver(
+    ["./src/a.ts", "src/b.ts"],
+    declared("src/a.ts", "/src/b.ts"),
+  );
+  assert.equal(resolver.resolve("./src/a.ts")?.path, "src/a.ts");
+  assert.equal(resolver.resolve("src/b.ts")?.path, "/src/b.ts");
+});
+
+test("resolver: reverse ambiguity (the bc#534 Makefile) resolves toward in_scope", () => {
+  const changed = [
+    "Makefile",
+    "realbubblecraps.com-astro/Makefile",
+    "realbubblecraps.com-astro/src/a.ts",
+  ];
+  const resolver = buildDeclarationResolver(
+    changed,
+    declared("Makefile", "src/a.ts"),
+  );
+  assert.equal(resolver.resolve("Makefile")?.path, "Makefile");
+  assert.equal(
+    resolver.resolve("realbubblecraps.com-astro/Makefile")?.path,
+    "Makefile",
+  );
+  assert.ok(
+    resolver.diagnostics.some(
+      (d) => d.includes("Makefile") && d.includes("absorbed 2"),
+    ),
+    `expected a reverse-collision diagnostic, got ${JSON.stringify(resolver.diagnostics)}`,
+  );
+
+  const report = classifyChanges({
+    changedFiles: changed,
+    block: NO_BLOCK,
+    declaration: declared("Makefile", "src/a.ts"),
+  });
+  assert.deepEqual(report.outside, []);
+  assert.ok(report.diagnostics && report.diagnostics.length > 0);
+});
+
+test("resolver: forward ambiguity takes the first row and records a diagnostic", () => {
+  const declaration = [
+    { path: "sub/a.ts", rationale: "primary", category: "declared" as const },
+    { path: "a.ts", rationale: "drive-by", category: "opportunistic" as const },
+    { path: "b.ts", rationale: "drive-by", category: "opportunistic" as const },
+  ];
+  const resolver = buildDeclarationResolver(["sub/a.ts", "sub/b.ts"], declaration);
+  assert.equal(resolver.resolve("sub/a.ts")?.category, "declared");
+  assert.ok(
+    resolver.diagnostics.some((d) => d.includes("matched 2 declaration rows")),
+    `expected a forward-collision diagnostic, got ${JSON.stringify(resolver.diagnostics)}`,
+  );
+});
+
+test("resolver: empty declaration is inert, no diagnostics", () => {
+  const resolver = buildDeclarationResolver(["src/a.ts"], []);
+  assert.equal(resolver.resolve("src/a.ts"), undefined);
+  assert.deepEqual(resolver.diagnostics, []);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #90 — parser tolerance.
+// ---------------------------------------------------------------------------
+
+test("parseScopeDeclaration: backticked category cell in a table (bc#703)", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "| `tools/gate-lib.ts` | `declared` | shared gate helper |",
+    "| **src/x.ts** | **extension** | forced by the helper |",
+  ].join("\n");
+  assert.deepEqual(parseScopeDeclaration(md), [
+    {
+      path: "tools/gate-lib.ts",
+      rationale: "shared gate helper",
+      category: "declared",
+    },
+    {
+      path: "src/x.ts",
+      rationale: "forced by the helper",
+      category: "extension",
+    },
+  ]);
+});
+
+test("parseScopeDeclaration: bold group heading carries a category forward (bc#744)", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "**New files (declared):**",
+    "- `src/config/site.ts` — single project identity owner",
+    "- `public/brand/web-icon.png`, `public/brand/compact-logo.png`, `public/brand/og-image.png` — promoted from `public/prototype/*-white.png`",
+    "",
+    "**Deleted (extension — beyond the issue's literal remnant list):**",
+    "- `public/favicon.svg` — orphaned once favicon was repointed",
+  ].join("\n");
+  const decl = parseScopeDeclaration(md);
+  assert.deepEqual(
+    decl.map((d) => d.path),
+    [
+      "src/config/site.ts",
+      "public/brand/web-icon.png",
+      "public/brand/compact-logo.png",
+      "public/brand/og-image.png",
+      "public/favicon.svg",
+    ],
+  );
+  assert.deepEqual(
+    decl.map((d) => d.category),
+    ["declared", "declared", "declared", "declared", "extension"],
+  );
+});
+
+test("parseScopeDeclaration: a bullet with no category anywhere is skipped", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "- `src/a.ts` — no inline category, no group heading",
+  ].join("\n");
+  assert.deepEqual(parseScopeDeclaration(md), []);
+});
+
+test("parseScopeDeclaration: a group heading does not rescue an explicit bad category", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "**New files (declared):**",
+    "- `src/a.ts` (bogus) — wrong category",
+    "- `src/b.ts` — fine",
+  ].join("\n");
+  const decl = parseScopeDeclaration(md);
+  assert.deepEqual(
+    decl.map((d) => d.path),
+    ["src/b.ts"],
+  );
+});
+
+test("parseScopeDeclaration: a group heading does not leak into a later section", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "**New files (declared):**",
+    "- `src/a.ts` — real",
+    "",
+    "## Notes",
+    "",
+    "prose",
+    "",
+    "## Scope Declaration",
+    "",
+    "- `src/b.ts` — bare bullet, no heading in this section",
+  ].join("\n");
+  assert.deepEqual(
+    parseScopeDeclaration(md).map((d) => d.path),
+    ["src/a.ts"],
+  );
+});
+
+test("parseScopeDeclaration: prose bullet under a group heading yields NO row", () => {
+  // Round 1's loose bullet manufactured a `declared` row out of this line, which
+  // would silently push a real changed file to in_scope — the mirror image of
+  // the bug issue #90 exists to fix.
+  const md = [
+    "## Scope Declaration",
+    "",
+    "**Modified (declared):**",
+    "- `src/a.ts` — real",
+    "- Also confirmed `src/zzz.ts` behaviour: unchanged",
+    "- Note: `src/qqq.ts` was read but not edited",
+  ].join("\n");
+  const decl = parseScopeDeclaration(md);
+  assert.deepEqual(
+    decl.map((d) => d.path),
+    ["src/a.ts"],
+  );
+});
+
+test("parseScopeDeclaration: trailing-parenthetical annotations still declare (bc#604/#750)", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "**New files (declared):**",
+    "- `Bubble Craps/Assets/UI/PayoutAnnouncer.cs` (declared, new) — the shared payout composer",
+    "- `Bubble Craps/Assets/UI/Tests/AchievementsScreenBinderTests.cs` (declared, new file) — coverage",
+    "- `realbubblecraps.com-astro/infra/modules/lambda-ssr/index.ts` (declared, deleted) — retired",
+    "- `realbubblecraps.com-astro/scripts/prebuild.js` (declared, deleted) — retired",
+    "- `.meta` files for the new `BreakdownRowBinder.cs` — Unity regenerates these",
+    "- `src/assets/**` (18 files — DocKit demo art, orphaned once the above were removed)",
+  ].join("\n");
+  const decl = parseScopeDeclaration(md);
+  assert.deepEqual(
+    decl.map((d) => d.path),
+    [
+      "Bubble Craps/Assets/UI/PayoutAnnouncer.cs",
+      "Bubble Craps/Assets/UI/Tests/AchievementsScreenBinderTests.cs",
+      "realbubblecraps.com-astro/infra/modules/lambda-ssr/index.ts",
+      "realbubblecraps.com-astro/scripts/prebuild.js",
+      ".meta",
+      "BreakdownRowBinder.cs",
+      "src/assets/**",
+    ],
+  );
+  assert.ok(decl.every((d) => d.category === "declared"));
+});
+
+test("parseScopeDeclaration: glob and bold path cells survive decoration stripping", () => {
+  const md = [
+    "## Scope Declaration",
+    "",
+    "| `test/unit/**` | `declared` | new cases |",
+    "| `**/*.ts` | `incidental` | formatter pass |",
+  ].join("\n");
+  assert.deepEqual(
+    parseScopeDeclaration(md).map((d) => d.path),
+    ["test/unit/**", "**/*.ts"],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #90 — declaration_status.
+// ---------------------------------------------------------------------------
+
+test("parseScopeDeclarationSection: no section at all → missing", () => {
+  const parse = parseScopeDeclarationSection("# Run\n\n## Status\n\ndone\n");
+  assert.equal(parse.status, "missing");
+  assert.deepEqual(parse.entries, []);
+});
+
+test("parseScopeDeclarationSection: section present but unreadable → unreadable", () => {
+  const parse = parseScopeDeclarationSection(
+    ["## Scope Declaration", "", "I changed some files. Trust me."].join("\n"),
+  );
+  assert.equal(parse.status, "unreadable");
+  assert.deepEqual(parse.entries, []);
+});
+
+test("parseScopeDeclarationSection: rows extracted → parsed", () => {
+  const parse = parseScopeDeclarationSection(
+    ["## Scope Declaration", "", "- `src/a.ts` (declared) — the goal"].join("\n"),
+  );
+  assert.equal(parse.status, "parsed");
+  assert.equal(parse.entries.length, 1);
+});
+
+test("classifyChanges: carries the caller's declaration status onto the report", () => {
+  const report = classifyChanges({
+    changedFiles: ["src/a.ts"],
+    block: NO_BLOCK,
+    declaration: [],
+    declarationStatus: "unreadable",
+  });
+  assert.equal(report.declaration_status, "unreadable");
+  assert.deepEqual(report.outside, ["src/a.ts"]);
+});
+
+test("classifyChanges: derives a status when the caller omits one", () => {
+  assert.equal(
+    classifyChanges({
+      changedFiles: ["src/a.ts"],
+      block: NO_BLOCK,
+      declaration: declared("src/a.ts"),
+    }).declaration_status,
+    "parsed",
+  );
+  assert.equal(
+    classifyChanges({
+      changedFiles: ["src/a.ts"],
+      block: NO_BLOCK,
+      declaration: [],
+    }).declaration_status,
+    "missing",
+  );
+});
+
+test("classifyChanges: omits diagnostics entirely when nothing was ambiguous", () => {
+  const report = classifyChanges({
+    changedFiles: ["src/a.ts"],
+    block: NO_BLOCK,
+    declaration: declared("src/a.ts"),
+  });
+  assert.equal(report.diagnostics, undefined);
 });
 
 test("matchesGlob: ** wildcard handles deep paths", () => {

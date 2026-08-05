@@ -32,26 +32,46 @@ export function migrateArtifact(json: unknown): MigrateOneResult {
     return { migrated: false, result: obj as unknown as RunArtifact };
   }
 
-  if (version !== "4" && version !== "5" && version !== "6") {
+  if (!SUPPORTED_SOURCE_VERSIONS.has(version)) {
     throw new Error(
-      `unsupported source schema_version: ${version} (only v4/v5/v6 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
+      `unsupported source schema_version: ${version} (only v4/v5/v6/v7 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
     );
   }
 
   const fromVersion = parseInt(version, 10);
   let next: Record<string, unknown> = { ...obj };
 
-  if (version === "4") {
-    next = stepV4toV5(next);
-  }
-  if (version === "4" || version === "5") {
-    next = stepV5toV6(next);
-  }
-  next = stepV6toV7(next);
+  if (fromVersion <= 4) next = stepV4toV5(next);
+  if (fromVersion <= 5) next = stepV5toV6(next);
+  if (fromVersion <= 6) next = stepV6toV7(next);
+  next = stepV7toV8(next);
   next.schema_version = ARTIFACT_SCHEMA_VERSION;
   next.migrated_from_version = fromVersion;
 
   return { migrated: true, result: next as unknown as RunArtifact };
+}
+
+const SUPPORTED_SOURCE_VERSIONS = new Set(["4", "5", "6", "7"]);
+
+/**
+ * Adds `scope_report.declaration_status` (issue #90). A v7 artifact carrying
+ * declaration rows proves `parsed`; one carrying none cannot be told apart from
+ * a section we failed to read, so it records `unknown` rather than manufacturing
+ * a `missing` the artifact does not support.
+ */
+function stepV7toV8(obj: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...obj };
+  const report = next.scope_report;
+  if (!report || typeof report !== "object" || Array.isArray(report)) return next;
+  const asRecord = report as Record<string, unknown>;
+  if (asRecord.declaration_status !== undefined) return next;
+  const declaration = next.scope_declaration;
+  next.scope_report = {
+    ...asRecord,
+    declaration_status:
+      Array.isArray(declaration) && declaration.length > 0 ? "parsed" : "unknown",
+  };
+  return next;
 }
 
 function stepV6toV7(obj: Record<string, unknown>): Record<string, unknown> {

@@ -10,7 +10,7 @@ import type {
   ScopeReport,
 } from "./scope.js";
 
-export const ARTIFACT_SCHEMA_VERSION = "7";
+export const ARTIFACT_SCHEMA_VERSION = "8";
 
 // Modes whose worker output produces a code diff and must therefore carry a
 // `## Scope Declaration` section. Kept in sync with `src/runner.ts` (prompt
@@ -221,6 +221,10 @@ export class ArtifactBuilder {
       in_scope: [...report.in_scope],
       extended: report.extended.map((e) => ({ ...e })),
       outside: [...report.outside],
+      declaration_status: report.declaration_status,
+      ...(report.diagnostics && report.diagnostics.length > 0
+        ? { diagnostics: [...report.diagnostics] }
+        : {}),
     };
   }
 
