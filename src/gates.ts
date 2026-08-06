@@ -164,7 +164,9 @@ export interface ApplyMergeGateOptions {
  *     latest artifact in the worktree. Missing/unreadable/skipped/rejected
  *     → fail closed. `--force` bypasses.
  *  2. Project-configured commands: run each sequentially in projectRoot with
- *     DANGERESQUE_ISSUE / DANGERESQUE_MODE / DANGERESQUE_MERGE=1 env vars.
+ *     DANGERESQUE_ISSUE / DANGERESQUE_MODE / DANGERESQUE_MERGE=1 /
+ *     DANGERESQUE_WORKTREE (the merge candidate's checkout — see the env
+ *     block below for why diff-based checks should point there) env vars.
  */
 export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
   const { projectRoot, worktreePath, issueNumber, mode, config, force, rescue } = opts;
@@ -261,6 +263,13 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
     DANGERESQUE_ISSUE: issueNumber !== undefined ? String(issueNumber) : "",
     DANGERESQUE_MODE: mode,
     DANGERESQUE_MERGE: "1",
+    // The merge candidate's checkout (#102). Commands run BEFORE the git
+    // merge, so projectRoot's HEAD does not contain the branch being merged —
+    // a diff-based project check pointed at projectRoot evaluates an empty
+    // committed range plus unrelated uncommitted WIP. This var lets a project
+    // aim such checks at the worker tree, which dirtyWorktreeRefusal has
+    // already guaranteed clean, where base..HEAD IS the merge content.
+    DANGERESQUE_WORKTREE: worktreePath,
   };
   const results = runGateCommands(config.commands, projectRoot, env, "mergeGate");
   const blocked = firstBlockingFailure(results);

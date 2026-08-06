@@ -465,7 +465,7 @@ test("applyMergeGate: --force bypasses built-in requireAcceptedImplement", () =>
   }
 });
 
-test("applyMergeGate: env vars DANGERESQUE_MERGE=1 + issue + mode reach commands", () => {
+test("applyMergeGate: env vars DANGERESQUE_MERGE=1 + issue + mode + worktree reach commands", () => {
   const tmp = makeTmp("dangeresque-gate-");
   const worktree = makeTmp("dangeresque-gate-wt-");
   try {
@@ -480,7 +480,7 @@ test("applyMergeGate: env vars DANGERESQUE_MERGE=1 + issue + mode reach commands
         commands: [
           {
             name: "env-check",
-            cmd: `printf '%s|%s|%s' "$DANGERESQUE_ISSUE" "$DANGERESQUE_MODE" "$DANGERESQUE_MERGE" > "${captured}"`,
+            cmd: `printf '%s|%s|%s|%s' "$DANGERESQUE_ISSUE" "$DANGERESQUE_MODE" "$DANGERESQUE_MERGE" "$DANGERESQUE_WORKTREE" > "${captured}"`,
             on_failure: "block",
             timeout_ms: 5000,
           },
@@ -489,7 +489,7 @@ test("applyMergeGate: env vars DANGERESQUE_MERGE=1 + issue + mode reach commands
     });
     assert.equal(result.ok, true);
     const contents = readFileSync(captured, "utf-8");
-    assert.equal(contents, "55|IMPLEMENT|1");
+    assert.equal(contents, `55|IMPLEMENT|1|${worktree}`);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
     rmSync(worktree, { recursive: true, force: true });
