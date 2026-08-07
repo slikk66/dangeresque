@@ -14,6 +14,7 @@ import {
   formatPidExecution,
   getWorktreeResults,
   mergeWorktree,
+  findCommitsAfter,
   discardWorktree,
   filterWorktrees,
   isPidAlive,
@@ -1648,17 +1649,22 @@ function seedImplementAcceptArtifact(
   worktreePath: string,
   issueNumber: number,
   stamp: string,
-  overrides: { reviewer_verdict?: string; skipped?: boolean } = {},
+  overrides: {
+    reviewer_verdict?: string;
+    skipped?: boolean;
+    reviewEndedAt?: string;
+  } = {},
 ): void {
   const dir = join(worktreePath, ".dangeresque", "runs", `issue-${issueNumber}`);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${stamp}-IMPLEMENT.md`), "# implement body\n");
+  const endedAt = overrides.reviewEndedAt ?? "";
   const artifact = {
     schema_version: "6",
     mode: "IMPLEMENT",
     review: overrides.skipped
       ? { skipped: true, skip_reason: "test", started_at: "", ended_at: "", duration_ms: 0, exit_code: 0 }
-      : { skipped: false, started_at: "", ended_at: "", duration_ms: 0, exit_code: 0 },
+      : { skipped: false, started_at: "", ended_at: endedAt, duration_ms: 0, exit_code: 0 },
     reviewer_verdict: overrides.reviewer_verdict ?? "accept",
   };
   writeFileSync(join(dir, `${stamp}-IMPLEMENT.json`), JSON.stringify(artifact));
@@ -1917,7 +1923,7 @@ test("mergeWorktree --rescue: reject verdict + sentinel commit → merges, artif
       dir,
       branch,
       { enabled: true, modes: ["IMPLEMENT", "REFACTOR", "TEST"], requireAcceptedImplement: true, commands: [] },
-      true,
+      {},
     );
 
     assert.equal(result.success, true, result.message);
@@ -1929,6 +1935,7 @@ test("mergeWorktree --rescue: reject verdict + sentinel commit → merges, artif
     const artifact = JSON.parse(
       readFileSync(join(projectIssueDir, "2026-06-01T00-00-00-IMPLEMENT.json"), "utf-8"),
     );
+    assert.equal(artifact.rescue.kind, "micro_fix");
     assert.equal(artifact.rescue.overridden_verdict, "reject");
     assert.equal(artifact.rescue.sentinel_commits.length, 1);
     assert.match(artifact.rescue.sentinel_commits[0].subject, /clamp odds boundary/);
@@ -1938,7 +1945,7 @@ test("mergeWorktree --rescue: reject verdict + sentinel commit → merges, artif
   }
 });
 
-test("mergeWorktree --rescue: reject verdict but NO sentinel commit → gate refuses (fail closed)", () => {
+test("mergeWorktree --rescue: reject verdict, no sentinel commit and no --reason → gate refuses (fail closed)", () => {
   const dir = makeRepo();
   try {
     writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
@@ -1954,13 +1961,193 @@ test("mergeWorktree --rescue: reject verdict but NO sentinel commit → gate ref
       dir,
       branch,
       { enabled: true, modes: ["IMPLEMENT", "REFACTOR", "TEST"], requireAcceptedImplement: true, commands: [] },
-      true,
+      {},
     );
 
     assert.equal(result.success, false);
     assert.equal(result.gateRefusal, true);
-    assert.match(result.message, /--rescue requires a USER-approved micro-fix commit/);
+    // Both lanes must be named — a refusal that mentions only the sentinel is
+    // what sent issue #104's receipt looking for an empty-commit workaround.
+    assert.match(result.message, /sentinel/);
+    assert.match(result.message, /--reason/);
     assert.equal(existsSync(worktreePath), true, "worktree preserved on refusal");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- no-code-delta rescue lane (issue #104) ---
+//
+// The receipt: a reviewer traced the code, said "no code change is required",
+// then rejected purely over stale line numbers in the run report. Run reports
+// are gitignored by dangeresque's own convention, so the correction could never
+// become a sentinel commit and the merge was unreachable. These pin the lane
+// that resolves it, and the boundaries that keep it from becoming `--force`.
+
+test("mergeWorktree --rescue --reason: reject verdict, nothing committed since the review → merges with a no_code_delta record", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const branch = "worktree-dangeresque-implement-780";
+    const worktreePath = addWorktree(dir, "dangeresque-implement-780", branch);
+    // The review ended AFTER the branch's commit, so the reviewer read the very
+    // tree being merged. This is the whole proof the lane stands on.
+    const reviewEndedAt = new Date(Date.now() + 60_000).toISOString();
+    seedImplementAcceptArtifact(worktreePath, 780, "2026-06-01T00-00-00", {
+      reviewer_verdict: "reject",
+      reviewEndedAt,
+    });
+
+    const result = mergeWorktree(
+      dir,
+      branch,
+      { enabled: true, modes: ["IMPLEMENT", "REFACTOR", "TEST"], requireAcceptedImplement: true, commands: [] },
+      { reason: "reviewer rejected on stale line numbers; code endorsed as correct" },
+    );
+
+    assert.equal(result.success, true, result.message);
+    assert.match(result.message, /RESCUE/);
+    assert.match(result.message, /no code change since the review/);
+
+    const projectIssueDir = join(dir, ".dangeresque", "runs", "issue-780");
+    const artifact = JSON.parse(
+      readFileSync(join(projectIssueDir, "2026-06-01T00-00-00-IMPLEMENT.json"), "utf-8"),
+    );
+    assert.equal(artifact.rescue.kind, "no_code_delta");
+    assert.equal(artifact.rescue.overridden_verdict, "reject");
+    assert.deepEqual(artifact.rescue.sentinel_commits, []);
+    assert.match(artifact.rescue.reason, /stale line numbers/);
+    assert.equal(artifact.rescue.code_unchanged.review_ended_at, reviewEndedAt);
+    assert.match(artifact.rescue.code_unchanged.head_sha, /^[0-9a-f]{40}$/);
+
+    const md = readFileSync(join(projectIssueDir, "2026-06-01T00-00-00-IMPLEMENT.md"), "utf-8");
+    assert.match(md, /## RESCUE — no-code-delta merge/);
+    assert.match(md, /stale line numbers/);
+
+    // Surfaced to the caller so the CLI can publish it beyond the gitignored dir.
+    assert.equal(result.rescue?.kind, "no_code_delta");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree --rescue --reason: a commit landed after the review → gate refuses and names it", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const branch = "worktree-dangeresque-implement-781";
+    const worktreePath = addWorktree(dir, "dangeresque-implement-781", branch);
+    // Review ended long before the branch's commit — that commit is code the
+    // reviewer never saw, so a "nothing changed" claim is false.
+    seedImplementAcceptArtifact(worktreePath, 781, "2026-06-01T00-00-00", {
+      reviewer_verdict: "reject",
+      reviewEndedAt: "2020-01-01T00:00:00.000Z",
+    });
+
+    const result = mergeWorktree(
+      dir,
+      branch,
+      { enabled: true, modes: ["IMPLEMENT", "REFACTOR", "TEST"], requireAcceptedImplement: true, commands: [] },
+      { reason: "trust me" },
+    );
+
+    assert.equal(result.success, false);
+    assert.equal(result.gateRefusal, true);
+    assert.match(result.message, /commit\(s\) landed on this branch after/);
+    assert.match(result.message, /worktree commit/);
+    assert.equal(existsSync(worktreePath), true, "worktree preserved on refusal");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree --rescue --reason: artifact records no review end time → gate refuses (unprovable claim)", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const branch = "worktree-dangeresque-implement-782";
+    const worktreePath = addWorktree(dir, "dangeresque-implement-782", branch);
+    seedImplementAcceptArtifact(worktreePath, 782, "2026-06-01T00-00-00", {
+      reviewer_verdict: "reject",
+    });
+
+    const result = mergeWorktree(
+      dir,
+      branch,
+      { enabled: true, modes: ["IMPLEMENT", "REFACTOR", "TEST"], requireAcceptedImplement: true, commands: [] },
+      { reason: "the reviewer was wrong" },
+    );
+
+    assert.equal(result.success, false);
+    assert.equal(result.gateRefusal, true);
+    assert.match(result.message, /no review end time/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree --rescue --reason: skipped review is still refused — the lane never substitutes for a missing review", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const branch = "worktree-dangeresque-implement-783";
+    const worktreePath = addWorktree(dir, "dangeresque-implement-783", branch);
+    seedImplementAcceptArtifact(worktreePath, 783, "2026-06-01T00-00-00", {
+      skipped: true,
+      reviewer_verdict: "skipped",
+    });
+
+    const result = mergeWorktree(
+      dir,
+      branch,
+      { enabled: true, modes: ["IMPLEMENT", "REFACTOR", "TEST"], requireAcceptedImplement: true, commands: [] },
+      { reason: "ship it" },
+    );
+
+    assert.equal(result.success, false);
+    assert.equal(result.gateRefusal, true);
+    assert.match(result.message, /applies only to a review that ran/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("findCommitsAfter: filters by committer date and reports subject + sha", () => {
+  const dir = makeRepo();
+  try {
+    const branch = "worktree-dates";
+    addWorktree(dir, "dates", branch);
+    const past = "2020-01-01T00:00:00.000Z";
+    const future = new Date(Date.now() + 60_000).toISOString();
+
+    const after = findCommitsAfter(dir, branch, past);
+    assert.equal(after.length, 1);
+    assert.match(after[0].subject, /worktree commit/);
+    assert.match(after[0].sha, /^[0-9a-f]{40}$/);
+    assert.ok(Date.parse(after[0].committedAt) > Date.parse(past));
+
+    assert.deepEqual(findCommitsAfter(dir, branch, future), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("findCommitsAfter: an unparseable review end time throws rather than reading as 'nothing changed'", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(dir, "bad-date", "worktree-bad-date");
+    assert.throws(
+      () => findCommitsAfter(dir, "worktree-bad-date", "not-a-date"),
+      /unparseable review end time/,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

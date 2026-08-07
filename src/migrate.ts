@@ -34,7 +34,7 @@ export function migrateArtifact(json: unknown): MigrateOneResult {
 
   if (!SUPPORTED_SOURCE_VERSIONS.has(version)) {
     throw new Error(
-      `unsupported source schema_version: ${version} (only v4/v5/v6/v7 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
+      `unsupported source schema_version: ${version} (only v4/v5/v6/v7/v8 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
     );
   }
 
@@ -44,14 +44,31 @@ export function migrateArtifact(json: unknown): MigrateOneResult {
   if (fromVersion <= 4) next = stepV4toV5(next);
   if (fromVersion <= 5) next = stepV5toV6(next);
   if (fromVersion <= 6) next = stepV6toV7(next);
-  next = stepV7toV8(next);
+  if (fromVersion <= 7) next = stepV7toV8(next);
+  next = stepV8toV9(next);
   next.schema_version = ARTIFACT_SCHEMA_VERSION;
   next.migrated_from_version = fromVersion;
 
   return { migrated: true, result: next as unknown as RunArtifact };
 }
 
-const SUPPORTED_SOURCE_VERSIONS = new Set(["4", "5", "6", "7"]);
+const SUPPORTED_SOURCE_VERSIONS = new Set(["4", "5", "6", "7", "8"]);
+
+/**
+ * Adds `rescue.kind` (issue #104). Every rescue record that predates the
+ * no-code-delta lane was authorized by a sentinel commit, so `micro_fix` is a
+ * fact about these artifacts rather than a guess. Artifacts with no rescue
+ * record are untouched — the field only exists on rescued runs.
+ */
+function stepV8toV9(obj: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...obj };
+  const rescue = next.rescue;
+  if (!rescue || typeof rescue !== "object" || Array.isArray(rescue)) return next;
+  const asRecord = rescue as Record<string, unknown>;
+  if (asRecord.kind !== undefined) return next;
+  next.rescue = { ...asRecord, kind: "micro_fix" };
+  return next;
+}
 
 /**
  * Adds `scope_report.declaration_status` (issue #90). A v7 artifact carrying

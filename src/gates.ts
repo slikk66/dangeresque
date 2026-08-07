@@ -15,6 +15,7 @@ import { listArchivedRuns } from "./worktree.js";
 import {
   jsonPathForArchive,
   type RunArtifact,
+  type RescueKind,
   type ReviewerVerdict,
   type SentinelCommit,
 } from "./artifact.js";
@@ -49,8 +50,17 @@ export interface GateResult {
 }
 
 export interface MergeRescueDecision {
+  kind: RescueKind;
   overriddenVerdict: ReviewerVerdict;
   sentinelCommits: SentinelCommit[];
+  /** Set on the `no_code_delta` lane: the operator's written justification. */
+  reason?: string;
+  /**
+   * Set on the `no_code_delta` lane: the review end time every branch commit
+   * was checked against. The caller pairs it with the merged head sha to build
+   * the artifact's `code_unchanged` proof.
+   */
+  reviewEndedAt?: string;
   jsonPath: string;
   mdPath: string;
 }
@@ -132,18 +142,45 @@ export interface ApplyMergeGateOptions {
   force?: boolean;
   /**
    * `--rescue` allows a merge over a reviewed `reject` / `needs_human_review`
-   * verdict IFF `sentinelCommits` is non-empty. Strictly narrower than `force`:
-   * it does NOT bypass a missing / skipped / unreadable / unknown review — only
-   * a real non-accept verdict from a review that actually ran. Verification
-   * commands still run regardless (the round-2 worker round-trip is the only
-   * thing waived). Encodes bubble-craps CLAUDE.md 'MICRO-FIX LANE'.
+   * verdict. Strictly narrower than `force`: it does NOT bypass a missing /
+   * skipped / unreadable / unknown review — only a real non-accept verdict from
+   * a review that actually ran. Verification commands still run regardless (the
+   * round-2 worker round-trip is the only thing waived).
+   *
+   * Two lanes authorize it, in this order:
+   *  1. `sentinelCommits` is non-empty — a USER-approved micro-fix commit sits
+   *     on the branch (bubble-craps CLAUDE.md 'MICRO-FIX LANE').
+   *  2. `rescueReason` is set AND nothing was committed after the review ended,
+   *     so there is no code change to approve (issue #104).
    */
   rescue?: boolean;
   /**
    * Commits on the merged branch carrying MICRO_FIX_SENTINEL, discovered by the
-   * caller (which owns git). Empty/absent ⇒ no sentinel ⇒ rescue refused.
+   * caller (which owns git). Empty/absent ⇒ the no-code-delta lane is the only
+   * remaining path.
    */
   sentinelCommits?: SentinelCommit[];
+  /**
+   * The operator's `--reason` text. Required for the no-code-delta lane and
+   * ignored by the sentinel lane, whose approval already lives in git history.
+   */
+  rescueReason?: string;
+  /**
+   * Commits on the merged branch whose COMMITTER date is later than the given
+   * ISO timestamp, supplied by the caller (which owns git). Any hit means the
+   * branch moved after the review, so the reviewer did not read the tree being
+   * merged and the no-code-delta lane must refuse.
+   *
+   * Committer date — not author date — because rebase, amend and cherry-pick
+   * all reset it, so every way of putting new content on a branch shows up.
+   */
+  commitsSince?: (sinceIso: string) => BranchCommit[];
+}
+
+/** A branch commit plus when it was committed. Used to date-bound the branch. */
+export interface BranchCommit extends SentinelCommit {
+  /** ISO-8601 committer date. */
+  committedAt: string;
 }
 
 /**
@@ -223,25 +260,40 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
               `review — run the normal path.`,
           };
         }
-        if (sentinelCommits.length === 0) {
-          return {
-            ok: false,
-            message:
-              header +
-              `- --rescue requires a USER-approved micro-fix commit carrying the ` +
-              `sentinel "${MICRO_FIX_SENTINEL}" on the branch, but none was found.\n` +
-              `  Commit the approved fix with that sentinel in its message, then ` +
-              `merge --rescue.`,
+        // Lane 1 — a USER-approved micro-fix commit. Its diff is the thing
+        // approved, and git history is where that approval lives.
+        if (sentinelCommits.length > 0) {
+          rescueDecision = {
+            kind: "micro_fix",
+            overriddenVerdict: check.verdict!,
+            sentinelCommits,
+            jsonPath: check.jsonPath!,
+            mdPath: check.mdPath!,
+          };
+        } else {
+          // Lane 2 — nothing to approve. Reachable only by proving the branch
+          // has not moved since the review, which makes the tree being merged
+          // the tree the reviewer read. See RescueKind for why this lane exists.
+          const laneCheck = assessNoCodeDelta({
+            reason: opts.rescueReason,
+            reviewEndedAt: check.reviewEndedAt,
+            commitsSince: opts.commitsSince,
+          });
+          if (!laneCheck.ok) {
+            return { ok: false, message: header + laneCheck.refusal };
+          }
+          rescueDecision = {
+            kind: "no_code_delta",
+            overriddenVerdict: check.verdict!,
+            sentinelCommits: [],
+            reason: laneCheck.reason,
+            reviewEndedAt: check.reviewEndedAt,
+            jsonPath: check.jsonPath!,
+            mdPath: check.mdPath!,
           };
         }
         // Approved. Fall through to the command gate — verification is NEVER
         // waived by rescue; only the r2 worker round-trip is.
-        rescueDecision = {
-          overriddenVerdict: check.verdict!,
-          sentinelCommits,
-          jsonPath: check.jsonPath!,
-          mdPath: check.mdPath!,
-        };
       } else {
         return {
           ok: false,
@@ -252,8 +304,11 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
             `  dangeresque run --issue ${issueNumber} --mode ${mode}\n` +
             `  (ensure the review pass runs and the reviewer returns ACCEPT)\n` +
             `  dangeresque merge --rescue <branch>\n` +
-            `  (only after a USER-approved micro-fix commit on the branch;\n` +
-            `   applies to reject/needs_human_review verdicts, not skipped/missing reviews)`,
+            `  (after a USER-approved micro-fix commit carrying the sentinel)\n` +
+            `  dangeresque merge --rescue --reason "<why>" <branch>\n` +
+            `  (when the reviewer objected to something other than the code and\n` +
+            `   nothing has been committed since it ran)\n` +
+            `  Both apply to reject/needs_human_review verdicts, not skipped/missing reviews.`,
         };
       }
     }
@@ -280,6 +335,88 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
     };
   }
   return rescueDecision ? { ok: true, rescue: rescueDecision } : { ok: true };
+}
+
+interface NoCodeDeltaCheck {
+  ok: boolean;
+  /** Operator-facing refusal body, appended to the caller's header. Absent when ok. */
+  refusal?: string;
+  /** The trimmed reason, once accepted. */
+  reason?: string;
+}
+
+/**
+ * Decide whether the no-code-delta rescue lane applies.
+ *
+ * Fails closed on every unknown: an artifact that never recorded when its
+ * review ended, or a caller that supplied no way to date-bound the branch,
+ * cannot prove the code is untouched — and an unprovable claim is exactly what
+ * this lane must not accept, or it degenerates into `--force` with a note
+ * attached.
+ */
+function assessNoCodeDelta(opts: {
+  reason: string | undefined;
+  reviewEndedAt: string | undefined;
+  commitsSince: ((sinceIso: string) => BranchCommit[]) | undefined;
+}): NoCodeDeltaCheck {
+  const reason = opts.reason?.trim();
+  if (!reason) {
+    return {
+      ok: false,
+      refusal:
+        `- --rescue needs one of two authorizations, and this branch has neither:\n` +
+        `    (a) a USER-approved micro-fix commit carrying the sentinel\n` +
+        `        "${MICRO_FIX_SENTINEL}" — none was found on the branch; or\n` +
+        `    (b) --reason "<why>", allowed only when nothing was committed after\n` +
+        `        the review ended (there is then no code change to approve).\n\n` +
+        `  If you fixed code, commit it with the sentinel and merge --rescue.\n` +
+        `  If the reviewer objected to something other than the code — a stale\n` +
+        `  line number in the run report, a claim you judge wrong — re-run with:\n` +
+        `    dangeresque merge --rescue --reason "<why this verdict is overridden>"`,
+    };
+  }
+
+  if (!opts.reviewEndedAt) {
+    return {
+      ok: false,
+      refusal:
+        `- --rescue --reason requires proof that no code changed after the review,\n` +
+        `  but this run's artifact records no review end time to check against.\n` +
+        `  Without it the claim is unverifiable, so the gate fails closed.\n` +
+        `  Commit the approved fix with the sentinel "${MICRO_FIX_SENTINEL}"\n` +
+        `  and merge --rescue, or re-run the review.`,
+    };
+  }
+
+  if (!opts.commitsSince) {
+    return {
+      ok: false,
+      refusal:
+        `- --rescue --reason requires reading the branch's commit dates, but the\n` +
+        `  caller supplied no way to do so (fail closed).`,
+    };
+  }
+
+  const after = opts.commitsSince(opts.reviewEndedAt);
+  if (after.length > 0) {
+    const lines = after
+      .slice(0, 10)
+      .map((c) => `    - \`${c.sha.slice(0, 8)}\` ${c.committedAt} ${c.subject}`)
+      .join("\n");
+    const more = after.length > 10 ? `\n    …and ${after.length - 10} more` : "";
+    return {
+      ok: false,
+      refusal:
+        `- --rescue --reason applies only when the reviewer read the exact tree\n` +
+        `  being merged, but ${after.length} commit(s) landed on this branch after\n` +
+        `  the review ended at ${opts.reviewEndedAt}:\n${lines}${more}\n\n` +
+        `  That code was never reviewed. Either mark it USER-approved by\n` +
+        `  committing with the sentinel "${MICRO_FIX_SENTINEL}" and merging\n` +
+        `  --rescue, or re-review with: dangeresque review <branch>`,
+    };
+  }
+
+  return { ok: true, reason };
 }
 
 // Union of the two default mode lists so mergeGate's fail-closed check
@@ -355,6 +492,12 @@ interface AcceptedArtifactCheck {
   /** Paths to the located artifact — set whenever an artifact was found & parsed. */
   jsonPath?: string;
   mdPath?: string;
+  /**
+   * `review.ended_at` from the located artifact, when the review ran and
+   * recorded one. The no-code-delta rescue lane date-bounds the branch against
+   * it; an empty or absent value makes that lane refuse.
+   */
+  reviewEndedAt?: string;
 }
 
 /**
@@ -423,6 +566,7 @@ function findAcceptedArtifactForMode(
         verdict: artifact.reviewer_verdict,
         jsonPath,
         mdPath,
+        ...(review.ended_at ? { reviewEndedAt: review.ended_at } : {}),
       };
     }
     return { ok: true, verdict: "accept", jsonPath, mdPath };

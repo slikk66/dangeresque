@@ -10,7 +10,7 @@ import type {
   ScopeReport,
 } from "./scope.js";
 
-export const ARTIFACT_SCHEMA_VERSION = "8";
+export const ARTIFACT_SCHEMA_VERSION = "9";
 
 // Modes whose worker output produces a code diff and must therefore carry a
 // `## Scope Declaration` section. Kept in sync with `src/runner.ts` (prompt
@@ -33,14 +33,47 @@ export interface SentinelCommit {
 }
 
 /**
+ * Which lane authorized a `merge --rescue`.
+ *
+ * - `micro_fix`     — a USER-approved commit carrying MICRO_FIX_SENTINEL sits on
+ *                     the branch. The approval lives in git history, and what it
+ *                     approves is the commit's diff.
+ * - `no_code_delta` — nothing was committed to the branch after the review
+ *                     ended, so the tree being merged is the same tree the
+ *                     reviewer read. There is no diff to approve; the operator's
+ *                     `--reason` is the approval, and the recorded proof is that
+ *                     the code never moved.
+ *
+ * The second lane exists because the first cannot express the case it was never
+ * designed for: a reviewer that rejects on non-code grounds (issue #104). Run
+ * artifacts are gitignored by convention, so a correction to the artifact — or a
+ * judgment that the reviewer's objection was simply wrong — can never become a
+ * sentinel commit. Manufacturing an empty commit to satisfy the check would
+ * teach the gate that a hollow token is enough; proving the code is untouched
+ * keeps the guarantee the sentinel actually protects.
+ */
+export type RescueKind = "micro_fix" | "no_code_delta";
+
+/**
  * Written to the run artifact when `dangeresque merge --rescue` merges over a
- * reviewed reject / needs_human_review verdict on the strength of a USER-
- * approved micro-fix (bubble-craps CLAUDE.md 'MICRO-FIX LANE'). The audit trail
- * lives WITH the run, not just in git log.
+ * reviewed reject / needs_human_review verdict. The audit trail lives WITH the
+ * run, not just in git log.
  */
 export interface RescueRecord {
+  kind: RescueKind;
   overridden_verdict: ReviewerVerdict;
   sentinel_commits: SentinelCommit[];
+  /** The operator's written justification. Always set for `no_code_delta`. */
+  reason?: string;
+  /**
+   * Evidence backing a `no_code_delta` rescue: the review end time every branch
+   * commit was checked against, and the branch head that got merged. Absent on
+   * the `micro_fix` lane, whose evidence is `sentinel_commits`.
+   */
+  code_unchanged?: {
+    review_ended_at: string;
+    head_sha: string;
+  };
   rescued_at: string;
 }
 
@@ -565,18 +598,47 @@ export function appendRescueRecord(
   artifact.rescue = record;
   writeFileSync(jsonPath, JSON.stringify(artifact, null, 2) + "\n", "utf-8");
 
-  const commitLines = record.sentinel_commits
-    .map((c) => `  - \`${c.sha.slice(0, 8)}\` ${c.subject}`)
-    .join("\n");
-  const section =
-    `\n## RESCUE — USER-approved micro-fix merge\n\n` +
+  const section = renderRescueSection(record);
+  const existing = existsSync(mdPath) ? readFileSync(mdPath, "utf-8") : "";
+  const sep = existing.length === 0 || existing.endsWith("\n") ? "" : "\n";
+  writeFileSync(mdPath, existing + sep + section, "utf-8");
+}
+
+/**
+ * Human-readable RESCUE section. Each lane states the evidence it actually
+ * stands on — a reader must never have to guess whether a diff was approved or
+ * whether there was no diff to approve.
+ */
+function renderRescueSection(record: RescueRecord): string {
+  const preamble =
     `Merged over a \`${record.overridden_verdict}\` review verdict via ` +
     `\`dangeresque merge --rescue\`. Verification gates still ran; only the ` +
     `round-2 worker round-trip was waived.\n\n` +
     `- Overridden verdict: \`${record.overridden_verdict}\`\n` +
-    `- Rescued at: ${record.rescued_at}\n` +
-    `- Sentinel commits (USER-approved):\n${commitLines}\n`;
-  const existing = existsSync(mdPath) ? readFileSync(mdPath, "utf-8") : "";
-  const sep = existing.length === 0 || existing.endsWith("\n") ? "" : "\n";
-  writeFileSync(mdPath, existing + sep + section, "utf-8");
+    `- Rescued at: ${record.rescued_at}\n`;
+
+  if (record.kind === "micro_fix") {
+    const commitLines = record.sentinel_commits
+      .map((c) => `  - \`${c.sha.slice(0, 8)}\` ${c.subject}`)
+      .join("\n");
+    return (
+      `\n## RESCUE — USER-approved micro-fix merge\n\n` +
+      preamble +
+      `- Sentinel commits (USER-approved):\n${commitLines}\n`
+    );
+  }
+
+  const proof = record.code_unchanged;
+  return (
+    `\n## RESCUE — no-code-delta merge (USER-approved)\n\n` +
+    preamble +
+    `- Reason (USER): ${record.reason ?? "(none recorded)"}\n` +
+    (proof
+      ? `- Proof the code is unchanged: no commit landed on this branch after ` +
+        `the review ended at ${proof.review_ended_at}; merged head ` +
+        `\`${proof.head_sha.slice(0, 8)}\`.\n`
+      : `- Proof the code is unchanged: (not recorded)\n`) +
+    `\nThe tree merged here is the same tree the reviewer read. No sentinel ` +
+    `commit exists because there was no code change to approve.\n`
+  );
 }

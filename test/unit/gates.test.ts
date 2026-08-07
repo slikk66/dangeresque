@@ -38,7 +38,7 @@ function seedRunArtifact(
   mode: string,
   overrides: {
     reviewer_verdict?: string;
-    review?: { skipped: boolean; skip_reason?: string } | null;
+    review?: { skipped: boolean; skip_reason?: string; ended_at?: string } | null;
     stamp?: string;
     unreadableJson?: boolean;
     missingJson?: boolean;
@@ -988,8 +988,129 @@ test("applyMergeGate --rescue: verdict=reject but NO sentinel → refuses (fail 
       sentinelCommits: [],
     });
     assert.equal(result.ok, false);
-    assert.match(result.message!, /--rescue requires a USER-approved micro-fix commit/);
+    assert.match(result.message!, /neither/);
     assert.match(result.message!, /\[micro-fix: USER-approved\]/);
+    // The refusal must point at the second lane too, or an operator with an
+    // artifact-only correction is left with no legitimate exit (issue #104).
+    assert.match(result.message!, /--reason/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate --rescue --reason: no commits since the review → approves the no_code_delta lane", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, {
+      reviewer_verdict: "reject",
+      review: { skipped: false, ended_at: "2026-08-06T23:15:50.046Z" },
+    });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+      rescue: true,
+      sentinelCommits: [],
+      rescueReason: "reviewer rejected on stale citations; code endorsed",
+      commitsSince: () => [],
+    });
+    assert.equal(result.ok, true, result.message);
+    assert.equal(result.rescue?.kind, "no_code_delta");
+    assert.equal(result.rescue?.reviewEndedAt, "2026-08-06T23:15:50.046Z");
+    assert.match(result.rescue!.reason!, /stale citations/);
+    assert.deepEqual(result.rescue?.sentinelCommits, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate --rescue --reason: a sentinel commit still wins the lane choice", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, {
+      reviewer_verdict: "reject",
+      review: { skipped: false, ended_at: "2026-08-06T23:15:50.046Z" },
+    });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+      rescue: true,
+      sentinelCommits: [{ sha: "abc1234", subject: "fix: clamp [micro-fix: USER-approved]" }],
+      rescueReason: "also gave a reason",
+      // Never consulted — the sentinel lane needs no date bound. Throws so a
+      // regression that reorders the lanes fails loudly instead of silently.
+      commitsSince: () => {
+        throw new Error("commitsSince must not be consulted on the sentinel lane");
+      },
+    });
+    assert.equal(result.ok, true, result.message);
+    assert.equal(result.rescue?.kind, "micro_fix");
+    assert.equal(result.rescue?.sentinelCommits.length, 1);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate --rescue --reason: commits after the review → refuses and names them", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, {
+      reviewer_verdict: "reject",
+      review: { skipped: false, ended_at: "2026-08-06T23:15:50.046Z" },
+    });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+      rescue: true,
+      sentinelCommits: [],
+      rescueReason: "trust me",
+      commitsSince: () => [
+        { sha: "deadbeefcafe", subject: "sneak in a fix", committedAt: "2026-08-07T01:00:00.000Z" },
+      ],
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /1 commit\(s\) landed on this branch after/);
+    assert.match(result.message!, /sneak in a fix/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate --rescue --reason: no way to read commit dates → refuses (fail closed)", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 42, {
+      reviewer_verdict: "reject",
+      review: { skipped: false, ended_at: "2026-08-06T23:15:50.046Z" },
+    });
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig(),
+      rescue: true,
+      sentinelCommits: [],
+      rescueReason: "no way to check",
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /no way to do so/);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
     rmSync(worktree, { recursive: true, force: true });

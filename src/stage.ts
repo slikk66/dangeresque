@@ -7,8 +7,18 @@ export function stageComment(
   mode?: string
 ): { success: boolean; message: string } {
   const modePrefix = mode ? `**[staged ${mode}]** ` : "";
-  const body = `${modePrefix}${comment}`;
+  return postIssueComment(projectRoot, issueNumber, `${modePrefix}${comment}`);
+}
 
+/**
+ * Post a comment verbatim to a GitHub issue. The one `gh issue comment` call
+ * site — `stageComment` is this plus a `[staged]` prefix.
+ */
+export function postIssueComment(
+  projectRoot: string,
+  issueNumber: number,
+  body: string,
+): { success: boolean; message: string } {
   const result = spawnSync(
     "gh",
     ["issue", "comment", String(issueNumber), "-F", "-"],

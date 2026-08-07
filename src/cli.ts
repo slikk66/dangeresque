@@ -25,6 +25,7 @@ import {
   writeArtifact,
   jsonPathForArchive,
   ARTIFACT_SCHEMA_VERSION,
+  type RescueRecord,
 } from "./artifact.js";
 import { normalizeSummaryFileCount } from "./summary.js";
 import { runVerification, shouldRunVerify, type VerificationOutcome } from "./verify.js";
@@ -58,7 +59,7 @@ import { initProject } from "./init.js";
 import { printBrief } from "./brief.js";
 import { usageForEngine } from "./usage.js";
 import { allowMcp, allowBash, type AllowResult } from "./allow.js";
-import { stageComment } from "./stage.js";
+import { stageComment, postIssueComment } from "./stage.js";
 import { resolveSessionPath, selectLogPhase, tailLog } from "./logs.js";
 import {
   gatherArtifacts,
@@ -1600,8 +1601,21 @@ async function cmdReview(args: string[]) {
 async function cmdMerge(args: string[]) {
   const projectRoot = resolveProjectRoot();
   const rescue = args.includes("--rescue");
-  const positional = args.find((a) => !a.startsWith("-"));
+  const reason = readFlagValue(args, "--reason");
+  // The branch is the first positional that is not itself a flag's value —
+  // `--reason "text"` would otherwise be picked up as the branch name.
+  const positional = findPositional(args, ["--reason"]);
   const worktrees = listWorktrees(projectRoot);
+
+  if (reason !== undefined && !rescue) {
+    console.error("ERROR: --reason applies only to --rescue.");
+    console.error('Usage: dangeresque merge <branch> --rescue --reason "<why>"');
+    process.exit(1);
+  }
+  if (reason !== undefined && reason.trim() === "") {
+    console.error("ERROR: --reason needs text explaining why the verdict is overridden.");
+    process.exit(1);
+  }
 
   const chosen = await resolvePositionalOrPick(
     positional,
@@ -1610,7 +1624,7 @@ async function cmdMerge(args: string[]) {
     "Select a worktree to merge",
   );
   if (!chosen) {
-    console.error("Usage: dangeresque merge <branch> [--rescue]");
+    console.error('Usage: dangeresque merge <branch> [--rescue [--reason "<why>"]]');
     console.error("Run 'dangeresque status' to see active worktrees");
     process.exit(1);
   }
@@ -1619,10 +1633,16 @@ async function cmdMerge(args: string[]) {
     assertInMainCheckout(projectRoot, "merge");
     const resolved = resolveBranch(projectRoot, chosen);
     const config = loadConfig(projectRoot);
-    const result = mergeWorktree(projectRoot, resolved, config.mergeGate, rescue);
+    const result = mergeWorktree(
+      projectRoot,
+      resolved,
+      config.mergeGate,
+      rescue ? { reason } : undefined,
+    );
 
     if (result.success) {
       console.log(result.message);
+      if (result.rescue) publishRescue(projectRoot, resolved, result.rescue);
     } else {
       console.error(result.message);
       process.exit(result.gateRefusal ? 2 : 1);
@@ -1631,6 +1651,86 @@ async function cmdMerge(args: string[]) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
+}
+
+/**
+ * Record a rescue on the GitHub issue.
+ *
+ * The run artifact already carries the audit record, but it lives in a
+ * gitignored directory — weaker durability than the sentinel commit the rescue
+ * waived. A comment on the issue puts the override somewhere a reader who never
+ * touches this checkout can still find it. Best-effort: the merge has already
+ * landed, so a failure here warns and names the record on disk rather than
+ * pretending the merge did not happen.
+ */
+function publishRescue(
+  projectRoot: string,
+  branch: string,
+  record: RescueRecord,
+): void {
+  const issueNumber = extractIssueNumber(branch);
+  if (issueNumber === undefined) {
+    console.warn(
+      `⚠️  Rescue recorded in the run artifact, but the branch name carries no ` +
+        `issue number, so nothing was posted to GitHub.`,
+    );
+    return;
+  }
+
+  const evidence =
+    record.kind === "micro_fix"
+      ? `**Authorized by:** USER-approved micro-fix commit(s) — ` +
+        record.sentinel_commits.map((c) => `\`${c.sha.slice(0, 8)}\` ${c.subject}`).join("; ")
+      : `**Authorized by:** USER reason, with no code change since the review.\n` +
+        `> ${record.reason ?? "(none recorded)"}\n\n` +
+        (record.code_unchanged
+          ? `**Proof:** no commit landed on \`${branch}\` after the review ended at ` +
+            `${record.code_unchanged.review_ended_at}; merged head ` +
+            `\`${record.code_unchanged.head_sha.slice(0, 8)}\`.`
+          : `**Proof:** not recorded.`);
+
+  const body =
+    `**[rescue]** Merged \`${branch}\` over a \`${record.overridden_verdict}\` review verdict.\n\n` +
+    `${evidence}\n\n` +
+    `Verification gates still ran; only the round-2 worker round-trip was waived. ` +
+    `Full audit record is in this run's artifact JSON under \`rescue\`.`;
+
+  const posted = postIssueComment(projectRoot, issueNumber, body);
+  if (posted.success) {
+    console.log(`Recorded the rescue on issue #${issueNumber}.`);
+    return;
+  }
+  console.warn(
+    `⚠️  Rescue is recorded in the run artifact but could NOT be posted to ` +
+      `issue #${issueNumber}: ${posted.message}`,
+  );
+}
+
+/**
+ * Value of a `--flag value` / `--flag=value` pair, or undefined when absent.
+ * Returns "" for a flag given with no value so callers can reject it.
+ */
+function readFlagValue(args: string[], flag: string): string | undefined {
+  const inline = args.find((a) => a.startsWith(`${flag}=`));
+  if (inline) return inline.slice(flag.length + 1);
+  const at = args.indexOf(flag);
+  if (at === -1) return undefined;
+  const next = args[at + 1];
+  return next === undefined || next.startsWith("-") ? "" : next;
+}
+
+/** First positional argument, skipping flags and any value they consume. */
+function findPositional(args: string[], valueFlags: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith("-")) {
+      // `--flag=value` carries its own value; `--flag value` eats the next arg.
+      if (valueFlags.includes(arg)) i += 1;
+      continue;
+    }
+    return arg;
+  }
+  return undefined;
 }
 
 async function cmdDiscard(args: string[]) {

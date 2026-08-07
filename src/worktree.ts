@@ -14,10 +14,16 @@ import { CONFIG_DIR, RUNS_DIR, PID_FILE, type MergeGateConfig } from "./config.j
 import {
   jsonPathForArchive,
   appendRescueRecord,
+  type RescueRecord,
   type RunArtifact,
   type SentinelCommit,
 } from "./artifact.js";
-import { applyMergeGate, MICRO_FIX_SENTINEL, type MergeRescueDecision } from "./gates.js";
+import {
+  applyMergeGate,
+  MICRO_FIX_SENTINEL,
+  type BranchCommit,
+  type MergeRescueDecision,
+} from "./gates.js";
 
 /**
  * Resolve the ref reviewers should diff against. Worktrees branch from
@@ -845,6 +851,96 @@ export function findSentinelCommits(projectRoot: string, branch: string): Sentin
   return commits;
 }
 
+/**
+ * Commits on `branch` (and not yet on main) whose COMMITTER date is later than
+ * `sinceIso` — i.e. work the branch gained after that moment.
+ *
+ * Committer date rather than author date: rebase, amend and cherry-pick all
+ * preserve author date but reset committer date, so every way of putting
+ * content onto a branch registers here. Dates are compared in JS rather than
+ * handed to `git log --since` so the boundary semantics are explicit and
+ * testable.
+ *
+ * Best-effort in the same sense as findSentinelCommits, but the failure
+ * direction is inverted: a git failure must NOT read as "nothing changed", so
+ * an unreadable log throws rather than returning [].
+ */
+export function findCommitsAfter(
+  projectRoot: string,
+  branch: string,
+  sinceIso: string,
+): BranchCommit[] {
+  const since = Date.parse(sinceIso);
+  if (Number.isNaN(since)) {
+    throw new Error(`unparseable review end time: ${sinceIso}`);
+  }
+  const raw = execSync(
+    `git log --no-color --format=%H%x1f%cI%x1f%s%x1e HEAD..${branch}`,
+    { cwd: projectRoot, encoding: "utf-8", stdio: "pipe", maxBuffer: 32 * 1024 * 1024 },
+  );
+  const commits: BranchCommit[] = [];
+  for (const record of raw.split("\x1e")) {
+    if (!record.trim()) continue;
+    const [sha = "", committedAt = "", subject = ""] = record
+      .replace(/^\n/, "")
+      .split("\x1f");
+    const at = Date.parse(committedAt.trim());
+    if (Number.isNaN(at) || at <= since) continue;
+    commits.push({
+      sha: sha.trim(),
+      subject: subject.trim(),
+      committedAt: committedAt.trim(),
+    });
+  }
+  return commits;
+}
+
+/**
+ * Turn an approved gate decision into the record that lands in the artifact.
+ * The merged head sha is read here rather than in the gate because it is only
+ * meaningful once the merge has happened — and it is the second half of the
+ * no-code-delta proof: the reviewer's end time bounds what could have arrived,
+ * this names exactly what did get merged.
+ */
+function buildRescueRecord(
+  projectRoot: string,
+  branch: string,
+  decision: MergeRescueDecision,
+): RescueRecord {
+  const base: RescueRecord = {
+    kind: decision.kind,
+    overridden_verdict: decision.overriddenVerdict,
+    sentinel_commits: decision.sentinelCommits,
+    rescued_at: new Date().toISOString(),
+  };
+  if (decision.kind === "micro_fix") return base;
+
+  const headSha = execSync(`git rev-parse ${branch}`, {
+    cwd: projectRoot,
+    encoding: "utf-8",
+    stdio: "pipe",
+  }).trim();
+  return {
+    ...base,
+    ...(decision.reason ? { reason: decision.reason } : {}),
+    ...(decision.reviewEndedAt
+      ? { code_unchanged: { review_ended_at: decision.reviewEndedAt, head_sha: headSha } }
+      : {}),
+  };
+}
+
+/** One-line rescue summary for the merge result message. */
+function describeRescue(record: RescueRecord): string {
+  if (record.kind === "micro_fix") {
+    const shas = record.sentinel_commits.map((c) => c.sha.slice(0, 7)).join(", ");
+    return `RESCUE: merged over "${record.overridden_verdict}" verdict on USER-approved micro-fix (${shas}); verification gates still ran.`;
+  }
+  return (
+    `RESCUE: merged over "${record.overridden_verdict}" verdict with no code change ` +
+    `since the review — USER reason: ${record.reason ?? "(none)"}; verification gates still ran.`
+  );
+}
+
 export type WorktreePhase = "merge" | "cleanup" | "branch-delete" | "noop" | "gate";
 
 export interface WorktreeOpResult {
@@ -861,6 +957,13 @@ export interface WorktreeOpResult {
    * can distinguish "fix workflow and retry" from a real error (exit 1).
    */
   gateRefusal?: boolean;
+  /**
+   * The audit record written when this merge was a `--rescue`. Surfaced so the
+   * CLI can publish it where it outlives the gitignored run directory — the
+   * sentinel lane's approval lives in git history, and the no-code-delta lane
+   * needs somewhere equally durable.
+   */
+  rescue?: RescueRecord;
 }
 
 /**
@@ -952,11 +1055,20 @@ function cleanupRecoveryAdvice(worktreePath: string, branch: string): string {
   );
 }
 
+/**
+ * A `merge --rescue` request. Its presence is what asks for a rescue; `reason`
+ * carries the operator's justification for the no-code-delta lane. An object
+ * rather than a boolean so the two inputs cannot drift apart at call sites.
+ */
+export interface MergeRescueRequest {
+  reason?: string;
+}
+
 export function mergeWorktree(
   projectRoot: string,
   branch: string,
   mergeGate?: MergeGateConfig,
-  rescue = false,
+  rescue?: MergeRescueRequest,
 ): WorktreeOpResult {
   // Gate: refuse if worker (engine or parent CLI) is still running. Without
   // this check git happily merges a branch whose worktree is mid-edit, then
@@ -1002,8 +1114,14 @@ export function mergeWorktree(
       issueNumber: extractIssueNumber(branch),
       mode: extractMode(branch),
       config: mergeGate,
-      rescue,
+      rescue: rescue !== undefined,
       sentinelCommits: rescue ? findSentinelCommits(projectRoot, branch) : undefined,
+      rescueReason: rescue?.reason,
+      // Lazy: only the no-code-delta lane calls this, and only after the gate
+      // has established there IS a review end time to bound against.
+      commitsSince: rescue
+        ? (sinceIso: string) => findCommitsAfter(projectRoot, branch, sinceIso)
+        : undefined,
     });
     if (!gate.ok) {
       return {
@@ -1152,15 +1270,16 @@ export function mergeWorktree(
   // effort: the merge already succeeded, so an annotation failure warns rather
   // than fails the operation.
   let rescueNote = "";
+  let rescueRecord: RescueRecord | undefined;
   if (rescueDecision) {
     try {
-      appendRescueRecord(rescueDecision.jsonPath, rescueDecision.mdPath, {
-        overridden_verdict: rescueDecision.overriddenVerdict,
-        sentinel_commits: rescueDecision.sentinelCommits,
-        rescued_at: new Date().toISOString(),
-      });
-      const shas = rescueDecision.sentinelCommits.map((c) => c.sha.slice(0, 7)).join(", ");
-      rescueNote = ` RESCUE: merged over "${rescueDecision.overriddenVerdict}" verdict on USER-approved micro-fix (${shas}); verification gates still ran.`;
+      const record = buildRescueRecord(projectRoot, branch, rescueDecision);
+      appendRescueRecord(rescueDecision.jsonPath, rescueDecision.mdPath, record);
+      // Assigned only after the write lands: `result.rescue` is what tells the
+      // CLI to announce a recorded rescue, and it must never advertise a record
+      // that failed to reach disk.
+      rescueRecord = record;
+      rescueNote = ` ${describeRescue(record)}`;
     } catch (err) {
       rescueNote = ` RESCUE: merged over "${rescueDecision.overriddenVerdict}" verdict, but writing the RESCUE audit record to ${rescueDecision.jsonPath} FAILED: ${err instanceof Error ? err.message : String(err)} — record it manually.`;
     }
@@ -1281,6 +1400,7 @@ export function mergeWorktree(
     message: noopMerge
       ? `Merged ${branch}: no code changes (HEAD unchanged at ${headBefore.slice(0, 7)}). ${noCodeShipped}${mirrorNote}${rescueNote}`.trim()
       : `Merged ${branch} into main. Main: ${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}. ${mirrorNote}${rescueNote}`.trim(),
+    ...(rescueRecord ? { rescue: rescueRecord } : {}),
   };
 }
 

@@ -53,10 +53,12 @@ export {
   uncommittedPaths,
   formatUncommittedPaths,
   rebaseWorktreeOntoOrigin,
+  findCommitsAfter,
   type WorktreeInfo,
   type WorktreeOpResult,
   type WorktreePhase,
   type RebaseOutcome,
+  type MergeRescueRequest,
 } from "./worktree.js";
 
 export {
@@ -74,7 +76,7 @@ export { initProject } from "./init.js";
 
 export { BRIEF_MARKDOWN, printBrief } from "./brief.js";
 
-export { stageComment } from "./stage.js";
+export { stageComment, postIssueComment } from "./stage.js";
 
 export {
   ArtifactBuilder,
@@ -90,6 +92,9 @@ export {
   type LifecycleEvent,
   type PhaseTiming,
   type ReviewPhase,
+  type RescueKind,
+  type RescueRecord,
+  type SentinelCommit,
 } from "./artifact.js";
 
 export {
