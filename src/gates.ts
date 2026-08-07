@@ -132,6 +132,8 @@ export function applyDispatchGate(opts: ApplyDispatchGateOptions): GateResult {
 export interface ApplyMergeGateOptions {
   projectRoot: string;
   worktreePath: string;
+  /** The merge target, quoted back in refusals so the remedy is copy-pasteable. */
+  branch: string;
   issueNumber: number | undefined;
   mode: string;
   config: MergeGateConfig;
@@ -209,7 +211,7 @@ export interface BranchCommit extends SentinelCommit {
  *     env vars.
  */
 export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
-  const { projectRoot, worktreePath, issueNumber, mode, config, rescue } = opts;
+  const { projectRoot, worktreePath, branch, issueNumber, mode, config, rescue } = opts;
   const sentinelCommits = opts.sentinelCommits ?? [];
   if (!config.enabled) return { ok: true };
   // Unrecognized mode (e.g. extractMode returned "UNKNOWN" for a malformed
@@ -222,11 +224,18 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
     // simply wasn't opted into `config.modes` (e.g. VERIFY with default
     // config.modes) is a legitimate pass-through.
     if (mode === "UNKNOWN" || !allKnownModes().includes(mode)) {
+      // Name the escape hatch. Reaching here means the branch name did not
+      // encode a mode AND the worktree's own runs could not supply one, which
+      // leaves the operator with no in-tool move unless the refusal says so
+      // (issue #105 — a clean run stranded with a silent dead-end refusal).
       return {
         ok: false,
         message:
           `ERROR: mergeGate refuses to merge branch with mode="${mode}" because -\n` +
-          `- mode is not one of the recognized modes (${allKnownModes().join(", ")}) (fail closed).`,
+          `- mode is not one of the recognized modes (${allKnownModes().join(", ")}) (fail closed).\n\n` +
+          `Neither the branch name nor the worktree's run artifacts named a mode.\n` +
+          `Name it explicitly:\n` +
+          `  dangeresque merge ${branch} --mode <${allKnownModes().join("|")}>`,
       };
     }
   }
@@ -239,7 +248,10 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
         ok: false,
         message:
           `ERROR: mergeGate refuses to merge (${mode}) because -\n` +
-          `- cannot determine issue number from branch name (fail closed).`,
+          `- cannot determine the issue number from the branch name or the worktree's\n` +
+          `  run artifacts (fail closed).\n\n` +
+          `Name it explicitly:\n` +
+          `  dangeresque merge ${branch} --issue <N>`,
       };
     }
     const check = findAcceptedArtifactForMode(worktreePath, projectRoot, issueNumber, mode);
@@ -433,9 +445,11 @@ function assessNoCodeDelta(opts: {
 }
 
 // Union of the two default mode lists so mergeGate's fail-closed check
-// recognizes any mode dangeresque legitimately dispatches. Not exported —
-// it's a local safety net, not a config concept.
-function allKnownModes(): string[] {
+// recognizes any mode dangeresque legitimately dispatches. Exported so the CLI
+// can validate `--mode` against the same list the gate judges by — a second
+// hand-maintained copy in cli.ts would drift, and the drift would show up as a
+// flag that accepts a mode the gate then refuses.
+export function allKnownModes(): string[] {
   const set = new Set<string>([
     ...DEFAULT_DISPATCH_GATE_MODES,
     ...DEFAULT_MERGE_GATE_MODES,

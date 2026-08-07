@@ -818,6 +818,216 @@ export function extractMode(branch: string): string {
   return modeMatch ? modeMatch[1].toUpperCase() : "UNKNOWN";
 }
 
+/** The `--name` a run was dispatched with → the worktree directory name. */
+export function ensureDangeresquePrefix(name: string): string {
+  return name.startsWith("dangeresque-") ? name : `dangeresque-${name}`;
+}
+
+/** The `--name` a run was dispatched with → the branch createWorktree will cut. */
+export function branchForRunName(name: string): string {
+  return `worktree-${ensureDangeresquePrefix(name)}`;
+}
+
+/**
+ * The `<mode>-<issue>` head a run's name must carry, stripped off `name` if it
+ * is already trying to be one. Whatever survives is the operator's own suffix
+ * — the part worth keeping in a suggestion.
+ *
+ * The alternation is ordered widest-match-first so a head that is wrong in one
+ * field (`foo-123`) and a head that is wrong in both (`investigate-999` on an
+ * IMPLEMENT/63 run) are both consumed whole rather than half-consumed into
+ * nonsense.
+ */
+function stripRunNameHead(
+  name: string,
+  mode: string,
+  issueNumber: number,
+): string {
+  const bare = ensureDangeresquePrefix(name).replace(/^dangeresque-/, "");
+  // The CLI restricts --mode to letters, but this is a public export: escape so
+  // a caller that skipped that check gets a wrong suggestion, never a thrown
+  // regex or a pattern that matches something it should not.
+  const m = mode.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const heads = [
+    new RegExp(`^${m}-${issueNumber}(?:-|$)`),
+    new RegExp(`^[a-z]+-${issueNumber}(?:-|$)`),
+    /^[a-z]+-\d+(?:-|$)/,
+    new RegExp(`^${issueNumber}(?:-|$)`),
+    new RegExp(`^${m}(?:-|$)`),
+  ];
+  for (const head of heads) {
+    if (head.test(bare)) return bare.replace(head, "");
+  }
+  return bare;
+}
+
+/**
+ * Reject a `--name` whose branch does not parse back to THIS run's mode and
+ * issue, and say what to type instead.
+ *
+ * `--name` is a disambiguating suffix on the `<mode>-<issue>` convention
+ * (`implement-123-slice-a`), not a free-form label. The test is round-trip
+ * identity, deliberately, not merely "does it parse":
+ *
+ *  - `dangeresque-781-verify` parses to UNKNOWN — issue #105's stranded run.
+ *  - `foo-123` parses to mode FOO, which is not UNKNOWN but is not a mode
+ *    mergeGate recognizes either, so it strands exactly the same way.
+ *  - `investigate-999` on an `--mode IMPLEMENT --issue 63` run parses cleanly
+ *    to INVESTIGATE/999. That is the dangerous one: every verb downstream then
+ *    gates the wrong mode and reads the wrong issue's artifacts, confidently.
+ *    A branch that lies is worse than a branch that admits it cannot say.
+ *
+ * resolveRunIdentity recovers the first case and cannot detect the third at
+ * all, which is why this refuses at dispatch instead — before the engine time,
+ * not after it (issue #105: an 18-minute Opus run came back clean and
+ * unmergeable).
+ *
+ * Returns the operator-facing refusal, or null when the name is fine.
+ */
+export function checkRunName(
+  name: string,
+  mode: string,
+  issueNumber: number,
+): string | null {
+  const branch = branchForRunName(name);
+  const parsedMode = extractMode(branch);
+  const parsedIssue = extractIssueNumber(branch);
+  if (parsedMode === mode && parsedIssue === issueNumber) return null;
+
+  const suffix = stripRunNameHead(name, mode, issueNumber);
+  const suggestion =
+    `${mode.toLowerCase()}-${issueNumber}` + (suffix ? `-${suffix}` : "");
+
+  // Name only the consequences that actually apply. A wrong mode and a wrong
+  // issue strand a run in different ways, and claiming both when one is right
+  // teaches the operator to skim the next refusal.
+  const consequences: string[] = [];
+  if (parsedMode !== mode) {
+    consequences.push(
+      parsedMode === "UNKNOWN"
+        ? `merge refuses it outright — an unrecognized mode fails closed`
+        : `merge gates it as ${parsedMode}, not ${mode}`,
+    );
+  }
+  if (parsedIssue !== issueNumber) {
+    consequences.push(
+      parsedIssue === undefined
+        ? `results and the same-issue dispatch gate cannot tell which issue it is`
+        : `every verb reads issue #${parsedIssue}'s artifacts, not #${issueNumber}'s`,
+    );
+  }
+
+  const readsAs =
+    parsedMode === "UNKNOWN" && parsedIssue === undefined
+      ? `encodes neither a mode nor an issue`
+      : `reads back as ${parsedMode}/#${parsedIssue ?? "?"}, not ${mode}/#${issueNumber}`;
+
+  return (
+    `ERROR: refusing to dispatch with --name "${name}" because -\n` +
+    `- the branch it would cut ${readsAs}.\n` +
+    consequences.map((c) => `- ${c}.\n`).join("") +
+    `\n` +
+    `Branch: ${branch}\n` +
+    `--name is a suffix on the "<mode>-<issue>" convention, not a free-form label.\n\n` +
+    `Use this instead:\n` +
+    `  --name ${suggestion}`
+  );
+}
+
+/**
+ * Recover the issue number from a worktree's own run directory.
+ *
+ * Branch-name parsing covers the conventional `<mode>-<issue>[-<suffix>]` shape,
+ * including multi-slice names like `implement-123-slice-a`. It cannot cover a
+ * fully custom `--name` that carries no issue number. Dispatch mirrors exactly
+ * one issue's runs into a worktree, so `.dangeresque/runs/issue-<N>/` is an
+ * unambiguous fallback identity.
+ */
+export function deriveIssueNumberFromWorktree(
+  worktreePath: string,
+): number | undefined {
+  const runsDir = join(worktreePath, CONFIG_DIR, RUNS_DIR);
+  if (!existsSync(runsDir)) return undefined;
+  let entries: string[];
+  try {
+    entries = readdirSync(runsDir);
+  } catch {
+    return undefined;
+  }
+  const issueDirs = entries
+    .map((d) => d.match(/^issue-(\d+)$/))
+    .filter((m): m is RegExpMatchArray => m !== null)
+    .map((m) => parseInt(m[1], 10));
+  // More than one would be ambiguous; dispatch never creates that, so refuse
+  // to guess rather than rescue the wrong issue's run.
+  return issueDirs.length === 1 ? issueDirs[0] : undefined;
+}
+
+/**
+ * Recover the mode from the newest run artifact in a worktree, for branches
+ * whose name does not encode one. Filenames end `-<MODE>.md`.
+ */
+export function deriveModeFromWorktree(
+  worktreePath: string,
+  issueNumber: number,
+): string | undefined {
+  const files = listArchivedRuns(worktreePath, issueNumber);
+  if (files.length === 0) return undefined;
+  const match = files[files.length - 1].match(/-([A-Z]+)\.md$/);
+  return match ? match[1] : undefined;
+}
+
+/** Who a run belongs to, and how confidently we know it. */
+export interface RunIdentity {
+  issueNumber: number | undefined;
+  /** "UNKNOWN" when every rung of the ladder came up empty. */
+  mode: string;
+}
+
+export interface ResolveRunIdentityOptions {
+  /** Operator-supplied `--issue`, the last word on the subject. */
+  issueOverride?: number;
+  /** Operator-supplied `--mode`, the last word on the subject. */
+  modeOverride?: string;
+}
+
+/**
+ * Resolve which issue and mode a worktree's run belongs to, most-explicit first:
+ * operator flags, then the branch name, then the worktree's own runs dir.
+ *
+ * Branch parsing sits above the artifacts deliberately. Dispatch mirrors an
+ * issue's PRIOR runs into each new worktree, so when a worker dies before
+ * writing its own artifact the newest file on disk can belong to an earlier run
+ * in a different mode. A branch name that parses is the current run's identity
+ * by construction; the artifacts are the right answer only when it doesn't.
+ *
+ * Every verb that acts on a finished run resolves identity through here (#105):
+ * `merge` and `results` used to stop at the branch name, so a `--name` the
+ * parser could not read stranded an otherwise-clean run — unmergeable by the
+ * gate and unreadable by `results`, with the artifact sitting right there.
+ */
+export function resolveRunIdentity(
+  worktreePath: string,
+  branch: string,
+  opts: ResolveRunIdentityOptions = {},
+): RunIdentity {
+  const issueNumber =
+    opts.issueOverride ??
+    extractIssueNumber(branch) ??
+    deriveIssueNumberFromWorktree(worktreePath);
+
+  const parsedMode = extractMode(branch);
+  const mode =
+    opts.modeOverride ??
+    (parsedMode !== "UNKNOWN"
+      ? parsedMode
+      : (issueNumber !== undefined
+          ? deriveModeFromWorktree(worktreePath, issueNumber)
+          : undefined) ?? parsedMode);
+
+  return { issueNumber, mode };
+}
+
 // Modes whose worker output is expected to land as commits. Deliberately a
 // local literal (src/artifact.ts keeps its own) so merge-reporting semantics
 // and artifact semantics can drift independently.
@@ -979,6 +1189,7 @@ export interface WorktreeOpResult {
 function dirtyWorktreeRefusal(
   branch: string,
   worktreePath: string,
+  issueNumber: number | undefined,
 ): WorktreeOpResult | null {
   let dirty: string[];
   try {
@@ -998,7 +1209,6 @@ function dirtyWorktreeRefusal(
   }
   if (dirty.length === 0) return null;
 
-  const issueNumber = extractIssueNumber(branch);
   const captureMessage = `capture worker output${issueNumber !== undefined ? ` for issue #${issueNumber}` : ""}`;
   return {
     success: false,
@@ -1069,12 +1279,14 @@ export function mergeWorktree(
   branch: string,
   mergeGate?: MergeGateConfig,
   rescue?: MergeRescueRequest,
+  identityOverrides: ResolveRunIdentityOptions = {},
 ): WorktreeOpResult {
   // Gate: refuse if worker (engine or parent CLI) is still running. Without
   // this check git happily merges a branch whose worktree is mid-edit, then
   // Phase 2 yanks the directory out from under the live process.
   const worktreeName = branch.replace("worktree-", "");
   const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
+  const identity = resolveRunIdentity(worktreePath, branch, identityOverrides);
   if (existsSync(worktreePath)) {
     const { pidInfo, running } = readPidState(worktreePath);
     if (running && pidInfo) {
@@ -1099,7 +1311,7 @@ export function mergeWorktree(
     // run's accepted diff. Three receipts (bubble-craps #680/#530/#643) all
     // ended in a hand-run rescue from exactly this state. Refuse before the
     // merge so nothing is destroyed and the recovery is one commit away.
-    const dirtyGate = dirtyWorktreeRefusal(branch, worktreePath);
+    const dirtyGate = dirtyWorktreeRefusal(branch, worktreePath, identity.issueNumber);
     if (dirtyGate) return dirtyGate;
   }
 
@@ -1111,8 +1323,9 @@ export function mergeWorktree(
     const gate = applyMergeGate({
       projectRoot,
       worktreePath,
-      issueNumber: extractIssueNumber(branch),
-      mode: extractMode(branch),
+      branch: shortBranchForRemediation(branch),
+      issueNumber: identity.issueNumber,
+      mode: identity.mode,
       config: mergeGate,
       rescue: rescue !== undefined,
       sentinelCommits: rescue ? findSentinelCommits(projectRoot, branch) : undefined,
@@ -1387,8 +1600,8 @@ export function mergeWorktree(
   // so nothing was lost — but "Merged: no code changes" read as success is how
   // bc#643 stayed invisible until cleanup. Say it plainly instead.
   const noCodeShipped =
-    noopMerge && CODE_CHANGING_MODES.has(extractMode(branch))
-      ? `WARNING: ${extractMode(branch)} is a code-changing mode but this branch carried no commits — nothing shipped. Its work was either merged earlier or never committed. `
+    noopMerge && CODE_CHANGING_MODES.has(identity.mode)
+      ? `WARNING: ${identity.mode} is a code-changing mode but this branch carried no commits — nothing shipped. Its work was either merged earlier or never committed. `
       : "";
 
   return {
@@ -1552,7 +1765,10 @@ export function getWorktreeResults(
   lines.push(`HEAD:     ${targetWorktree.head.slice(0, 8)}`);
   lines.push("");
 
-  const issueNum = extractIssueNumber(targetWorktree.branch);
+  const issueNum = resolveRunIdentity(
+    targetWorktree.path,
+    targetWorktree.branch,
+  ).issueNumber;
   // Read artifacts from the worktree, not the project root — they only land
   // at the project root after `dangeresque merge`.
   const archived = issueNum
@@ -1821,9 +2037,13 @@ export function runPreflightChecks(
   const failures: string[] = [];
   const remediations: string[] = [];
 
-  // Gate 1: same-issue worktree exists (any mode, any state).
+  // Gate 1: same-issue worktree exists (any mode, any state). Through the full
+  // identity ladder, not the branch name alone — an existing worktree whose
+  // `--name` the parser cannot read is exactly the one an operator is most
+  // likely to be re-dispatching around, and matching on the name alone let it
+  // through silently (proved by hand against bc#781's stranded worktree).
   const sameIssue = listWorktrees(projectRoot).filter(
-    (wt) => extractIssueNumber(wt.branch) === issueNumber,
+    (wt) => resolveRunIdentity(wt.path, wt.branch).issueNumber === issueNumber,
   );
   for (const wt of sameIssue) {
     failures.push(`issue ${issueNumber} already has a worktree: ${wt.branch}`);

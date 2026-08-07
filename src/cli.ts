@@ -17,8 +17,6 @@ import {
   locateLatestRun,
   assessReviewRescue,
   recoverWorkerPhase,
-  deriveIssueNumberFromWorktree,
-  deriveModeFromWorktree,
 } from "./rescue.js";
 import {
   ArtifactBuilder,
@@ -29,7 +27,7 @@ import {
 } from "./artifact.js";
 import { normalizeSummaryFileCount } from "./summary.js";
 import { runVerification, shouldRunVerify, type VerificationOutcome } from "./verify.js";
-import { applyDispatchGate } from "./gates.js";
+import { applyDispatchGate, allKnownModes } from "./gates.js";
 import {
   listWorktrees,
   mergeWorktree,
@@ -48,6 +46,8 @@ import {
   formatPidExecution,
   extractIssueNumber,
   extractMode,
+  resolveRunIdentity,
+  checkRunName,
   uncommittedPaths,
   formatUncommittedPaths,
   rebaseWorktreeOntoOrigin,
@@ -436,6 +436,24 @@ async function cmdRun(args: string[]) {
       issueFixturePath = args[++i];
     } else if (args[i] === "--mode" && args[i + 1]) {
       mode = args[++i].toUpperCase();
+      // Custom modes are supported, but only alphabetic ones survive the
+      // branch-name round trip: a run's worktree is named `<mode>-<issue>` and
+      // extractMode reads back `[a-z]+`. A mode like "A.B" produces a branch
+      // every verb resolves to UNKNOWN — a run stranded exactly the way issue
+      // #105 was, with no --name involved at all, since the auto-generated
+      // name inherits the mode. Refuse here, not after the engine time.
+      if (!/^[A-Z]+$/.test(mode)) {
+        console.error(
+          `ERROR: refusing to dispatch with --mode "${mode}" because -\n` +
+            `- a mode must be letters only. It becomes part of the run's branch name\n` +
+            `  ("worktree-dangeresque-<mode>-<issue>"), which is how merge, results and\n` +
+            `  the dispatch gate identify the run once it finishes. A mode that cannot\n` +
+            `  appear there produces a run none of them can resolve.\n\n` +
+            `Built-in modes: ${allKnownModes().join(", ")}.\n` +
+            `Custom modes are fine — letters only.`,
+        );
+        process.exit(1);
+      }
     }
   }
 
@@ -515,6 +533,19 @@ async function cmdRun(args: string[]) {
       console.error(
         "Is `gh` installed and authenticated? Does the issue exist?",
       );
+      process.exit(1);
+    }
+  }
+
+  // Reject an operator `--name` the identity parsers cannot read (issue #105).
+  // First thing after the issue resolves, because a name that cannot be parsed
+  // does not fail until the run is OVER: the branch reads as mode="UNKNOWN",
+  // and merge and results both refuse a run that already cost its engine time.
+  // The auto-generated name below always passes; this only fires on --name.
+  if (name && issueNumber !== undefined) {
+    const nameProblem = checkRunName(name, effectiveMode, issueNumber);
+    if (nameProblem) {
+      console.error(nameProblem);
       process.exit(1);
     }
   }
@@ -1322,7 +1353,7 @@ function cmdStatus() {
     }
     for (const line of formatResultsGuidance({
       branch: wt.branch,
-      issueNumber: extractIssueNumber(wt.branch),
+      issueNumber: resolveRunIdentity(wt.path, wt.branch).issueNumber,
       running: wt.running,
     })) {
       console.log(line);
@@ -1426,20 +1457,10 @@ async function cmdReview(args: string[]) {
   const worktreeName = branch.replace("worktree-", "");
   const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
 
-  // Identity resolution, most-explicit first. Branch parsing handles the
-  // conventional shape including multi-slice names (`implement-123-slice-a`);
-  // the worktree's own runs dir covers fully custom `--name` values that encode
-  // neither; the flags are the escape hatch when both fail.
-  const issueNumber =
-    issueOverride ?? extractIssueNumber(branch) ?? deriveIssueNumberFromWorktree(worktreePath);
-  const parsedMode = extractMode(branch);
-  const mode =
-    modeOverride ??
-    (parsedMode !== "UNKNOWN"
-      ? parsedMode
-      : (issueNumber !== undefined
-          ? deriveModeFromWorktree(worktreePath, issueNumber)
-          : undefined) ?? parsedMode);
+  const { issueNumber, mode } = resolveRunIdentity(worktreePath, branch, {
+    issueOverride,
+    modeOverride,
+  });
 
   const refuse = (reason: string, hints: string[] = []): never => {
     console.error(`ERROR: refusing to re-review ${branch} because -`);
@@ -1615,7 +1636,7 @@ async function cmdMerge(args: string[]) {
   const reason = readFlagValue(args, "--reason");
   // The branch is the first positional that is not itself a flag's value —
   // `--reason "text"` would otherwise be picked up as the branch name.
-  const positional = findPositional(args, ["--reason"]);
+  const positional = findPositional(args, ["--reason", "--issue", "--mode"]);
   const worktrees = listWorktrees(projectRoot);
 
   if (reason !== undefined && !rescue) {
@@ -1628,6 +1649,25 @@ async function cmdMerge(args: string[]) {
     process.exit(1);
   }
 
+  // Identity escape hatches, matching `review`. The ladder in resolveRunIdentity
+  // covers a branch name the parser cannot read as long as the worktree still
+  // holds its runs; these cover the case where even that is gone or wrong.
+  const rawIssue = readFlagValue(args, "--issue");
+  let issueOverride: number | undefined;
+  if (rawIssue !== undefined) {
+    issueOverride = parseInt(rawIssue, 10);
+    if (isNaN(issueOverride)) {
+      console.error("ERROR: --issue requires a numeric issue number.");
+      process.exit(1);
+    }
+  }
+  const rawMode = readFlagValue(args, "--mode");
+  const modeOverride = rawMode === undefined ? undefined : rawMode.toUpperCase();
+  if (modeOverride !== undefined && !allKnownModes().includes(modeOverride)) {
+    console.error(`ERROR: --mode must be one of: ${allKnownModes().join(", ")}.`);
+    process.exit(1);
+  }
+
   const chosen = await resolvePositionalOrPick(
     positional,
     worktrees,
@@ -1635,7 +1675,9 @@ async function cmdMerge(args: string[]) {
     "Select a worktree to merge",
   );
   if (!chosen) {
-    console.error('Usage: dangeresque merge <branch> [--rescue [--reason "<why>"]]');
+    console.error(
+      'Usage: dangeresque merge <branch> [--issue <N>] [--mode <MODE>] [--rescue [--reason "<why>"]]',
+    );
     console.error("Run 'dangeresque status' to see active worktrees");
     process.exit(1);
   }
@@ -1644,16 +1686,25 @@ async function cmdMerge(args: string[]) {
     assertInMainCheckout(projectRoot, "merge");
     const resolved = resolveBranch(projectRoot, chosen);
     const config = loadConfig(projectRoot);
+    // Resolve identity BEFORE the merge — the artifact fallback reads the
+    // worktree, and a successful merge deletes it.
+    const { issueNumber } = resolveRunIdentity(
+      join(projectRoot, ".claude", "worktrees", resolved.replace("worktree-", "")),
+      resolved,
+      { issueOverride, modeOverride },
+    );
     const result = mergeWorktree(
       projectRoot,
       resolved,
       config.mergeGate,
       rescue ? { reason } : undefined,
+      { issueOverride, modeOverride },
     );
 
     if (result.success) {
       console.log(result.message);
-      if (result.rescue) publishRescue(projectRoot, resolved, result.rescue);
+      if (result.rescue)
+        publishRescue(projectRoot, resolved, issueNumber, result.rescue);
     } else {
       console.error(result.message);
       process.exit(result.gateRefusal ? 2 : 1);
@@ -1677,13 +1728,14 @@ async function cmdMerge(args: string[]) {
 function publishRescue(
   projectRoot: string,
   branch: string,
+  issueNumber: number | undefined,
   record: RescueRecord,
 ): void {
-  const issueNumber = extractIssueNumber(branch);
   if (issueNumber === undefined) {
     console.warn(
-      `⚠️  Rescue recorded in the run artifact, but the branch name carries no ` +
-        `issue number, so nothing was posted to GitHub.`,
+      `⚠️  Rescue recorded in the run artifact, but the run's issue number could ` +
+        `not be resolved, so nothing was posted to GitHub. Re-run with ` +
+        `'--issue <N>' next time, or comment on the issue by hand.`,
     );
     return;
   }

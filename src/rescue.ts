@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { CONFIG_DIR, RUNS_DIR, SKIP_REVIEW_MODES } from "./config.js";
 import {
@@ -62,49 +62,6 @@ export function locateLatestRun(
   }
 
   return { mdPath, jsonPath, artifact };
-}
-
-/**
- * Recover the issue number from a worktree's own run directory.
- *
- * Branch-name parsing covers the conventional `<mode>-<issue>[-<suffix>]` shape,
- * including multi-slice names like `implement-123-slice-a`. It cannot cover a
- * fully custom `--name` that carries no issue number. Dispatch mirrors exactly
- * one issue's runs into a worktree, so `.dangeresque/runs/issue-<N>/` is an
- * unambiguous fallback identity.
- */
-export function deriveIssueNumberFromWorktree(
-  worktreePath: string,
-): number | undefined {
-  const runsDir = join(worktreePath, CONFIG_DIR, RUNS_DIR);
-  if (!existsSync(runsDir)) return undefined;
-  let entries: string[];
-  try {
-    entries = readdirSync(runsDir);
-  } catch {
-    return undefined;
-  }
-  const issueDirs = entries
-    .map((d) => d.match(/^issue-(\d+)$/))
-    .filter((m): m is RegExpMatchArray => m !== null)
-    .map((m) => parseInt(m[1], 10));
-  // More than one would be ambiguous; dispatch never creates that, so refuse
-  // to guess rather than rescue the wrong issue's run.
-  return issueDirs.length === 1 ? issueDirs[0] : undefined;
-}
-
-/**
- * Recover the mode from the newest run artifact in a worktree, for branches
- * whose name does not encode one. Filenames end `-<MODE>.md`.
- */
-export function deriveModeFromWorktree(
-  worktreePath: string,
-  issueNumber: number,
-): string | undefined {
-  const files = listArchivedRuns(worktreePath, issueNumber);
-  if (files.length === 0) return undefined;
-  const match = files[files.length - 1].match(/-([A-Z]+)\.md$/);
-  return match ? match[1] : undefined;
 }
 
 export interface ReviewRescueAssessment {

@@ -14,7 +14,7 @@ import {
   PID_FILE,
   projectHash,
 } from "./config.js";
-import { writePidFile, removePidFile, resolveDiffBase, mirrorIssueRuns, parseSummaryBlock, formatResultsGuidance, type PidInfo } from "./worktree.js";
+import { writePidFile, removePidFile, resolveDiffBase, mirrorIssueRuns, parseSummaryBlock, formatResultsGuidance, ensureDangeresquePrefix, type PidInfo } from "./worktree.js";
 import type { VerificationOutcome } from "./verify.js";
 
 // --- engine-process tracking ---
@@ -778,10 +778,6 @@ export function buildCodexReviewArgs(
     "-",
   ];
   return { args, prompt };
-}
-
-function ensureDangeresquePrefix(name: string): string {
-  return name.startsWith("dangeresque-") ? name : `dangeresque-${name}`;
 }
 
 function checkRemoteBehind(projectRoot: string): void {

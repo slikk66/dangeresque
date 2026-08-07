@@ -1,12 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execSync, spawn, type ChildProcess } from "node:child_process";
+import { execSync, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   extractIssueNumber,
   extractMode,
+  resolveRunIdentity,
+  deriveIssueNumberFromWorktree,
+  deriveModeFromWorktree,
+  checkRunName,
+  branchForRunName,
   parseSummaryBlock,
   formatRunOneLiner,
   formatRunHeader,
@@ -2180,4 +2185,331 @@ test("formatResultsGuidance: no issue number → no post-merge line to get wrong
   const lines = formatResultsGuidance({ branch: "worktree-dangeresque-adhoc", running: false });
   assert.equal(lines.length, 1);
   assert.match(lines[0], /dangeresque results worktree-dangeresque-adhoc/);
+});
+
+// --- run identity (issue #105) ------------------------------------------
+//
+// A `--name` the branch parser cannot read used to strand an otherwise-clean
+// run: `merge` refused it as mode="UNKNOWN" and `results` claimed it had no
+// issue, while its artifact sat in the worktree saying exactly what it was.
+
+function scratchWorktree(): string {
+  return mkdtempSync(join(tmpdir(), "dangeresque-identity-"));
+}
+
+function seedRun(root: string, issueNumber: number, stamp: string, mode: string): void {
+  const dir = join(root, ".dangeresque", "runs", `issue-${issueNumber}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${stamp}-${mode}.md`), "# body\n");
+}
+
+test("deriveIssueNumberFromWorktree: recovers identity a custom --name never encoded", () => {
+  const root = scratchWorktree();
+  seedRun(root, 123, "2026-08-05T06-01-25", "IMPLEMENT");
+  assert.equal(deriveIssueNumberFromWorktree(root), 123);
+});
+
+test("deriveIssueNumberFromWorktree: no runs dir → undefined", () => {
+  assert.equal(deriveIssueNumberFromWorktree(scratchWorktree()), undefined);
+});
+
+test("deriveIssueNumberFromWorktree: ambiguous (two issue dirs) → refuses to guess", () => {
+  const root = scratchWorktree();
+  seedRun(root, 123, "2026-08-05T06-01-25", "IMPLEMENT");
+  seedRun(root, 456, "2026-08-05T06-01-25", "IMPLEMENT");
+  assert.equal(deriveIssueNumberFromWorktree(root), undefined);
+});
+
+test("deriveModeFromWorktree: takes the mode of the newest run", () => {
+  const root = scratchWorktree();
+  seedRun(root, 123, "2026-08-05T04-00-00", "INVESTIGATE");
+  seedRun(root, 123, "2026-08-05T06-01-25", "IMPLEMENT");
+  assert.equal(deriveModeFromWorktree(root, 123), "IMPLEMENT");
+});
+
+test("resolveRunIdentity: conventional branch resolves without touching disk", () => {
+  const id = resolveRunIdentity(
+    "/nonexistent",
+    "worktree-dangeresque-implement-42-slice-a",
+  );
+  assert.deepEqual(id, { issueNumber: 42, mode: "IMPLEMENT" });
+});
+
+test("resolveRunIdentity: unparsable branch falls back to the worktree's own runs", () => {
+  // bc#781 verbatim: --name dangeresque-781-verify on an INVESTIGATE run.
+  const root = scratchWorktree();
+  seedRun(root, 781, "2026-08-05T06-01-25", "INVESTIGATE");
+  const id = resolveRunIdentity(root, "worktree-dangeresque-781-verify");
+  assert.deepEqual(id, { issueNumber: 781, mode: "INVESTIGATE" });
+});
+
+test("resolveRunIdentity: branch name beats the artifacts when both are readable", () => {
+  // Dispatch mirrors an issue's PRIOR runs into each new worktree, so a worker
+  // that died before writing its own artifact leaves an older mode as newest.
+  // The branch name is the current run's identity by construction.
+  const root = scratchWorktree();
+  seedRun(root, 42, "2026-08-05T04-00-00", "IMPLEMENT");
+  const id = resolveRunIdentity(root, "worktree-dangeresque-investigate-42");
+  assert.equal(id.mode, "INVESTIGATE");
+});
+
+test("resolveRunIdentity: overrides outrank both the branch and the artifacts", () => {
+  const root = scratchWorktree();
+  seedRun(root, 781, "2026-08-05T06-01-25", "INVESTIGATE");
+  const id = resolveRunIdentity(root, "worktree-dangeresque-implement-42", {
+    issueOverride: 781,
+    modeOverride: "VERIFY",
+  });
+  assert.deepEqual(id, { issueNumber: 781, mode: "VERIFY" });
+});
+
+test("resolveRunIdentity: nothing readable anywhere → undefined issue, UNKNOWN mode", () => {
+  const id = resolveRunIdentity(scratchWorktree(), "worktree-dangeresque-adhoc");
+  assert.deepEqual(id, { issueNumber: undefined, mode: "UNKNOWN" });
+});
+
+test("mergeWorktree: unparsable --name no longer strands a clean run (#105)", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, ".gitignore"), ".dangeresque/runs/\n");
+    execSync("git add .gitignore", env(dir));
+    execSync('git commit -m "gitignore runs"', env(dir));
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-781-verify",
+      "worktree-dangeresque-781-verify",
+      { advance: false },
+    );
+    seedRun(worktreePath, 781, "2026-08-05T06-01-25", "INVESTIGATE");
+
+    // The gate is enabled and configured for the code-changing modes. Before
+    // the fix this refused with mode="UNKNOWN"; now it resolves INVESTIGATE
+    // from the worktree's own artifact and passes through.
+    const result = mergeWorktree(dir, "worktree-dangeresque-781-verify", {
+      enabled: true,
+      modes: ["IMPLEMENT", "REFACTOR", "TEST"],
+      requireAcceptedImplement: true,
+      commands: [],
+    });
+
+    assert.equal(result.success, true, result.message);
+    assert.match(result.message, /issue-781/);
+    assert.equal(
+      existsSync(join(dir, ".dangeresque", "runs", "issue-781")),
+      true,
+      "artifact must land at the project root",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: --mode override lands a run whose worktree lost its artifacts", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(dir, "dangeresque-nameless", "worktree-dangeresque-nameless", {
+      advance: false,
+    });
+
+    const result = mergeWorktree(
+      dir,
+      "worktree-dangeresque-nameless",
+      { enabled: true, modes: ["IMPLEMENT"], requireAcceptedImplement: false, commands: [] },
+      undefined,
+      { modeOverride: "INVESTIGATE" },
+    );
+
+    assert.equal(result.success, true, result.message);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mergeWorktree: unresolvable mode refusal names the --mode remedy", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(dir, "dangeresque-nameless", "worktree-dangeresque-nameless", {
+      advance: false,
+    });
+
+    const result = mergeWorktree(dir, "worktree-dangeresque-nameless", {
+      enabled: true,
+      modes: ["IMPLEMENT"],
+      requireAcceptedImplement: true,
+      commands: [],
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.gateRefusal, true);
+    assert.match(result.message, /mode="UNKNOWN"/);
+    assert.match(
+      result.message,
+      /dangeresque merge nameless --mode/,
+      "a refusal with no remedy is how #105 dead-ended",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("getWorktreeResults: unparsable branch still finds the run artifact (#105)", () => {
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-781-verify",
+      "worktree-dangeresque-781-verify",
+      { advance: false },
+    );
+    writeRunArtifacts(worktreePath, 781, "2026-08-05T06-01-25", "INVESTIGATE");
+
+    const output = getWorktreeResults(dir, "worktree-dangeresque-781-verify");
+
+    assert.doesNotMatch(output, /no associated issue/);
+    assert.match(output, /INVESTIGATE/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("checkRunName: the conventional shape passes", () => {
+  assert.equal(checkRunName("investigate-781", "INVESTIGATE", 781), null);
+  assert.equal(checkRunName("implement-123-slice-a", "IMPLEMENT", 123), null);
+  assert.equal(
+    checkRunName("dangeresque-investigate-781-verify", "INVESTIGATE", 781),
+    null,
+    "an already-prefixed name is the same name",
+  );
+});
+
+test("checkRunName: a name with no mode word is refused, with the fix in the message", () => {
+  // bc#781 verbatim.
+  const problem = checkRunName("dangeresque-781-verify", "INVESTIGATE", 781);
+  assert.ok(problem, "must refuse");
+  assert.match(problem, /--name investigate-781-verify/);
+  assert.match(problem, /worktree-dangeresque-781-verify/, "names the branch it would cut");
+});
+
+test("checkRunName: a free-form label is refused and folded in as a suffix", () => {
+  const problem = checkRunName("myrun", "IMPLEMENT", 5);
+  assert.ok(problem);
+  assert.match(problem, /--name implement-5-myrun/);
+});
+
+test("checkRunName: a mode word that is not a mode is refused (parses ≠ correct)", () => {
+  // `foo-123` parses to mode FOO, so a "does it parse" check waves it through
+  // — but mergeGate refuses FOO as unrecognized, stranding the run exactly the
+  // way #105 did. The test has to be round-trip identity, not parseability.
+  const problem = checkRunName("foo-123", "INVESTIGATE", 123);
+  assert.ok(problem, "must refuse");
+  assert.match(problem, /--name investigate-123/);
+});
+
+test("checkRunName: a name that parses to the WRONG run is refused", () => {
+  // The dangerous case: nothing is UNKNOWN, so nothing downstream ever notices.
+  // merge would gate INVESTIGATE (skipping IMPLEMENT's accepted-review
+  // requirement) and mirror into issue-999's directory.
+  const problem = checkRunName("investigate-999", "IMPLEMENT", 63);
+  assert.ok(problem, "must refuse");
+  assert.match(problem, /reads back as INVESTIGATE\/#999, not IMPLEMENT\/#63/);
+  assert.match(problem, /--name implement-63/);
+});
+
+test("checkRunName: a right-mode/wrong-issue name is refused", () => {
+  const problem = checkRunName("implement-64", "IMPLEMENT", 63);
+  assert.ok(problem, "must refuse");
+  assert.match(problem, /--name implement-63/);
+});
+
+test("checkRunName: a custom --mode is honoured, not second-guessed", () => {
+  // `--mode` documents "or custom". Dispatch's job is agreement between the
+  // name and the run; whether mergeGate recognizes the mode is its own call.
+  assert.equal(checkRunName("audit-42", "AUDIT", 42), null);
+});
+
+test("checkRunName: every suggestion it prints round-trips to the RIGHT run", () => {
+  for (const [name, mode, issue] of [
+    ["dangeresque-781-verify", "INVESTIGATE", 781],
+    ["myrun", "IMPLEMENT", 5],
+    ["781", "VERIFY", 781],
+    ["2ndpass", "REFACTOR", 99],
+    ["foo-123", "INVESTIGATE", 123],
+    ["investigate-999", "IMPLEMENT", 63],
+    ["implement-64", "IMPLEMENT", 63],
+    ["781-verify-round2", "VERIFY", 781],
+    ["investigate", "INVESTIGATE", 7],
+  ] as const) {
+    const problem = checkRunName(name, mode, issue);
+    assert.ok(problem, `${name} should be refused`);
+    const suggested = problem.match(/Use this instead:\n  --name (\S+)/)![1];
+    const branch = branchForRunName(suggested);
+    assert.equal(extractMode(branch), mode, `${suggested} → mode`);
+    assert.equal(extractIssueNumber(branch), issue, `${suggested} → issue`);
+    assert.equal(
+      checkRunName(suggested, mode, issue),
+      null,
+      `${suggested} must itself be accepted — a suggestion the check rejects is a loop`,
+    );
+  }
+});
+
+test("runPreflightChecks: an unparsable-name worktree still counts as the same issue", () => {
+  // Found by hand against bc#781: the stranded `dangeresque-781-verify`
+  // worktree did not match on branch name, so re-dispatching issue 781 sailed
+  // past the gate and spawned a second worker on an issue that already had one.
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-781-verify",
+      "worktree-dangeresque-781-verify",
+      { advance: false },
+    );
+    seedRun(worktreePath, 781, "2026-08-05T06-01-25", "INVESTIGATE");
+
+    const result = runPreflightChecks(dir, 781, "INVESTIGATE");
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /already has a worktree/);
+    assert.match(result.message!, /worktree-dangeresque-781-verify/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli run: a --mode that cannot appear in a branch name is refused up front", () => {
+  // The auto-generated worktree name is `<mode>-<issue>`, so a non-alphabetic
+  // mode strands a run with no --name involved at all: extractMode reads the
+  // branch back as UNKNOWN and merge/results/preflight all lose it (#105).
+  const cliPath = resolve("dist", "cli.js");
+  try {
+    execFileSync(
+      process.execPath,
+      [cliPath, "run", "--issue", "5", "--mode", "A.B"],
+      { stdio: "pipe" },
+    );
+    assert.fail("expected non-zero exit");
+  } catch (err: any) {
+    assert.equal(err.status, 1);
+    const stderr = err.stderr.toString();
+    assert.match(stderr, /refusing to dispatch with --mode "A\.B"/);
+    assert.match(stderr, /letters only/);
+  }
+});
+
+test("cli run: a lettered custom --mode is still allowed", () => {
+  // "or custom" is a documented part of --mode; the letters-only rule must not
+  // quietly narrow it to the built-ins.
+  const cliPath = resolve("dist", "cli.js");
+  try {
+    execFileSync(
+      process.execPath,
+      [cliPath, "run", "--mode", "AUDIT"],
+      { stdio: "pipe" },
+    );
+    assert.fail("expected non-zero exit (no task source)");
+  } catch (err: any) {
+    const stderr = err.stderr.toString();
+    assert.doesNotMatch(stderr, /--mode/, "must not be rejected for its mode");
+    assert.match(stderr, /A task source is required/);
+  }
 });

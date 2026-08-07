@@ -277,6 +277,7 @@ test("applyMergeGate: disabled → pass", () => {
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 1,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig({ enabled: false }),
@@ -295,6 +296,7 @@ test("applyMergeGate: mode not in list (e.g. INVESTIGATE) → pass (no-op merges
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 1,
       mode: "INVESTIGATE",
       config: makeMergeGateConfig(),
@@ -313,6 +315,7 @@ test("applyMergeGate: IMPLEMENT with no artifact anywhere → refuses (fail clos
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -336,6 +339,7 @@ test("applyMergeGate: IMPLEMENT with review skipped → refuses", () => {
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -356,6 +360,7 @@ test("applyMergeGate: IMPLEMENT with verdict=reject → refuses", () => {
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -376,6 +381,7 @@ test("applyMergeGate: IMPLEMENT with verdict=accept in worktree → passes", () 
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -395,6 +401,7 @@ test("applyMergeGate: REFACTOR — accepted REFACTOR lives at projectRoot from p
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "REFACTOR",
       config: makeMergeGateConfig(),
@@ -414,6 +421,7 @@ test("applyMergeGate: unreadable JSON → refuses (fail closed on parse error)",
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -434,6 +442,7 @@ test("applyMergeGate: missing JSON sibling → refuses (fail closed)", () => {
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -458,6 +467,7 @@ test("applyMergeGate: has no blanket bypass — the only way past it leaves an a
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -479,6 +489,7 @@ test("applyMergeGate: env vars DANGERESQUE_MERGE=1 + issue + mode + worktree rea
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 55,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig({
@@ -510,6 +521,7 @@ test("applyMergeGate: DANGERESQUE_ARTIFACT points commands at the run report and
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 56,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig({
@@ -554,6 +566,7 @@ test("applyMergeGate: DANGERESQUE_ARTIFACT survives requireAcceptedImplement=fal
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 57,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig({
@@ -611,6 +624,7 @@ test("applyMergeGate: blocking command failure → refuses with tail of stderr",
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 55,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig({
@@ -640,12 +654,18 @@ test("applyMergeGate: undefined issue number + built-in enabled → refuses (fai
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: undefined,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
     });
     assert.equal(result.ok, false);
-    assert.match(result.message!, /cannot determine issue number/);
+    assert.match(result.message!, /cannot determine the issue number/);
+    assert.match(
+      result.message!,
+      /dangeresque merge worktree-dangeresque-test --issue <N>/,
+      "the refusal must name the escape hatch (#105)",
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
     rmSync(worktree, { recursive: true, force: true });
@@ -664,6 +684,7 @@ test("applyMergeGate: mode='UNKNOWN' with gate enabled → refuses (fail closed,
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 99,
       mode: "UNKNOWN",
       config: makeMergeGateConfig(),
@@ -684,6 +705,7 @@ test("applyMergeGate: unrecognized mode (typo) with gate enabled → refuses (fa
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 99,
       mode: "IMPLMEENT", // typo
       config: makeMergeGateConfig(),
@@ -707,6 +729,7 @@ test("applyMergeGate: recognized mode not in config.modes (e.g. VERIFY) still pa
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 99,
       mode: "VERIFY",
       config: makeMergeGateConfig(),
@@ -746,6 +769,7 @@ test("applyMergeGate: rejected latest in worktree + accepted older at projectRoo
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 500,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -782,6 +806,7 @@ test("applyMergeGate: skipped latest in worktree + accepted at projectRoot → r
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 501,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -810,6 +835,7 @@ test("applyMergeGate: missing-JSON latest in worktree + accepted at projectRoot 
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 502,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -838,6 +864,7 @@ test("applyMergeGate: unreadable-JSON latest in worktree + accepted at projectRo
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 503,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -863,6 +890,7 @@ test("applyMergeGate: worktree has zero REFACTOR artifacts → projectRoot fallb
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 504,
       mode: "REFACTOR",
       config: makeMergeGateConfig(),
@@ -890,6 +918,7 @@ test("applyMergeGate: REFACTOR merge with only IMPLEMENT artifact anywhere → r
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 60,
       mode: "REFACTOR",
       config: makeMergeGateConfig(),
@@ -916,6 +945,7 @@ test("applyMergeGate: TEST with verdict=accept in worktree → passes (#86 prima
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 86,
       mode: "TEST",
       config: makeMergeGateConfig(),
@@ -934,6 +964,7 @@ test("applyMergeGate: TEST with no artifact anywhere → refuses (fail closed, n
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 86,
       mode: "TEST",
       config: makeMergeGateConfig(),
@@ -959,6 +990,7 @@ test("applyMergeGate: TEST with review skipped → refuses", () => {
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 86,
       mode: "TEST",
       config: makeMergeGateConfig(),
@@ -979,6 +1011,7 @@ test("applyMergeGate: TEST with verdict=reject → refuses", () => {
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 86,
       mode: "TEST",
       config: makeMergeGateConfig(),
@@ -1010,6 +1043,7 @@ test("applyMergeGate: TEST — rejected latest in worktree + accepted older TEST
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 600,
       mode: "TEST",
       config: makeMergeGateConfig(),
@@ -1040,6 +1074,7 @@ test("applyMergeGate --rescue: verdict=reject + sentinel present → passes, car
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -1066,6 +1101,7 @@ test("applyMergeGate --rescue: verdict=needs_human_review + sentinel present →
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -1088,6 +1124,7 @@ test("applyMergeGate --rescue: verdict=reject but NO sentinel → refuses (fail 
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -1117,6 +1154,7 @@ test("applyMergeGate --rescue --reason: no commits since the review → approves
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -1147,6 +1185,7 @@ test("applyMergeGate --rescue --reason: a sentinel commit still wins the lane ch
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -1179,6 +1218,7 @@ test("applyMergeGate --rescue --reason: commits after the review → refuses and
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -1209,6 +1249,7 @@ test("applyMergeGate --rescue --reason: no way to read commit dates → refuses 
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -1235,6 +1276,7 @@ test("applyMergeGate --rescue: review skipped (not a reviewed verdict) → refus
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -1256,6 +1298,7 @@ test("applyMergeGate --rescue: no artifact at all → refuses even with sentinel
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -1278,6 +1321,7 @@ test("applyMergeGate --rescue: verification is NEVER waived — blocking command
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig({
@@ -1309,6 +1353,7 @@ test("applyMergeGate --rescue: verdict=accept → passes with NO rescue record (
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
@@ -1331,6 +1376,7 @@ test("applyMergeGate: verdict=reject without --rescue → refusal now surfaces t
     const result = applyMergeGate({
       projectRoot: tmp,
       worktreePath: worktree,
+      branch: "worktree-dangeresque-test",
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),

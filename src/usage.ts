@@ -41,7 +41,10 @@ Run options:
   --issue-fixture <path>  Read issue content from a local JSON file (no gh needed)
   --mode <mode>     Task mode (default: INVESTIGATE)
                     [INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST, or custom]
-  --name <name>     Custom worktree name (default: dangeresque-<timestamp>)
+  --name <name>     Custom worktree name (default: <mode>-<issue>). A suffix on
+                    that convention, not a free-form label: it must still start
+                    with the mode word, e.g. implement-63-slice-a. Names that
+                    do not are refused at dispatch, with the fix in the message
   --no-review       Skip the review pass
   --no-verify       Skip pre-review verification commands (compile/test/lint)
   --interactive     Run interactively (default: headless with -p)
@@ -73,11 +76,16 @@ Merge options:
                     the branch after the review ended, so the reviewer read the
                     exact tree being merged. Refuses if the artifact records no
                     review end time, or if any commit landed since
+  --issue <N>       Name the run's issue when neither the branch name nor the
+  --mode <MODE>     worktree's run artifacts can supply it. Rarely needed —
+                    both are resolved automatically; these are the escape hatch
 
 Review options (crash recovery — the worker's committed output is kept):
   --dry-run         Report whether the run is rescuable; dispatch nothing
   --force           Re-review a run that already has a verdict
   --no-verify       Skip pre-review verification commands
+  --issue <N> / --mode <MODE>   Name the run's identity when it cannot be
+                    resolved from the branch name or the worktree's artifacts
   --review-engine <name> / --review-model <model> / --review-effort <level>
 
 Examples:

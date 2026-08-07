@@ -8,8 +8,6 @@ import {
   assessReviewRescue,
   recoverWorkerPhase,
   parseArchiveTimestampMs,
-  deriveIssueNumberFromWorktree,
-  deriveModeFromWorktree,
   type LocatedRun,
 } from "#dist/rescue.js";
 
@@ -305,30 +303,6 @@ test("recoverWorkerPhase: never reports an end before its start", () => {
 
   const result = recoverWorkerPhase(located(mdPath));
   assert.equal(result.endedAtMs, result.startedAtMs);
-});
-
-test("deriveIssueNumberFromWorktree: recovers identity a custom --name never encoded", () => {
-  const root = scratchRoot();
-  writeRun(root, 123, "2026-08-05T06-01-25-IMPLEMENT.md", SUMMARY_MD);
-  assert.equal(deriveIssueNumberFromWorktree(root), 123);
-});
-
-test("deriveIssueNumberFromWorktree: no runs dir → undefined", () => {
-  assert.equal(deriveIssueNumberFromWorktree(scratchRoot()), undefined);
-});
-
-test("deriveIssueNumberFromWorktree: ambiguous (two issue dirs) → refuses to guess", () => {
-  const root = scratchRoot();
-  writeRun(root, 123, "2026-08-05T06-01-25-IMPLEMENT.md", SUMMARY_MD);
-  writeRun(root, 456, "2026-08-05T06-01-25-IMPLEMENT.md", SUMMARY_MD);
-  assert.equal(deriveIssueNumberFromWorktree(root), undefined);
-});
-
-test("deriveModeFromWorktree: takes the mode of the newest run", () => {
-  const root = scratchRoot();
-  writeRun(root, 123, "2026-08-05T04-00-00-INVESTIGATE.md", SUMMARY_MD);
-  writeRun(root, 123, "2026-08-05T06-01-25-IMPLEMENT.md", SUMMARY_MD);
-  assert.equal(deriveModeFromWorktree(root, 123), "IMPLEMENT");
 });
 
 test("multi-slice: each slice's worktree resolves to its OWN newest run", () => {
