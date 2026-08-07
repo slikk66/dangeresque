@@ -127,6 +127,16 @@ artifact's \`<!-- SUMMARY -->\` block plus the local artifact path; the full
 body never leaves the host — read it via \`dangeresque results --issue <N>\`
 or directly under \`.dangeresque/runs/issue-<N>/\`.
 
+**Project checks get the run report's path.** \`verify\` commands and both gates
+run with \`DANGERESQUE_ISSUE\`, \`DANGERESQUE_MODE\`, and — wherever they exist by
+then — \`DANGERESQUE_WORKTREE\`, \`DANGERESQUE_ARTIFACT\` (the run report \`.md\`)
+and \`DANGERESQUE_ARTIFACT_JSON\`. That is the seam for project-specific checks
+on the worker's own claims: dangeresque parses only the \`<!-- SUMMARY -->\`
+block and \`## Scope Declaration\`, so any other house convention in the report
+body is yours to enforce here rather than something dangeresque knows about.
+At dispatch time neither the worktree nor the report exists yet, so those
+variables are absent rather than empty.
+
 **If a review dies, do NOT re-dispatch the worker.** A worker can finish and
 commit its work only for the review pass to be killed (outside signal, engine
 error, session teardown). The run then has no verdict, so merge gates refuse it

@@ -347,6 +347,49 @@ function makeBuilder(dir: string, archivePath: string): ArtifactBuilder {
   return builder;
 }
 
+test("runVerification: commands can read the run report through DANGERESQUE_ARTIFACT", () => {
+  // A pre-review check on the worker's own claims — a citation resolver, a
+  // house-format lint — runs here. Before this it had no way to find the
+  // timestamped report file except by re-deriving the naming scheme.
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-verify-test-"));
+  try {
+    const archivePath = makeArtifact(dir);
+    const builder = makeBuilder(dir, archivePath);
+    const captured = join(dir, "capture.txt");
+
+    const config: VerifyConfig = {
+      enabled: true,
+      modes: ["IMPLEMENT"],
+      commands: [
+        {
+          name: "read-report",
+          cmd: `printf '%s|%s|%s|%s' "$DANGERESQUE_ISSUE" "$DANGERESQUE_MODE" "$DANGERESQUE_ARTIFACT_JSON" "$(grep -c 'Mode: IMPLEMENT' "$DANGERESQUE_ARTIFACT")" > "${captured}"`,
+          on_failure: "block",
+          timeout_ms: 5000,
+        },
+      ],
+    };
+
+    const outcome = runVerification({
+      worktreePath: dir,
+      archivePath,
+      config,
+      builder,
+      issueNumber: 99,
+      mode: "IMPLEMENT",
+    });
+
+    assert.equal(outcome.blocked, false);
+    const [issue, mode, jsonPath, matchCount] = readFileSync(captured, "utf-8").split("|");
+    assert.equal(issue, "99");
+    assert.equal(mode, "IMPLEMENT");
+    assert.equal(jsonPath, archivePath.replace(/\.md$/, ".json"));
+    assert.equal(matchCount, "1", "the command actually read the report through the path");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runVerification: all pass → outcome.blocked=false, SUMMARY rewritten, body section appended", () => {
   const dir = mkdtempSync(join(tmpdir(), "dangeresque-verify-test-"));
   try {

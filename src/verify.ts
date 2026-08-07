@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { constants as osConstants } from "node:os";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { jsonPathForArchive } from "./artifact.js";
 import type { ArtifactBuilder } from "./artifact.js";
 
 export type VerifyFailurePolicy = "block" | "warn";
@@ -42,6 +43,45 @@ export interface RunVerificationOptions {
   archivePath: string;
   config: VerifyConfig;
   builder?: ArtifactBuilder;
+  /** Recorded into DANGERESQUE_ISSUE for the commands. Omitted when unknown. */
+  issueNumber?: number;
+  /** Recorded into DANGERESQUE_MODE for the commands. */
+  mode?: string;
+}
+
+export interface CommandEnvInput {
+  issueNumber?: number;
+  mode?: string;
+  /** The worker's checkout. Omitted at dispatch time, when none exists yet. */
+  worktreePath?: string;
+  /** Absolute path to the run report `.md`. Omitted when it does not exist yet. */
+  archivePath?: string;
+  /** Sets DANGERESQUE_MERGE=1 so consumer hooks can spot an orchestrated merge. */
+  merge?: boolean;
+}
+
+/**
+ * The environment every project-registered command receives — verify commands
+ * and both gates. One builder so a variable added for one call site cannot
+ * silently be missing from the others.
+ *
+ * ISSUE and MODE are always present (empty when unknown) because consumers have
+ * always been able to read them; the rest appear only when they mean something,
+ * so a command can test for a variable rather than for an empty string.
+ */
+export function buildCommandEnv(input: CommandEnvInput): Record<string, string> {
+  return {
+    DANGERESQUE_ISSUE: input.issueNumber !== undefined ? String(input.issueNumber) : "",
+    DANGERESQUE_MODE: input.mode ?? "",
+    ...(input.merge ? { DANGERESQUE_MERGE: "1" } : {}),
+    ...(input.worktreePath ? { DANGERESQUE_WORKTREE: input.worktreePath } : {}),
+    ...(input.archivePath
+      ? {
+          DANGERESQUE_ARTIFACT: input.archivePath,
+          DANGERESQUE_ARTIFACT_JSON: jsonPathForArchive(input.archivePath),
+        }
+      : {}),
+  };
 }
 
 export const DEFAULT_VERIFY_TIMEOUT_MS = 300_000;
@@ -275,10 +315,22 @@ export function runVerification(opts: RunVerificationOptions): VerificationOutco
   let blocked = false;
   let blockedBy: string | undefined;
 
+  // Verification commands run against the worker's own output, so they are the
+  // natural home for a project check that reads the run report — a claims
+  // audit, a citation resolver, a house-format lint. Handing them the report's
+  // path is what makes that possible without each project re-deriving the
+  // timestamped filename itself.
+  const env = buildCommandEnv({
+    issueNumber: opts.issueNumber,
+    mode: opts.mode,
+    worktreePath,
+    archivePath,
+  });
+
   for (const command of config.commands) {
     builder?.recordEvent("verify_command_started", { name: command.name, cmd: command.cmd });
     console.log(`\n• verify: ${command.name} — ${command.cmd}`);
-    const result = runSingleCommand(command, worktreePath, maxLogBytes);
+    const result = runSingleCommand(command, worktreePath, maxLogBytes, env);
     results.push(result);
     builder?.recordEvent("verify_command_completed", {
       name: result.name,

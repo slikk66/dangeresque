@@ -157,7 +157,11 @@ export interface DispatchGateConfig {
   modes: string[];
   /** Built-in: IMPLEMENT refuses if no prior INVESTIGATE artifact exists. `--force` bypasses. */
   requireInvestigateBeforeImplement: boolean;
-  /** Project-configured shell commands run in projectRoot with DANGERESQUE_ISSUE/MODE env vars. */
+  /**
+   * Project-configured shell commands run in projectRoot with
+   * DANGERESQUE_ISSUE/MODE env vars. DANGERESQUE_WORKTREE and
+   * DANGERESQUE_ARTIFACT are absent — neither exists yet at dispatch.
+   */
   commands: VerifyCommand[];
 }
 
@@ -172,7 +176,12 @@ export interface MergeGateConfig {
   modes: string[];
   /** Built-in: require the latest artifact matching the merged branch's own mode M (as resolved by extractMode) to show review.skipped=false + reviewer_verdict="accept". `--force` bypasses (not currently exposed for merge). */
   requireAcceptedImplement: boolean;
-  /** Project-configured shell commands run in projectRoot with DANGERESQUE_ISSUE/MODE/MERGE=1 env vars. */
+  /**
+   * Project-configured shell commands run in projectRoot with
+   * DANGERESQUE_ISSUE/MODE/MERGE=1 plus DANGERESQUE_WORKTREE (the merge
+   * candidate's checkout) and DANGERESQUE_ARTIFACT / _ARTIFACT_JSON (the run
+   * report being merged, and its eval JSON).
+   */
   commands: VerifyCommand[];
 }
 

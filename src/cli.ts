@@ -535,6 +535,7 @@ async function cmdRun(args: string[]) {
   // actual worker spawn. Refusal exits 2 (fail closed). Only runs when the
   // block is present + enabled; absent = no-op. Consumer scripts see the
   // issue and mode via DANGERESQUE_ISSUE / DANGERESQUE_MODE env vars.
+  let dispatchGateForced = false;
   if (issueNumber !== undefined && config.dispatchGate) {
     const gate = applyDispatchGate({
       projectRoot,
@@ -547,6 +548,11 @@ async function cmdRun(args: string[]) {
       console.error(gate.message ?? "dispatchGate refused (no message).");
       process.exit(2);
     }
+    // `--force` waives the built-in dispatch policy. The builder does not exist
+    // until after the worker returns, so remember it and record it there —
+    // a bypass that leaves no trace in the run's own history is a bypass
+    // nobody can audit later.
+    dispatchGateForced = force && config.dispatchGate.enabled;
   }
 
   // Auto-generate name from mode + issue when not explicitly provided
@@ -604,6 +610,9 @@ async function cmdRun(args: string[]) {
     startedAtMs: runStartedAtMs,
   });
   builder.setWorkerTiming(workerStartedAtMs, workerEndedAtMs, workerResult.exitCode);
+  if (dispatchGateForced) {
+    builder.recordEvent("dispatch_gate_forced", { mode: effectiveMode });
+  }
   builder.recordEvent("worker_completed", { exit_code: workerResult.exitCode });
 
   console.log(`\nWorker exited with code ${workerResult.exitCode}`);
@@ -948,6 +957,8 @@ async function runPostWorkerPhases(
       archivePath,
       config: config.verify,
       builder,
+      issueNumber,
+      mode,
     });
     builder.setVerification(verificationOutcome.results);
   } else if (!verifyEnabled) {

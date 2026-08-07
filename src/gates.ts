@@ -21,6 +21,7 @@ import {
 } from "./artifact.js";
 import {
   runSingleCommand,
+  buildCommandEnv,
   DEFAULT_VERIFY_LOG_BYTES,
   type VerifyCommand,
   type VerificationResult,
@@ -114,10 +115,9 @@ export function applyDispatchGate(opts: ApplyDispatchGateOptions): GateResult {
     }
   }
 
-  const env: Record<string, string> = {
-    DANGERESQUE_ISSUE: String(issueNumber),
-    DANGERESQUE_MODE: mode,
-  };
+  // No worktree and no run report exist yet at dispatch time, so those keys are
+  // absent rather than empty — a command can test for the variable itself.
+  const env = buildCommandEnv({ issueNumber, mode });
   const results = runGateCommands(config.commands, projectRoot, env, "dispatchGate");
   const blocked = firstBlockingFailure(results);
   if (blocked) {
@@ -314,18 +314,28 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
     }
   }
 
-  const env: Record<string, string> = {
-    DANGERESQUE_ISSUE: issueNumber !== undefined ? String(issueNumber) : "",
-    DANGERESQUE_MODE: mode,
-    DANGERESQUE_MERGE: "1",
-    // The merge candidate's checkout (#102). Commands run BEFORE the git
-    // merge, so projectRoot's HEAD does not contain the branch being merged —
-    // a diff-based project check pointed at projectRoot evaluates an empty
-    // committed range plus unrelated uncommitted WIP. This var lets a project
-    // aim such checks at the worker tree, which dirtyWorktreeRefusal has
-    // already guaranteed clean, where base..HEAD IS the merge content.
-    DANGERESQUE_WORKTREE: worktreePath,
-  };
+  // DANGERESQUE_WORKTREE is the merge candidate's checkout (#102). Commands run
+  // BEFORE the git merge, so projectRoot's HEAD does not contain the branch
+  // being merged — a diff-based project check pointed at projectRoot evaluates
+  // an empty committed range plus unrelated uncommitted WIP. This var lets a
+  // project aim such checks at the worker tree, which dirtyWorktreeRefusal has
+  // already guaranteed clean, where base..HEAD IS the merge content.
+  //
+  // DANGERESQUE_ARTIFACT is located independently of the requireAcceptedImplement
+  // check above, which a project may have switched off — a command that reads
+  // the run report must not lose its path to a policy toggle it has nothing to
+  // do with.
+  const located =
+    issueNumber !== undefined
+      ? locateLatestArtifactForMode(worktreePath, projectRoot, issueNumber, mode)
+      : undefined;
+  const env = buildCommandEnv({
+    issueNumber,
+    mode,
+    merge: true,
+    worktreePath,
+    archivePath: located?.mdPath,
+  });
   const results = runGateCommands(config.commands, projectRoot, env, "mergeGate");
   const blocked = firstBlockingFailure(results);
   if (blocked) {
@@ -514,20 +524,41 @@ interface AcceptedArtifactCheck {
  * fail-open hole where mirrorIssueRuns had copied round-1 artifacts into
  * a round-2 worktree, letting an old accept mask a new reject.
  */
+/**
+ * Newest `-<MODE>.md` artifact for an issue, and its sibling JSON path.
+ *
+ * Worktree first, project root second, first root with any mode-M artifact
+ * wins — the same resolution `findAcceptedArtifactForMode` enforces its checks
+ * against. Shared so the path handed to project commands and the path the gate
+ * judges can never be two different files.
+ */
+function locateLatestArtifactForMode(
+  worktreePath: string,
+  projectRoot: string,
+  issueNumber: number,
+  mode: string,
+): { mdPath: string; jsonPath: string; filename: string } | undefined {
+  const roots = worktreePath === projectRoot ? [projectRoot] : [worktreePath, projectRoot];
+  const suffix = `-${mode}.md`;
+  for (const root of roots) {
+    const files = listArchivedRuns(root, issueNumber).filter((f) => f.endsWith(suffix));
+    if (files.length === 0) continue;
+    const filename = files[files.length - 1];
+    const mdPath = join(root, CONFIG_DIR, RUNS_DIR, `issue-${issueNumber}`, filename);
+    return { mdPath, jsonPath: jsonPathForArchive(mdPath), filename };
+  }
+  return undefined;
+}
+
 function findAcceptedArtifactForMode(
   worktreePath: string,
   projectRoot: string,
   issueNumber: number,
   mode: string,
 ): AcceptedArtifactCheck {
-  const roots = worktreePath === projectRoot ? [projectRoot] : [worktreePath, projectRoot];
-  const suffix = `-${mode}.md`;
-  for (const root of roots) {
-    const files = listArchivedRuns(root, issueNumber).filter((f) => f.endsWith(suffix));
-    if (files.length === 0) continue;
-    const latest = files[files.length - 1];
-    const mdPath = join(root, CONFIG_DIR, RUNS_DIR, `issue-${issueNumber}`, latest);
-    const jsonPath = jsonPathForArchive(mdPath);
+  const located = locateLatestArtifactForMode(worktreePath, projectRoot, issueNumber, mode);
+  if (located) {
+    const { mdPath, jsonPath, filename: latest } = located;
     if (!existsSync(jsonPath)) {
       return {
         ok: false,

@@ -496,6 +496,108 @@ test("applyMergeGate: env vars DANGERESQUE_MERGE=1 + issue + mode + worktree rea
   }
 });
 
+test("applyMergeGate: DANGERESQUE_ARTIFACT points commands at the run report and its JSON", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 56, { reviewer_verdict: "accept" });
+    const captured = join(tmp, "capture.txt");
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 56,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig({
+        commands: [
+          {
+            name: "artifact-env",
+            // Reads the file through the handed path — a variable that points
+            // nowhere would pass a string compare but fail this.
+            cmd: `printf '%s|%s|%s' "$DANGERESQUE_ARTIFACT" "$DANGERESQUE_ARTIFACT_JSON" "$(cat "$DANGERESQUE_ARTIFACT")" > "${captured}"`,
+            on_failure: "block",
+            timeout_ms: 5000,
+          },
+        ],
+      }),
+    });
+    assert.equal(result.ok, true);
+    const [mdPath, jsonPath, body] = readFileSync(captured, "utf-8").split("|");
+    const expectedMd = join(
+      worktree,
+      ".dangeresque",
+      "runs",
+      "issue-56",
+      "2026-06-01T00-00-00-IMPLEMENT.md",
+    );
+    assert.equal(mdPath, expectedMd);
+    assert.equal(jsonPath, expectedMd.replace(/\.md$/, ".json"));
+    assert.match(body, /implement body/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyMergeGate: DANGERESQUE_ARTIFACT survives requireAcceptedImplement=false", () => {
+  // The path a command reads must not depend on a policy toggle it has nothing
+  // to do with — that coupling is what made the variable worth adding.
+  const tmp = makeTmp("dangeresque-gate-");
+  const worktree = makeTmp("dangeresque-gate-wt-");
+  try {
+    seedImplementArtifact(worktree, 57, { reviewer_verdict: "reject" });
+    const captured = join(tmp, "capture.txt");
+    const result = applyMergeGate({
+      projectRoot: tmp,
+      worktreePath: worktree,
+      issueNumber: 57,
+      mode: "IMPLEMENT",
+      config: makeMergeGateConfig({
+        requireAcceptedImplement: false,
+        commands: [
+          {
+            name: "artifact-env",
+            cmd: `printf '%s' "$DANGERESQUE_ARTIFACT" > "${captured}"`,
+            on_failure: "block",
+            timeout_ms: 5000,
+          },
+        ],
+      }),
+    });
+    assert.equal(result.ok, true);
+    assert.match(readFileSync(captured, "utf-8"), /issue-57.*-IMPLEMENT\.md$/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: no worktree or artifact exists yet, so those vars are absent not empty", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 58, "2026-06-01T00-00-00-INVESTIGATE.md", "# investigate\n");
+    const captured = join(tmp, "capture.txt");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 58,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({
+        commands: [
+          {
+            name: "env-check",
+            cmd: `printf '%s|%s' "${"${DANGERESQUE_ARTIFACT-UNSET}"}" "${"${DANGERESQUE_WORKTREE-UNSET}"}" > "${captured}"`,
+            on_failure: "block",
+            timeout_ms: 5000,
+          },
+        ],
+      }),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(readFileSync(captured, "utf-8"), "UNSET|UNSET");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("applyMergeGate: blocking command failure → refuses with tail of stderr", () => {
   const tmp = makeTmp("dangeresque-gate-");
   const worktree = makeTmp("dangeresque-gate-wt-");
