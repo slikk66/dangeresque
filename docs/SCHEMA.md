@@ -51,10 +51,10 @@ Exit codes: 0 normal · 1 on FAIL or --strict WARN · 2 on internal error
 ```
 $ dangeresque migrate
 Migrated: 0
-Skipped (already at v8): 1
+Skipped (already at v9): 1
 ```
 
-Currently supported source versions: `v4`, `v5`, `v6`, and `v7`. Older versions throw with an "unsupported source schema_version" error and require manual handling.
+Currently supported source versions: `v4`, `v5`, `v6`, `v7`, and `v8`. Older versions throw with an "unsupported source schema_version" error and require manual handling.
 
 | Step | Effect |
 | --- | --- |
@@ -62,6 +62,7 @@ Currently supported source versions: `v4`, `v5`, `v6`, and `v7`. Older versions 
 | `v5 → v6` | Drops the deprecated `scope_violations` field; renames the `scope_violation` enum value in `failure_categories` to `scope_outside`. |
 | `v6 → v7` | Adds `review_engine` to reviewed artifacts, defaulting to the worker `engine` for historical same-engine runs. |
 | `v7 → v8` | Adds `scope_report.declaration_status`. Backfilled as `parsed` when the artifact recorded declaration rows, `unknown` when it did not — a v7 artifact cannot say whether an empty declaration means the worker wrote no section or we failed to read the one it wrote. |
+| `v8 → v9` | Adds `rescue.kind` (`micro_fix` \| `no_code_delta`) on artifacts that carry a rescue record. Stamped `micro_fix` — the second lane did not exist when these were written, so this is a fact about them rather than a guess. Runs that were never rescued are untouched; the field only exists on rescued runs. |
 
 Migrations write a `migrated_from_version` field on each touched artifact so downstream consumers can tell a freshly-migrated file from one originally written at the current version. Run-result `.md` files are untouched — they are operator narrative, not derived data.
 

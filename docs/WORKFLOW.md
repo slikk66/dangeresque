@@ -108,6 +108,36 @@ verdict is refused. `--force` overrides that, and records the verdict it
 overrode in the artifact — reach for it only when you know the earlier review
 itself was broken.
 
+## 7c. If the reviewer rejected, but you disagree
+
+A reject blocks the merge. Two ways past it, and both leave an audit record —
+there is no blanket `--force` on merge:
+
+```bash
+# (a) You fixed what the reviewer objected to. Commit it on the branch with
+#     the sentinel in the message, then rescue.
+git -C .claude/worktrees/dangeresque-implement-63 commit -am \
+  "fix: clamp the boundary [micro-fix: USER-approved]"
+dangeresque merge implement-63 --rescue
+
+# (b) There is nothing to fix — the reviewer objected to something other than
+#     the code (a stale line number in the run report, a claim you judge
+#     wrong). Say why instead.
+dangeresque merge implement-63 --rescue \
+  --reason "reviewer traced the code and endorsed it; rejected only on a stale citation"
+```
+
+Lane (b) is accepted **only when nothing has been committed to the branch since
+the review ended** — that is what makes it honest: the tree being merged is the
+tree the reviewer read, so there is no unreviewed code riding along. Commit
+anything after the review and it refuses, naming the commits, and you are back
+to lane (a).
+
+Neither lane waives verification: the configured verify and gate commands still
+run. Only the round-2 worker round-trip is skipped. Both write a `rescue` record
+into the artifact JSON, append a `## RESCUE` section to the run report, and post
+a comment on the issue.
+
 ## 8. Continue or close
 
 - **Push** your main branch with the merged changes
