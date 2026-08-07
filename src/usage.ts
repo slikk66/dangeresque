@@ -22,7 +22,7 @@ Commands:
   results --issue <N> [--all]          Show archived results for an issue
   stage <number> --comment "text"      Add context comment to an issue
   status                               List active dangeresque worktrees
-  merge <branch> [--rescue]            Merge a reviewed worktree (--rescue: merge over a reject/needs_human_review verdict; verify gates still run. Authorize with a USER-approved micro-fix commit, or with --reason "<why>" when nothing was committed since the review ran)
+  merge <branch> [--rescue …]          Merge a reviewed worktree (see Merge options)
   discard <branch> [--force]           Remove a worktree (--force kills running worker first)
   stop <branch>                        Stop a running worker; leave worktree intact
   clean --issue <N>                    Delete archived runs for an issue
@@ -45,7 +45,11 @@ Run options:
   --no-review       Skip the review pass
   --no-verify       Skip pre-review verification commands (compile/test/lint)
   --interactive     Run interactively (default: headless with -p)
-  --force           Bypass pre-flight gates (same-issue worktree, stale main)
+  --force           Bypass the built-in pre-dispatch policy: pre-flight gates
+                    (same-issue worktree, stale main) and dispatchGate's
+                    requireInvestigateBeforeImplement. Project-configured gate
+                    commands ALWAYS run; their on_failure governs. Recorded in
+                    the run artifact as dispatch_gate_forced
   --engine <name>   Worker engine: claude or codex (uses engineDefaults pin)
   --model <model>   Override worker model
 ${engineRunNotes}  --review-engine <name> Override review engine; uses engineDefaults pin
@@ -53,6 +57,22 @@ ${engineRunNotes}  --review-engine <name> Override review engine; uses engineDef
   --review-effort <level> Override review effort
   Env: DANGERESQUE_ENGINE, DANGERESQUE_REVIEW_ENGINE
   --help            Show this help
+
+Merge options:
+  --rescue          Merge over a reviewed reject/needs_human_review verdict.
+                    Never substitutes for a missing, skipped or unparseable
+                    review, and verification gates STILL run — only the
+                    round-2 worker round-trip is waived. Needs one of the two
+                    authorizations below; writes a RESCUE record into the run
+                    artifact and posts it to the issue.
+                    (a) a commit on the branch whose message carries
+                        "[micro-fix: USER-approved]" — the approved fix; or
+                    (b) --reason "<why>", when there is no code fix to commit
+  --reason "<why>"  Authorize a --rescue with a written justification instead
+                    of a commit. Accepted ONLY when nothing was committed to
+                    the branch after the review ended, so the reviewer read the
+                    exact tree being merged. Refuses if the artifact records no
+                    review end time, or if any commit landed since
 
 Review options (crash recovery — the worker's committed output is kept):
   --dry-run         Report whether the run is rescuable; dispatch nothing
@@ -65,6 +85,8 @@ Examples:
   dangeresque run --issue 63 --mode IMPLEMENT
   dangeresque run --issue 63 --mode IMPLEMENT --engine codex --review-engine claude
   dangeresque review worktree-dangeresque-implement-63
+  dangeresque merge worktree-dangeresque-implement-63
+  dangeresque merge worktree-dangeresque-implement-63 --rescue --reason "reviewer rejected on a stale line number; it endorsed the code"
   dangeresque results investigate-63
   dangeresque stage 63 --comment "root cause confirmed" --mode IMPLEMENT
   dangeresque init

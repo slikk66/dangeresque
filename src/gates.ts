@@ -136,16 +136,16 @@ export interface ApplyMergeGateOptions {
   mode: string;
   config: MergeGateConfig;
   /**
-   * `--force` bypasses ONLY the built-in policy (requireAcceptedImplement).
-   * Not currently exposed by `dangeresque merge`; reserved for API symmetry.
-   */
-  force?: boolean;
-  /**
    * `--rescue` allows a merge over a reviewed `reject` / `needs_human_review`
-   * verdict. Strictly narrower than `force`: it does NOT bypass a missing /
-   * skipped / unreadable / unknown review — only a real non-accept verdict from
-   * a review that actually ran. Verification commands still run regardless (the
-   * round-2 worker round-trip is the only thing waived).
+   * verdict. It does NOT bypass a missing / skipped / unreadable / unknown
+   * review — only a real non-accept verdict from a review that actually ran.
+   * Verification commands still run regardless (the round-2 worker round-trip
+   * is the only thing waived).
+   *
+   * There is deliberately no blanket `force` escape on this gate. It carried
+   * one until issue #104, unreachable from the CLI and waiting to be wired up:
+   * an unaudited merge bypass sitting next to an audited one is how the
+   * audited one stops being used. Every path over this gate leaves a record.
    *
    * Two lanes authorize it, in this order:
    *  1. `sentinelCommits` is non-empty — a USER-approved micro-fix commit sits
@@ -199,14 +199,17 @@ export interface BranchCommit extends SentinelCommit {
  *     Any check failure on a root's latest artifact is TERMINAL — an older
  *     accepted artifact at projectRoot cannot override a rejected/skipped
  *     latest artifact in the worktree. Missing/unreadable/skipped/rejected
- *     → fail closed. `--force` bypasses.
+ *     → fail closed. Only `--rescue` moves past it, and only by leaving an
+ *     audit record; there is no blanket bypass on this gate.
  *  2. Project-configured commands: run each sequentially in projectRoot with
  *     DANGERESQUE_ISSUE / DANGERESQUE_MODE / DANGERESQUE_MERGE=1 /
  *     DANGERESQUE_WORKTREE (the merge candidate's checkout — see the env
- *     block below for why diff-based checks should point there) env vars.
+ *     block below for why diff-based checks should point there) /
+ *     DANGERESQUE_ARTIFACT + _ARTIFACT_JSON (the run report being merged)
+ *     env vars.
  */
 export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
-  const { projectRoot, worktreePath, issueNumber, mode, config, force, rescue } = opts;
+  const { projectRoot, worktreePath, issueNumber, mode, config, rescue } = opts;
   const sentinelCommits = opts.sentinelCommits ?? [];
   if (!config.enabled) return { ok: true };
   // Unrecognized mode (e.g. extractMode returned "UNKNOWN" for a malformed
@@ -230,7 +233,7 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
   if (!config.modes.includes(mode)) return { ok: true };
 
   let rescueDecision: MergeRescueDecision | undefined;
-  if (!force && config.requireAcceptedImplement) {
+  if (config.requireAcceptedImplement) {
     if (issueNumber === undefined) {
       return {
         ok: false,
@@ -244,8 +247,8 @@ export function applyMergeGate(opts: ApplyMergeGateOptions): GateResult {
       const header =
         `ERROR: mergeGate refuses to merge (${mode}) for issue #${issueNumber} because -\n`;
       if (rescue) {
-        // Rescue is strictly narrower than force: it only overrides a review
-        // that RAN and returned a non-accept judgment on otherwise-good work.
+        // Rescue is narrow by construction: it only overrides a review that RAN
+        // and returned a non-accept judgment on otherwise-good work.
         const eligible =
           check.verdict === "reject" || check.verdict === "needs_human_review";
         if (!eligible) {
@@ -361,8 +364,8 @@ interface NoCodeDeltaCheck {
  * Fails closed on every unknown: an artifact that never recorded when its
  * review ended, or a caller that supplied no way to date-bound the branch,
  * cannot prove the code is untouched — and an unprovable claim is exactly what
- * this lane must not accept, or it degenerates into `--force` with a note
- * attached.
+ * this lane must not accept, or it degenerates into a blanket bypass with a
+ * note attached.
  */
 function assessNoCodeDelta(opts: {
   reason: string | undefined;

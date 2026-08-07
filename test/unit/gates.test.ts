@@ -446,7 +446,12 @@ test("applyMergeGate: missing JSON sibling → refuses (fail closed)", () => {
   }
 });
 
-test("applyMergeGate: --force bypasses built-in requireAcceptedImplement", () => {
+test("applyMergeGate: has no blanket bypass — the only way past it leaves an audit record", () => {
+  // This gate used to carry a `force` flag that skipped requireAcceptedImplement
+  // outright. It was unreachable from the CLI and recorded nothing, so it was
+  // deleted with issue #104: an unaudited merge bypass sitting beside an
+  // audited one is how the audited one stops getting used. Rescue (which always
+  // writes a RescueRecord) is the only remaining path.
   const tmp = makeTmp("dangeresque-gate-");
   const worktree = makeTmp("dangeresque-gate-wt-");
   try {
@@ -456,9 +461,9 @@ test("applyMergeGate: --force bypasses built-in requireAcceptedImplement", () =>
       issueNumber: 42,
       mode: "IMPLEMENT",
       config: makeMergeGateConfig(),
-      force: true,
     });
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /no IMPLEMENT artifact found/);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
     rmSync(worktree, { recursive: true, force: true });
