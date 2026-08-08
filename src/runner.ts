@@ -273,7 +273,19 @@ export interface IssueData {
   number: number;
   title: string;
   body: string;
-  comments: Array<{ body: string; author: { login: string }; isMinimized: boolean }>;
+  comments: IssueComment[];
+}
+
+export interface IssueComment {
+  body: string;
+  author: { login: string };
+  isMinimized: boolean;
+  /**
+   * ISO-8601 creation time, as `gh` reports it. Optional because fixtures may
+   * omit it; dispatchGate's work-order freshness check skips any comment
+   * without one rather than guessing.
+   */
+  createdAt?: string;
 }
 
 export function fetchIssue(
@@ -290,10 +302,16 @@ export function fetchIssue(
     title: data.title,
     body: data.body,
     comments: (data.comments ?? []).map(
-      (c: { body: string; author: { login: string }; isMinimized: boolean }) => ({
+      (c: {
+        body: string;
+        author: { login: string };
+        isMinimized: boolean;
+        createdAt?: string;
+      }) => ({
         body: c.body,
         author: c.author,
         isMinimized: c.isMinimized,
+        ...(typeof c.createdAt === "string" ? { createdAt: c.createdAt } : {}),
       })
     ),
   };
@@ -347,10 +365,16 @@ export function loadIssueFixture(path: string): IssueData {
     if (!author || typeof author.login !== "string") {
       throw new Error(`Fixture comment[${i}].author.login must be a string: ${path}`);
     }
+    // Optional: `gh` always supplies it, hand-written fixtures rarely do. A
+    // comment without one simply cannot be dispatchGate's work order.
+    if (cObj.createdAt !== undefined && typeof cObj.createdAt !== "string") {
+      throw new Error(`Fixture comment[${i}].createdAt must be a string when present: ${path}`);
+    }
     return {
       body: cObj.body,
       author: { login: author.login },
       isMinimized: Boolean(cObj.isMinimized),
+      ...(typeof cObj.createdAt === "string" ? { createdAt: cObj.createdAt } : {}),
     };
   });
 

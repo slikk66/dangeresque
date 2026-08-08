@@ -158,6 +158,20 @@ export interface DispatchGateConfig {
   /** Built-in: IMPLEMENT refuses if no prior INVESTIGATE artifact exists. `--force` bypasses. */
   requireInvestigateBeforeImplement: boolean;
   /**
+   * Regex naming the issue comment that carries the spec being dispatched — a
+   * downstream project convention (e.g. `^##\\s*\\[ACTIVE`), which is why
+   * dangeresque takes it as config rather than knowing any comment format.
+   *
+   * When set, `requireInvestigateBeforeImplement` stops asking "does ANY
+   * INVESTIGATE artifact exist" and asks "did one run AFTER the current work
+   * order was written". Without it a decade-old INVESTIGATE about an unrelated
+   * subject satisfies the gate forever (issue #106).
+   *
+   * Absent, or matching no comment, leaves the existence-only check in place.
+   * Compiled with the `m` flag at load time; an uncompilable pattern throws.
+   */
+  workOrderPattern?: string;
+  /**
    * Project-configured shell commands run in projectRoot with
    * DANGERESQUE_ISSUE/MODE env vars. DANGERESQUE_WORKTREE and
    * DANGERESQUE_ARTIFACT are absent — neither exists yet at dispatch.
@@ -668,6 +682,7 @@ const DISPATCH_GATE_KEYS = new Set([
   "enabled",
   "modes",
   "requireInvestigateBeforeImplement",
+  "workOrderPattern",
   "commands",
 ]);
 
@@ -722,8 +737,34 @@ export function normalizeDispatchGateConfig(raw: unknown): DispatchGateConfig | 
     requireInvestigateBeforeImplement = obj.requireInvestigateBeforeImplement;
   }
 
+  // Compile here purely to reject an illegal pattern at load time rather than
+  // at the dispatch surface — a gate whose rule cannot be evaluated is not a
+  // gate. The compiled form is thrown away; gates.ts owns the matching.
+  let workOrderPattern: string | undefined;
+  if (obj.workOrderPattern !== undefined) {
+    if (typeof obj.workOrderPattern !== "string") {
+      throw new Error(
+        `dispatchGate.workOrderPattern must be a string, got ${typeof obj.workOrderPattern}`,
+      );
+    }
+    try {
+      new RegExp(obj.workOrderPattern, "m");
+    } catch (err) {
+      throw new Error(
+        `dispatchGate.workOrderPattern is not a valid regex: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    workOrderPattern = obj.workOrderPattern;
+  }
+
   const commands = normalizeGateCommands(obj.commands, "dispatchGate");
-  return { enabled, modes, requireInvestigateBeforeImplement, commands };
+  return {
+    enabled,
+    modes,
+    requireInvestigateBeforeImplement,
+    ...(workOrderPattern !== undefined ? { workOrderPattern } : {}),
+    commands,
+  };
 }
 
 /**

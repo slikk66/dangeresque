@@ -38,10 +38,12 @@
   },
 
   "_doc_dispatchGate": "Pre-worker enforcement gate. Runs BEFORE runWorker for configured modes and refuses to dispatch (exit 2) if any blocking check fails. Independent of reviewer output — this fires at the physical dispatch surface, so consumer policy cannot be bypassed by model verdicts. Absent block = gate off. Malformed config throws at load time (fail closed). --force bypasses only the built-in `requireInvestigateBeforeImplement`; project commands always run and their `on_failure` governs. Commands run in projectRoot with DANGERESQUE_ISSUE + DANGERESQUE_MODE env vars. DANGERESQUE_WORKTREE and DANGERESQUE_ARTIFACT are deliberately absent here — neither exists yet at dispatch time.",
+  "_doc_dispatchGate_workOrderPattern": "Optional regex naming the issue comment that carries the spec being dispatched (a project convention — dangeresque knows no comment format). Set it and requireInvestigateBeforeImplement stops asking 'has this issue EVER had an INVESTIGATE' and starts asking 'did one run AFTER the current spec was written', comparing the newest -INVESTIGATE.md artifact's start time against the newest matching comment's createdAt. Without it, the first INVESTIGATE ever archived satisfies the gate forever, including for scope invented weeks later. Matched with the `m` flag. Absent, or matching no comment (including an issue with no comments), keeps the existence-only check — a project opts into strictness by writing down the convention it already follows. An uncompilable regex throws at load time. Minimized comments and comments with no createdAt are ignored. --force bypasses, as with the rest of this policy.",
   "dispatchGate": {
     "enabled": false,
     "modes": ["INVESTIGATE", "IMPLEMENT", "REFACTOR", "TEST", "VERIFY"],
     "requireInvestigateBeforeImplement": true,
+    "workOrderPattern": "^##\\s*\\[ACTIVE",
     "commands": [
       { "name": "issue-policy", "cmd": "./scripts/dangeresque/check-issue.sh", "on_failure": "block", "timeout_ms": 30000 }
     ]

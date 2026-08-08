@@ -42,6 +42,49 @@ test("loadIssueFixture: valid fixture returns correct shape", () => {
   assert.ok(Array.isArray(data.comments));
 });
 
+test("loadIssueFixture: comment createdAt is optional, preserved when present", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  const path = join(tmp, "issue.json");
+  try {
+    writeFileSync(
+      path,
+      JSON.stringify({
+        number: 1,
+        title: "t",
+        body: "b",
+        comments: [
+          { body: "dated", author: { login: "a" }, createdAt: "2026-08-07T18:00:00Z" },
+          { body: "undated", author: { login: "a" } },
+        ],
+      }),
+    );
+    const data = loadIssueFixture(path);
+    assert.equal(data.comments[0].createdAt, "2026-08-07T18:00:00Z");
+    assert.equal(data.comments[1].createdAt, undefined);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("loadIssueFixture: non-string comment createdAt throws", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
+  const path = join(tmp, "issue.json");
+  try {
+    writeFileSync(
+      path,
+      JSON.stringify({
+        number: 1,
+        title: "t",
+        body: "b",
+        comments: [{ body: "x", author: { login: "a" }, createdAt: 12345 }],
+      }),
+    );
+    assert.throws(() => loadIssueFixture(path), /createdAt must be a string when present/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("loadIssueFixture: non-existent path throws with 'Failed to read'", () => {
   assert.throws(
     () => loadIssueFixture("/tmp/definitely-not-real-xyz-zzzzz.json"),

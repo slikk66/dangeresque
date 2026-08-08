@@ -187,6 +187,269 @@ test("applyDispatchGate: --force bypasses built-in INVESTIGATE requirement", () 
   }
 });
 
+// --- work-order freshness (issue #106) ---
+
+const WORK_ORDER_PATTERN = "^##\\s*\\[ACTIVE";
+
+function workOrder(
+  createdAt: string,
+  overrides: { body?: string; isMinimized?: boolean } = {},
+) {
+  return {
+    body: overrides.body ?? "## [ACTIVE] slice 3 — extract the width-fit helper\n",
+    author: { login: "slikk66" },
+    isMinimized: overrides.isMinimized ?? false,
+    createdAt,
+  };
+}
+
+// The receipt from issue #106: a ten-day-old INVESTIGATE about an unrelated
+// subject satisfied the existence-only gate on a long-lived lane issue.
+test("applyDispatchGate: INVESTIGATE older than the work order → refuses", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-07-28T01-47-47-INVESTIGATE.md", "# style validator v0\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+      comments: [workOrder("2026-08-07T18:00:00Z")],
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /predates the work order/);
+    assert.match(result.message!, /2026-07-28T01:47:47/);
+    assert.match(result.message!, /2026-08-07T18:00:00/);
+    assert.match(result.message!, /extract the width-fit helper/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: INVESTIGATE newer than the work order → passes", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-08-08T00-37-42-INVESTIGATE.md", "# investigation\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+      comments: [workOrder("2026-08-08T00:37:08Z")],
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: no workOrderPattern → stale INVESTIGATE still passes", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-01-01T00-00-00-INVESTIGATE.md", "# ancient\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig(),
+      comments: [workOrder("2026-08-07T18:00:00Z")],
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: pattern set but issue has no comments → passes", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-01-01T00-00-00-INVESTIGATE.md", "# ancient\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+      comments: [],
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: comments exist but none match the pattern → passes", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-01-01T00-00-00-INVESTIGATE.md", "# ancient\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+      comments: [
+        workOrder("2026-08-07T18:00:00Z", { body: "just a normal comment\n" }),
+      ],
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: newest matching comment sets the bar, not the oldest", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-08-05T00-00-00-INVESTIGATE.md", "# slice 2\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+      comments: [
+        workOrder("2026-08-01T00:00:00Z", { body: "## [ACTIVE] slice 2\n" }),
+        workOrder("2026-08-06T00:00:00Z", { body: "## [ACTIVE] slice 3\n" }),
+      ],
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /slice 3/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: newest INVESTIGATE clears the bar even with older siblings", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-07-01T00-00-00-INVESTIGATE.md", "# old\n");
+    seedRun(tmp, 42, "2026-08-07T00-00-00-INVESTIGATE.md", "# current\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+      comments: [workOrder("2026-08-06T00:00:00Z")],
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: minimized work order is ignored", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-01-01T00-00-00-INVESTIGATE.md", "# ancient\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+      comments: [workOrder("2026-08-07T18:00:00Z", { isMinimized: true })],
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: matching comment without createdAt is ignored (fixtures)", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-01-01T00-00-00-INVESTIGATE.md", "# ancient\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+      comments: [
+        {
+          body: "## [ACTIVE] slice 3\n",
+          author: { login: "slikk66" },
+          isMinimized: false,
+        },
+      ],
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: undated INVESTIGATE filename cannot prove freshness → refuses", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "handwritten-notes-INVESTIGATE.md", "# notes\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+      comments: [workOrder("2026-08-07T18:00:00Z")],
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /readable timestamp/);
+    assert.match(result.message!, /handwritten-notes-INVESTIGATE\.md/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: --force bypasses the freshness check too", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-01-01T00-00-00-INVESTIGATE.md", "# ancient\n");
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+      comments: [workOrder("2026-08-07T18:00:00Z")],
+      force: true,
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: freshness never applies to non-IMPLEMENT modes", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    seedRun(tmp, 42, "2026-01-01T00-00-00-INVESTIGATE.md", "# ancient\n");
+    for (const mode of ["INVESTIGATE", "REFACTOR", "TEST"]) {
+      const result = applyDispatchGate({
+        projectRoot: tmp,
+        issueNumber: 42,
+        mode,
+        config: makeDispatchGateConfig({ workOrderPattern: WORK_ORDER_PATTERN }),
+        comments: [workOrder("2026-08-07T18:00:00Z")],
+      });
+      assert.equal(result.ok, true, `${mode} should not be freshness-gated`);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("applyDispatchGate: requireInvestigateBeforeImplement=false makes the pattern inert", () => {
+  const tmp = makeTmp("dangeresque-gate-");
+  try {
+    const result = applyDispatchGate({
+      projectRoot: tmp,
+      issueNumber: 42,
+      mode: "IMPLEMENT",
+      config: makeDispatchGateConfig({
+        requireInvestigateBeforeImplement: false,
+        workOrderPattern: WORK_ORDER_PATTERN,
+      }),
+      comments: [workOrder("2026-08-07T18:00:00Z")],
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("applyDispatchGate: --force does NOT bypass project-configured blocking command", () => {
   const tmp = makeTmp("dangeresque-gate-");
   try {

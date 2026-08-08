@@ -12,6 +12,7 @@ import {
 // the CLI ever dispatches — the merge-side fail-closed check must recognize
 // every legitimate mode, not just merge-gated ones.
 import { listArchivedRuns } from "./worktree.js";
+import type { IssueComment } from "./runner.js";
 import {
   jsonPathForArchive,
   type RunArtifact,
@@ -77,6 +78,13 @@ export interface ApplyDispatchGateOptions {
    * run; their per-command `on_failure` governs whether failures block.
    */
   force?: boolean;
+  /**
+   * The issue's comments, already fetched by the caller for the worker prompt.
+   * Only read when `config.workOrderPattern` is set, to date the spec being
+   * dispatched. Absent ⇒ the freshness check has nothing to compare and the
+   * existence-only check stands.
+   */
+  comments?: IssueComment[];
 }
 
 /**
@@ -113,6 +121,13 @@ export function applyDispatchGate(opts: ApplyDispatchGateOptions): GateResult {
           `Or, if you really want to continue anyway, re-run with --force.`,
       };
     }
+    const stale = checkInvestigateFreshness({
+      issueNumber,
+      pattern: config.workOrderPattern,
+      comments: opts.comments,
+      priorInvestigates: prior,
+    });
+    if (stale) return stale;
   }
 
   // No worktree and no run report exist yet at dispatch time, so those keys are
@@ -127,6 +142,117 @@ export function applyDispatchGate(opts: ApplyDispatchGateOptions): GateResult {
     };
   }
   return { ok: true };
+}
+
+/**
+ * Second half of `requireInvestigateBeforeImplement`: the newest INVESTIGATE
+ * must have STARTED after the work order it is supposed to have read.
+ *
+ * Existence alone is not a guarantee — on an issue used as a long-lived lane,
+ * the first INVESTIGATE ever archived satisfies an existence check forever,
+ * including for scope invented weeks later (issue #106). The defect is not age;
+ * it is predating the work.
+ *
+ * Deliberately permissive about finding no work order: a project that has not
+ * adopted a work-order comment convention, or an issue with no comments at all,
+ * keeps the existence-only behaviour. Only a comment that MATCHES the project's
+ * own pattern can raise the bar, so a project opts into strictness by writing
+ * the convention it already follows.
+ *
+ * Returns a refusal, or undefined to allow.
+ */
+function checkInvestigateFreshness(opts: {
+  issueNumber: number;
+  pattern: string | undefined;
+  comments: IssueComment[] | undefined;
+  /** Archived `-INVESTIGATE.md` filenames, chronologically sorted (non-empty). */
+  priorInvestigates: string[];
+}): GateResult | undefined {
+  const { issueNumber, pattern, comments, priorInvestigates } = opts;
+  if (!pattern) return undefined;
+
+  // Already validated at config load; recompiling here cannot throw.
+  const re = new RegExp(pattern, "m");
+  // A minimized comment has been retracted by a human — it must not set the
+  // bar. Same visibility rule the worker prompt applies (formatIssueComments).
+  const workOrders = (comments ?? [])
+    .filter((c) => !c.isMinimized && c.createdAt && re.test(c.body))
+    .map((c) => ({ body: c.body, at: Date.parse(c.createdAt!) }))
+    .filter((c) => Number.isFinite(c.at));
+  if (workOrders.length === 0) return undefined;
+
+  // Newest match is the current work order; earlier ones were superseded by it.
+  const workOrder = workOrders.reduce((a, b) => (b.at >= a.at ? b : a));
+
+  // Archived names are `<UTC-ISO>-<MODE>.md` (runner.ts computeRunArchivePath),
+  // so the caller's lexicographic sort is chronological. Take the newest name
+  // that yields a real date: one we cannot date cannot prove its own freshness.
+  let newest: { filename: string; at: number } | undefined;
+  for (let i = priorInvestigates.length - 1; i >= 0; i--) {
+    const at = parseArchiveTimestamp(priorInvestigates[i]);
+    if (at !== undefined) {
+      newest = { filename: priorInvestigates[i], at };
+      break;
+    }
+  }
+
+  const workOrderIso = new Date(workOrder.at).toISOString();
+  const headline = firstMeaningfulLine(workOrder.body);
+  const header =
+    `ERROR: dispatchGate refuses to dispatch IMPLEMENT for issue #${issueNumber} because -\n`;
+  const remedy =
+    `\nFix one of these:\n` +
+    `  dangeresque run --issue ${issueNumber} --mode INVESTIGATE\n` +
+    `  (investigate the work order as written, then dispatch IMPLEMENT)\n\n` +
+    `Or, if you really want to continue anyway, re-run with --force.`;
+
+  if (!newest) {
+    return {
+      ok: false,
+      message:
+        header +
+        `- no INVESTIGATE artifact under ${relativeIssueRunsDir(issueNumber)} has a\n` +
+        `  readable timestamp, so none can be shown to postdate the work order\n` +
+        `  posted at ${workOrderIso} (fail closed).\n` +
+        `  Found: ${priorInvestigates.join(", ")}\n` +
+        remedy,
+    };
+  }
+
+  if (newest.at > workOrder.at) return undefined;
+
+  return {
+    ok: false,
+    message:
+      header +
+      `- the newest INVESTIGATE predates the work order being implemented:\n` +
+      `    work order   ${workOrderIso}  ${headline}\n` +
+      `    INVESTIGATE  ${new Date(newest.at).toISOString()}  ${newest.filename}\n\n` +
+      `  That run could not have read this spec, so it is not evidence the work\n` +
+      `  was investigated. An INVESTIGATE artifact existing is not the same as\n` +
+      `  one covering the scope now being dispatched.\n` +
+      remedy,
+  };
+}
+
+/**
+ * Epoch-ms for an archived run filename (`2026-08-08T00-37-42-INVESTIGATE.md`),
+ * or undefined when the name does not carry a parseable UTC timestamp.
+ *
+ * The `-` separators in the time are `toISOString()` output with `[:.]` replaced
+ * (runner.ts), so recovering the original means putting the colons back.
+ */
+function parseArchiveTimestamp(filename: string): number | undefined {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-/.exec(filename);
+  if (!m) return undefined;
+  const ms = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}Z`);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+/** First non-blank line of a comment, truncated — used to name it in refusals. */
+function firstMeaningfulLine(body: string): string {
+  const line = body.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  return line.length > 72 ? `${line.slice(0, 69)}...` : line;
 }
 
 export interface ApplyMergeGateOptions {

@@ -574,6 +574,7 @@ async function cmdRun(args: string[]) {
       mode: effectiveMode,
       config: config.dispatchGate,
       force,
+      comments: issueData.comments,
     });
     if (!gate.ok) {
       console.error(gate.message ?? "dispatchGate refused (no message).");

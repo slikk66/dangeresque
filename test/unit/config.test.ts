@@ -810,6 +810,33 @@ test("normalizeDispatchGateConfig: full valid block round-trips", () => {
   assert.ok(cfg.commands[1].timeout_ms > 0, "timeout_ms defaults to positive");
 });
 
+test("normalizeDispatchGateConfig: absent workOrderPattern stays absent", () => {
+  const cfg = normalizeDispatchGateConfig({ enabled: true })!;
+  assert.equal(cfg.workOrderPattern, undefined);
+});
+
+test("normalizeDispatchGateConfig: valid workOrderPattern round-trips", () => {
+  const cfg = normalizeDispatchGateConfig({
+    enabled: true,
+    workOrderPattern: "^##\\s*\\[ACTIVE",
+  })!;
+  assert.equal(cfg.workOrderPattern, "^##\\s*\\[ACTIVE");
+});
+
+test("normalizeDispatchGateConfig: workOrderPattern non-string → throws", () => {
+  assert.throws(
+    () => normalizeDispatchGateConfig({ workOrderPattern: 42 }),
+    /dispatchGate\.workOrderPattern must be a string/,
+  );
+});
+
+test("normalizeDispatchGateConfig: uncompilable workOrderPattern → throws at load", () => {
+  assert.throws(
+    () => normalizeDispatchGateConfig({ workOrderPattern: "^##\\s*[ACTIVE" }),
+    /dispatchGate\.workOrderPattern is not a valid regex/,
+  );
+});
+
 test("normalizeDispatchGateConfig: non-object → throws", () => {
   assert.throws(() => normalizeDispatchGateConfig("hi"), /must be an object/);
   assert.throws(() => normalizeDispatchGateConfig([]), /must be an object.*array/);
