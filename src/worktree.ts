@@ -9,7 +9,7 @@ import {
   readdirSync,
   rmSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { CONFIG_DIR, RUNS_DIR, PID_FILE, type MergeGateConfig } from "./config.js";
 import {
   jsonPathForArchive,
@@ -606,17 +606,50 @@ export function listArchivedRuns(
 }
 
 /**
- * Read a specific run result file for an issue.
+ * Every attempt on an issue, as `.md` names — `listArchivedRuns` plus the
+ * attempts that only ever wrote their eval JSON (a worker killed before its
+ * first Write still gets a JSON from the failure path). `results` renders from
+ * this so a dead attempt is visible under "Previous runs"; the gates keep
+ * reading `listArchivedRuns`, because an attempt with no report is not a run
+ * that can satisfy a policy.
+ */
+export function listArchivedAttempts(
+  projectRoot: string,
+  issueNumber: number,
+): string[] {
+  const issueDir = getIssueRunsDir(projectRoot, issueNumber);
+  if (!existsSync(issueDir)) return [];
+  const entries = readdirSync(issueDir);
+  const names = new Set(entries.filter((f) => f.endsWith(".md")));
+  for (const f of entries) {
+    if (f.endsWith(".json")) names.add(f.replace(/\.json$/, ".md"));
+  }
+  return [...names].sort();
+}
+
+/**
+ * Read a specific run result file for an issue. An attempt that died before
+ * writing its report (JSON only) renders as a synthesized SUMMARY block from
+ * that JSON, so every listing path sees one shape.
  */
 export function readArchivedRun(
   projectRoot: string,
   issueNumber: number,
   filename: string,
 ): string {
-  return readFileSync(
-    join(getIssueRunsDir(projectRoot, issueNumber), filename),
-    "utf-8",
-  );
+  const mdPath = join(getIssueRunsDir(projectRoot, issueNumber), filename);
+  if (existsSync(mdPath)) return readFileSync(mdPath, "utf-8");
+  const jsonPath = jsonPathForArchive(mdPath);
+  const artifact = JSON.parse(readFileSync(jsonPath, "utf-8")) as Partial<RunArtifact>;
+  const exit = artifact.worker?.exit_code;
+  return [
+    "<!-- SUMMARY -->",
+    `Mode: ${artifact.mode ?? "UNKNOWN"} | Status: died before writing a report${exit !== undefined ? ` (worker exit ${exit})` : ""}`,
+    "Files: none recorded",
+    "<!-- /SUMMARY -->",
+    "",
+    `No markdown report exists for this attempt; its eval JSON is ${basename(jsonPath)}.`,
+  ].join("\n");
 }
 
 /**
@@ -1772,7 +1805,7 @@ export function getWorktreeResults(
   // Read artifacts from the worktree, not the project root — they only land
   // at the project root after `dangeresque merge`.
   const archived = issueNum
-    ? listArchivedRuns(targetWorktree.path, issueNum)
+    ? listArchivedAttempts(targetWorktree.path, issueNum)
     : [];
   const latestName =
     archived.length > 0 ? archived[archived.length - 1] : null;
@@ -1854,7 +1887,7 @@ export function getArchivedResults(
   issueNumber: number,
   showAll: boolean,
 ): string {
-  const archived = listArchivedRuns(projectRoot, issueNumber);
+  const archived = listArchivedAttempts(projectRoot, issueNumber);
   if (archived.length === 0) {
     return `No runs found for issue #${issueNumber}`;
   }

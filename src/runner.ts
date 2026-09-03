@@ -2,7 +2,7 @@ import { spawn, execSync, spawnSync, type ChildProcess, type StdioOptions } from
 import { randomUUID } from "node:crypto";
 import { constants as osConstants } from "node:os";
 import { join, dirname, relative } from "node:path";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, createWriteStream, rmSync, readdirSync, rmdirSync } from "node:fs";
 import {
   type DangeresqueConfig,
   type Engine,
@@ -1275,7 +1275,26 @@ export async function resumeWorker(
  */
 export function clearStaleEngineState(worktreePath: string, engine: Engine): void {
   if (engine === "codex") return;
-  rmSync(join(worktreePath, ".codex"), { recursive: true, force: true });
+  removeCodexRulesFile(worktreePath);
+}
+
+/**
+ * Remove exactly the file dangeresque wrote (`CODEX_RULES_RELPATH`), then the
+ * directories it created for it — but only while they are empty. A `.codex/`
+ * the worker or the operator populated (session state, a hand-written
+ * `config.toml`, a dead-worker hunk) is never touched: an rm -rf here would
+ * violate the dirty-tree-preservation promise resume is built on.
+ */
+export function removeCodexRulesFile(worktreePath: string): void {
+  rmSync(join(worktreePath, CODEX_RULES_RELPATH), { force: true });
+  for (const rel of [dirname(CODEX_RULES_RELPATH), dirname(dirname(CODEX_RULES_RELPATH))]) {
+    const dir = join(worktreePath, rel);
+    try {
+      if (readdirSync(dir).length === 0) rmdirSync(dir);
+    } catch {
+      return; // absent already, or not ours to prune
+    }
+  }
 }
 
 export async function runReview(

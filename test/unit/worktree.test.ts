@@ -1187,6 +1187,36 @@ test("getWorktreeResults: a resumed run lists the dead attempt under Previous ru
   }
 });
 
+test("getWorktreeResults: a dead attempt that only wrote its eval JSON is still listed under Previous runs", () => {
+  // A worker killed before its first Write leaves no markdown; the failure path
+  // still writes the JSON. That attempt is resumable, so it must be visible.
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-110",
+      "worktree-dangeresque-implement-110",
+    );
+    const dead = writeRunArtifacts(worktreePath, 110, "2026-09-03T04-00-00", "IMPLEMENT", {
+      jsonOverrides: { worker: { exit_code: 1 } },
+    });
+    rmSync(dead.mdPath);
+    writeRunArtifacts(worktreePath, 110, "2026-09-03T09-00-00", "IMPLEMENT", {
+      jsonOverrides: { resumed_from: "2026-09-03T04-00-00-IMPLEMENT.md" },
+    });
+
+    const out = getWorktreeResults(dir, "worktree-dangeresque-implement-110");
+    const previousIdx = out.indexOf("--- Previous runs ---");
+    const latestIdx = out.indexOf("--- Latest run: 2026-09-03T09-00-00-IMPLEMENT.md ---");
+    assert.notEqual(previousIdx, -1);
+    assert.notEqual(latestIdx, -1);
+    const previousBlock = out.slice(previousIdx, latestIdx);
+    assert.match(previousBlock, /Run 1 \(IMPLEMENT[^)]*\): died before writing a report \(worker exit 1\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("getWorktreeResults: header omitted when JSON artifact missing", () => {
   const dir = makeRepo();
   try {

@@ -433,6 +433,72 @@ test("locateCurrentAttempt: a mirrored PRIOR run is never mistaken for this atte
   );
 });
 
+test("locateCurrentAttempt: a mirrored prior with the SAME identity (reused default name) is never this attempt", () => {
+  // Default worktree names are reusable: `implement-866` merged once, then a
+  // second `implement-866` was dispatched, died, and wrote nothing. Its dir
+  // holds the first run's JSON — same branch, same worktree_name, same issue,
+  // same mode — mirrored in at dispatch. Identity cannot tell them apart;
+  // presence in the project root can.
+  const { projectRoot, worktreePath } = resumeFixture();
+  const prior = "2026-09-01T00-00-00-IMPLEMENT.md";
+  const priorJson = evalJson({ run_id: "the-merged-first-round", worker: { exit_code: 0 } });
+  writeRun(projectRoot, ISSUE, prior, SUMMARY_MD, priorJson);
+  writeRun(worktreePath, ISSUE, prior, SUMMARY_MD, priorJson); // the mirror
+
+  assert.equal(locate(projectRoot, worktreePath), null, "fails closed");
+});
+
+test("locateCurrentAttempt: same-identity mirrored prior beside the dead attempt's OWN artifact → own wins", () => {
+  const { projectRoot, worktreePath } = resumeFixture();
+  const prior = "2026-09-01T00-00-00-IMPLEMENT.md";
+  const priorJson = evalJson({ run_id: "the-merged-first-round", worker: { exit_code: 0 } });
+  writeRun(projectRoot, ISSUE, prior, SUMMARY_MD, priorJson);
+  writeRun(worktreePath, ISSUE, prior, SUMMARY_MD, priorJson);
+  const own = writeRun(
+    worktreePath,
+    ISSUE,
+    "2026-09-03T04-00-00-IMPLEMENT.md",
+    "## Partial\n",
+    evalJson({ run_id: "the-dead-second-round" }),
+  );
+
+  const attempt = locate(projectRoot, worktreePath);
+  assert.equal(attempt?.artifactPath, own);
+  assert.equal(attempt?.artifact?.run_id, "the-dead-second-round");
+});
+
+test("locateCurrentAttempt: a stale PID naming a VANISHED archive fails closed instead of falling through", () => {
+  // The reviewer's reproduction: the PID file is the only witness to this
+  // attempt and its archive is gone, yet a same-identity mirrored prior sits in
+  // the directory. Falling through to rung 2 would resume the wrong run.
+  const { projectRoot, worktreePath } = resumeFixture();
+  const prior = "2026-09-01T00-00-00-IMPLEMENT.md";
+  const priorJson = evalJson({ run_id: "old-merged", worker: { exit_code: 0 } });
+  writeRun(projectRoot, ISSUE, prior, SUMMARY_MD, priorJson);
+  writeRun(worktreePath, ISSUE, prior, SUMMARY_MD, priorJson);
+  // …and, to make the trap complete, wipe the root copy so the mirror check alone cannot save us.
+  rmSync(join(projectRoot, ".dangeresque", "runs", `issue-${ISSUE}`), { recursive: true, force: true });
+
+  const vanished = join(worktreePath, ".dangeresque", "runs", `issue-${ISSUE}`, "2026-09-03T05-00-00-IMPLEMENT.md");
+  const attempt = locate(projectRoot, worktreePath, {
+    pidInfo: { pid: 1, startedAt: 0, archivePath: vanished },
+  });
+  assert.equal(attempt, null);
+});
+
+test("locateCurrentAttempt: a stale PID whose archive is JSON-only still resolves through rung 1", () => {
+  const { projectRoot, worktreePath } = resumeFixture();
+  const own = writeRun(worktreePath, ISSUE, "2026-09-03T04-00-00-IMPLEMENT.md", "", evalJson());
+  rmSync(own);
+
+  const attempt = locate(projectRoot, worktreePath, {
+    pidInfo: { pid: 1, startedAt: 0, archivePath: own },
+  });
+  assert.equal(attempt?.attribution, "pid_file");
+  assert.equal(attempt?.mdPath, null);
+  assert.equal(attempt?.artifactPath, own.replace(/\.md$/, ".json"));
+});
+
 test("locateCurrentAttempt: a mirrored prior with NO eval JSON still fails closed", () => {
   // Legacy shape: no JSON to contradict the branch, so rung 3 is the only one
   // left. Presence in BOTH roots proves the file was mirrored in at dispatch.

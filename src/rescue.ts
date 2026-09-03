@@ -258,20 +258,30 @@ export function locateCurrentAttempt(
   // Rung 1 — the PID file the killed parent never got to remove. Its archive
   // path is re-homed onto this worktree's issue dir by basename so a realpath
   // difference (/tmp vs /private/tmp) cannot defeat the match.
+  const rootDir = join(projectRoot, CONFIG_DIR, RUNS_DIR, `issue-${issueNumber}`);
   const recorded = opts.pidInfo?.archivePath;
   if (recorded) {
     const name = basename(recorded);
-    if (name.endsWith(`-${mode}.md`) && entries.includes(name)) {
-      const attempt = readAttempt(join(dir, name), "pid_file");
-      if (attempt) return attempt;
+    if (name.endsWith(`-${mode}.md`)) {
+      // The PID file is the one witness that names THIS attempt's archive. When
+      // that archive (md or its JSON) is gone, the attempt left nothing behind
+      // and nothing else in the directory can be it — falling through to the
+      // filename rungs would let a mirrored prior with a reused branch name
+      // pass as ours. Fail closed instead.
+      return readAttempt(join(dir, name), "pid_file");
     }
   }
 
   const jsonNames = entries.filter((f) => f.endsWith(".json")).sort();
 
-  // Rung 2 — an eval JSON that names this exact run.
+  // Rung 2 — an eval JSON that names this exact run. Default worktree names are
+  // reusable (`implement-<N>` twice on one issue), so identity alone cannot
+  // separate this attempt from a prior run of the same name: a file that ALSO
+  // sits in the project root's issue dir was mirrored in at dispatch and is by
+  // construction older than this attempt.
   for (let i = jsonNames.length - 1; i >= 0; i--) {
     if (!jsonNames[i].endsWith(`-${mode}.json`)) continue;
+    if (existsSync(join(rootDir, jsonNames[i]))) continue; // mirrored in at dispatch
     const artifact = readJson(join(dir, jsonNames[i]));
     if (!artifact || !artifactIsThisRun(artifact, opts)) continue;
     const attempt = readAttempt(
@@ -290,7 +300,6 @@ export function locateCurrentAttempt(
   });
   if (contradicted) return null;
 
-  const rootDir = join(projectRoot, CONFIG_DIR, RUNS_DIR, `issue-${issueNumber}`);
   const mdNames = entries.filter((f) => f.endsWith(`-${mode}.md`)).sort();
   for (let i = mdNames.length - 1; i >= 0; i--) {
     const name = mdNames[i];
