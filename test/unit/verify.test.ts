@@ -21,6 +21,9 @@ import {
   type VerifyCommand,
   type VerifyConfig,
   type VerificationResult,
+  failureFirstExcerpt,
+  failureBlocks,
+  consoleFailureLines,
 } from "#dist/verify.js";
 import { ArtifactBuilder } from "#dist/artifact.js";
 
@@ -234,6 +237,79 @@ test("runSingleCommand: 'false' → exit 1", () => {
     const result = runSingleCommand(cmd, dir, 8192);
     assert.equal(result.exit_code, 1);
     assert.equal(result.timed_out, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function tapStream(failIndex: number, total: number): string {
+  const out: string[] = ["TAP version 13"];
+  for (let i = 1; i <= total; i++) {
+    if (i === failIndex) {
+      out.push(`not ok ${i} - the one that matters`);
+      out.push("  ---");
+      out.push("  error: |-");
+      out.push("    expected 'a' to equal 'b'");
+      out.push("  code: 'ERR_ASSERTION'");
+      out.push("  ...");
+    } else {
+      out.push(`ok ${i} - filler test number ${i} with a long enough name to eat bytes`);
+      out.push("  ---");
+      out.push("  duration_ms: 1.5");
+      out.push("  ...");
+    }
+  }
+  out.push(`1..${total}`, `# tests ${total}`, `# pass ${total - 1}`, "# fail 1");
+  return out.join("\n") + "\n";
+}
+
+test("failureFirstExcerpt: under the cap → the stream, untouched", () => {
+  const raw = tapStream(2, 3);
+  const r = failureFirstExcerpt(raw, 1 << 20);
+  assert.equal(r.text, raw);
+  assert.equal(r.truncated, false);
+});
+
+test("failureFirstExcerpt: an early `not ok` survives an 8 KiB cap, and so does the summary", () => {
+  // #111: 680 passing subtests after the failure used to push it out of the tail.
+  const raw = tapStream(3, 400);
+  assert.ok(raw.length > 8192 * 3, "stream is well over the cap");
+  const r = failureFirstExcerpt(raw, 8192);
+  assert.equal(r.truncated, true);
+  assert.ok(r.text.length <= 8192, `excerpt ${r.text.length} bytes > cap`);
+  assert.match(r.text, /^not ok 3 - the one that matters/m);
+  assert.match(r.text, /expected 'a' to equal 'b'/);
+  assert.match(r.text, /# fail 1/);
+  assert.ok(r.text.indexOf("not ok 3") < r.text.indexOf("# fail 1"), "failure leads, summary closes");
+});
+
+test("failureFirstExcerpt: no marker anywhere → plain tail", () => {
+  const raw = "x".repeat(100) + "\n" + "tail line\n";
+  const r = failureFirstExcerpt(raw, 20);
+  assert.equal(r.text, tailBytes(raw, 20).text);
+});
+
+test("failureBlocks: tsc and jest shapes are markers too", () => {
+  const tsc = "src/a.ts(3,5): error TS2322: Type 'x' is not assignable\nsrc/b.ts ok\n";
+  assert.equal(failureBlocks(tsc).length, 1);
+  const jest = "PASS test/a\nFAIL test/b\n  ● b › does thing\n\n    expect(1).toBe(2)\nTests: 1 failed\n";
+  assert.match(failureBlocks(jest)[0], /● b › does thing/);
+});
+
+test("runSingleCommand: a failing TAP command on STDOUT keeps its `not ok` in stdout_excerpt", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-verify-test-"));
+  try {
+    const script = join(dir, "tap.sh");
+    writeFileSync(script, `#!/bin/sh\ncat "${join(dir, "stream.txt")}"\nexit 1\n`);
+    writeFileSync(join(dir, "stream.txt"), tapStream(3, 400));
+    const cmd: VerifyCommand = { name: "test", cmd: `sh ${script}`, on_failure: "block", timeout_ms: 5000 };
+    const result = runSingleCommand(cmd, dir, 8192);
+    assert.equal(result.exit_code, 1);
+    assert.match(result.stdout_excerpt, /not ok 3 - the one that matters/);
+    assert.equal(result.truncated, true);
+    // …and the console/markdown paths pick the stdout stream, not an empty stderr.
+    assert.match(consoleFailureLines(result)[0], /not ok 3/);
+    assert.match(buildVerifyBodySection([result]), /not ok 3 - the one that matters/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

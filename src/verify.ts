@@ -118,6 +118,93 @@ export function tailBytes(s: string, maxBytes: number): { text: string; truncate
   return { text: s.slice(s.length - maxBytes), truncated: true };
 }
 
+/**
+ * Lines that mark a failure in the runners dangeresque consumers actually use:
+ * TAP (`node --test`, tap, mocha --reporter tap), jest/vitest (`✕`, `FAIL`),
+ * tsc (`error TS1234:`), assertion/exception dumps, python tracebacks, go
+ * panics. A line matching one of these is where the reader needs to land.
+ */
+export const FAILURE_LINE_PATTERNS: readonly RegExp[] = [
+  /^\s*not ok\b/,
+  /^\s*[✗✕✖]/,
+  /\bFAIL(?:ED)?\b/,
+  /\bAssertionError\b/,
+  /^\s*Error:|\berror TS\d+:/,
+  /Traceback \(most recent call last\)/,
+  /^panic:/,
+];
+
+export function isFailureLine(line: string): boolean {
+  return FAILURE_LINE_PATTERNS.some((re) => re.test(line));
+}
+
+/**
+ * The blocks a reader needs when a command fails: each failure-marker line plus
+ * the detail that follows it (indented continuation, up to `blockLines`), in
+ * order of appearance. Overlapping blocks are merged. Returns [] when the
+ * stream carries no marker.
+ */
+export function failureBlocks(raw: string, blockLines = 40): string[] {
+  const lines = raw.split("\n");
+  const blocks: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!isFailureLine(lines[i])) {
+      i++;
+      continue;
+    }
+    const start = i;
+    i++;
+    while (
+      i < lines.length &&
+      i - start < blockLines &&
+      !isFailureLine(lines[i]) &&
+      (lines[i].startsWith(" ") || lines[i].startsWith("\t") || lines[i] === "")
+    ) {
+      i++;
+    }
+    blocks.push(lines.slice(start, i).join("\n").trimEnd());
+  }
+  return blocks;
+}
+
+/**
+ * Excerpt a failed command's stream so the FIRST failure survives truncation.
+ * Under the cap the stream is returned whole. Over it, the failure blocks lead
+ * (head-truncated to half the budget, so the earliest failures win) and the
+ * stream's tail follows (the runner's summary counts live there). A stream
+ * with no failure marker degrades to the plain tail.
+ */
+export function failureFirstExcerpt(
+  raw: string,
+  maxBytes: number,
+): { text: string; truncated: boolean } {
+  if (raw.length <= maxBytes) return { text: raw, truncated: false };
+  const blocks = failureBlocks(raw);
+  if (blocks.length === 0) return tailBytes(raw, maxBytes);
+  const headBudget = Math.floor(maxBytes / 2);
+  let head = blocks.join("\n\n");
+  if (head.length > headBudget) head = head.slice(0, headBudget);
+  const separator = "\n\n[…]\n\n";
+  const tail = tailBytes(raw, Math.max(0, maxBytes - head.length - separator.length));
+  return { text: head + separator + tail.text, truncated: true };
+}
+
+/**
+ * What the console shows for a failed command: the first failure block(s) from
+ * whichever stream carries a marker (stdout for TAP runners, stderr for tsc
+ * and shells), else the stderr tail, else the stdout tail. Capped at `maxLines`.
+ */
+export function consoleFailureLines(result: VerificationResult, maxLines = 12): string[] {
+  const combined = [result.stdout_excerpt, result.stderr_excerpt].filter((s) => s.trim()).join("\n");
+  const blocks = failureBlocks(combined);
+  const source = blocks.length > 0
+    ? blocks.join("\n")
+    : (result.stderr_excerpt.trim() || result.stdout_excerpt.trim());
+  const lines = source.split("\n").filter((l) => l.trim());
+  return lines.length > maxLines ? [...lines.slice(0, maxLines - 1), "…"] : lines;
+}
+
 function logBytesEnv(): number {
   const raw = process.env.DANGERESQUE_VERIFY_LOG_BYTES;
   if (!raw) return DEFAULT_VERIFY_LOG_BYTES;
@@ -167,8 +254,6 @@ export function runSingleCommand(
 
   const stdoutRaw = proc.stdout ?? "";
   const stderrRaw = proc.stderr ?? "";
-  const stdoutTail = tailBytes(stdoutRaw, maxLogBytes);
-  const stderrTail = tailBytes(stderrRaw, maxLogBytes);
 
   const timedOut = proc.error !== undefined && (proc.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
   let exitCode: number;
@@ -182,6 +267,13 @@ export function runSingleCommand(
   } else {
     exitCode = 0;
   }
+
+  // A passing command keeps a plain tail; a failing one keeps its FIRST
+  // failure (issue #111 — a `not ok` 600 lines above the summary used to be
+  // cut, leaving the operator with counts and no test name).
+  const excerpt = exitCode === 0 ? tailBytes : failureFirstExcerpt;
+  const stdoutTail = excerpt(stdoutRaw, maxLogBytes);
+  const stderrTail = excerpt(stderrRaw, maxLogBytes);
 
   return {
     name: command.name,
@@ -265,8 +357,10 @@ export function appendVerifySummaryLine(content: string, results: VerificationRe
 
 /**
  * Render a `## Verification` body section. One block per command with status,
- * duration, and the trailing stderr excerpt for any non-zero exit. Always
- * appended at the end of the artifact .md so it is visible to the reviewer.
+ * duration, and — for any non-zero exit — the failure-first excerpt of the
+ * stream that carried the failure (stdout for TAP runners), so the reviewer
+ * sees the failing test, not just the counts. Always appended at the end of
+ * the artifact .md so it is visible to the reviewer.
  */
 export function buildVerifyBodySection(results: VerificationResult[]): string {
   if (results.length === 0) return "";
@@ -278,11 +372,18 @@ export function buildVerifyBodySection(results: VerificationResult[]): string {
       `- **${r.name}** ${policy} — \`${r.cmd}\` — ${status} (exit=${r.exit_code}, ${formatMs(r.duration_ms)})`,
     );
     if (r.exit_code !== 0) {
-      const excerpt = r.stderr_excerpt.trim() || r.stdout_excerpt.trim();
+      const stdoutHasFailure = failureBlocks(r.stdout_excerpt).length > 0;
+      const stderrHasFailure = failureBlocks(r.stderr_excerpt).length > 0;
+      const excerpt = (stdoutHasFailure && !stderrHasFailure
+        ? r.stdout_excerpt
+        : r.stderr_excerpt.trim() || r.stdout_excerpt).trim();
       if (excerpt) {
+        const all = excerpt.split("\n");
+        // Head AND tail: the first failure leads, the summary counts close.
+        const shown = all.length > 60 ? [...all.slice(0, 30), "[…]", ...all.slice(-30)] : all;
         lines.push("");
         lines.push("  ```");
-        for (const ln of excerpt.split("\n").slice(-40)) {
+        for (const ln of shown) {
           lines.push(`  ${ln}`);
         }
         lines.push("  ```");
@@ -371,9 +472,9 @@ export function runVerification(opts: RunVerificationOptions): VerificationOutco
       console.error(
         `  ✗ ${result.name} FAILED (exit=${result.exit_code}, ${formatMs(result.duration_ms)}) — blocking`,
       );
-      if (result.stderr_excerpt.trim()) {
-        const tail = result.stderr_excerpt.trim().split("\n").slice(-6).join("\n");
-        console.error(`    stderr (tail):\n${tail.split("\n").map((l) => `      ${l}`).join("\n")}`);
+      const shown = consoleFailureLines(result);
+      if (shown.length > 0) {
+        console.error(`    failure:\n${shown.map((l) => `      ${l}`).join("\n")}`);
       }
       blocked = true;
       blockedBy = result.name;
