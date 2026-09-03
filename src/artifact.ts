@@ -405,11 +405,18 @@ function phaseTimingFromMs(
 
 // Matched against emphasis-stripped text; reviewers decorate the verdict line
 // inconsistently (e.g. `**Verdict:** **ACCEPT**` broke the exact-bold match on bc#624).
-const VERDICT_REGEX = /\bVerdict\s*:\s*(ACCEPT|REJECT|NEEDS[\s_-]?HUMAN[\s_-]?REVIEW)\b/i;
+const VERDICT_REGEX = /\bVerdict\s*:\s*(ACCEPT|REJECT|NEEDS[\s_-]?HUMAN[\s_-]?REVIEW)\b/gi;
 
+/**
+ * The LAST verdict in the artifact is the one that stands. `review --force`
+ * appends a fresh `## Review` section after a re-review rather than erasing
+ * the earlier one (the history is the audit trail), so an artifact can carry
+ * a superseded REJECT above the ACCEPT that replaced it.
+ */
 export function parseVerdictFromMarkdown(md: string): ReviewerVerdict {
   const normalized = md.replace(/[*`]/g, "");
-  const match = normalized.match(VERDICT_REGEX);
+  const matches = [...normalized.matchAll(VERDICT_REGEX)];
+  const match = matches[matches.length - 1];
   if (!match) return "unknown";
   const raw = match[1].toUpperCase().replace(/[\s_-]/g, "");
   if (raw === "ACCEPT") return "accept";

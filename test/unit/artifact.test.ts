@@ -14,6 +14,14 @@ test("parseVerdictFromMarkdown: ACCEPT", () => {
   assert.equal(parseVerdictFromMarkdown("prelude\n**Verdict:** ACCEPT\ntrailer"), "accept");
 });
 
+test("parseVerdictFromMarkdown: a re-review's ACCEPT after a superseded REJECT wins", () => {
+  // `review --force` appends a second ## Review section; the first verdict is history.
+  const md = "## Review\n- **Verdict:** REJECT — foo\n\n## Review\n- **Verdict:** ACCEPT\n";
+  assert.equal(parseVerdictFromMarkdown(md), "accept");
+  const flipped = "## Review\n- **Verdict:** ACCEPT\n\n## Review\n- **Verdict:** REJECT — regressed\n";
+  assert.equal(parseVerdictFromMarkdown(flipped), "reject");
+});
+
 test("parseVerdictFromMarkdown: REJECT", () => {
   assert.equal(parseVerdictFromMarkdown("**Verdict:** REJECT"), "reject");
 });
