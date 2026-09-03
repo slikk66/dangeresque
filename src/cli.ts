@@ -1497,6 +1497,7 @@ async function cmdReview(args: string[]) {
     located,
     workerRunning: info?.running ?? false,
     force,
+    reverify: verifyEnabled,
   });
   if (!assessment.ok) {
     const hints =

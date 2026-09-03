@@ -165,7 +165,7 @@ test("assessReviewRescue: refuses when the checkpoint shows the worker itself fa
   assert.match(result.reason!, /worker phase failed/);
 });
 
-test("assessReviewRescue: refuses when a block-policy verification gate failed", () => {
+test("assessReviewRescue: refuses a block-policy verification failure when verification will NOT re-run", () => {
   const root = scratchRoot();
   const mdPath = writeRun(root, 679, "2026-08-05T06-01-25-IMPLEMENT.md", SUMMARY_MD);
 
@@ -180,9 +180,31 @@ test("assessReviewRescue: refuses when a block-policy verification gate failed",
     }),
     workerRunning: false,
     force: false,
+    reverify: false,
   });
   assert.equal(result.ok, false);
   assert.match(result.reason!, /"test" failed/);
+  assert.match(result.reason!, /--no-verify/);
+});
+
+test("assessReviewRescue: a block-policy verification failure is eligible when verification re-runs", () => {
+  const root = scratchRoot();
+  const mdPath = writeRun(root, 679, "2026-08-05T06-01-25-IMPLEMENT.md", SUMMARY_MD);
+
+  const result = assessReviewRescue({
+    mode: "IMPLEMENT",
+    located: located(mdPath, {
+      worker: { exit_code: 0 },
+      verification: [
+        { name: "compile", on_failure: "block", exit_code: 0 },
+        { name: "test", on_failure: "block", exit_code: 1 },
+      ],
+    }),
+    workerRunning: false,
+    force: false,
+    reverify: true,
+  });
+  assert.equal(result.ok, true);
 });
 
 test("assessReviewRescue: a warn-policy verification failure does not block a rescue", () => {

@@ -79,6 +79,13 @@ export interface AssessReviewRescueOptions {
   workerRunning: boolean;
   /** Operator override for the "already has a verdict" refusal only. */
   force: boolean;
+  /**
+   * True when the rescue will re-run the verification commands before the
+   * review pass (the default; `--no-verify` clears it). A run whose block-policy
+   * verification failed is eligible ONLY in that case — the operator fixed the
+   * cause (or the failure was the harness's), and the re-run decides afresh.
+   */
+  reverify?: boolean;
 }
 
 /**
@@ -93,7 +100,7 @@ export interface AssessReviewRescueOptions {
 export function assessReviewRescue(
   opts: AssessReviewRescueOptions,
 ): ReviewRescueAssessment {
-  const { mode, located, workerRunning, force } = opts;
+  const { mode, located, workerRunning, force, reverify = false } = opts;
 
   if (workerRunning) {
     return {
@@ -146,10 +153,12 @@ export function assessReviewRescue(
   const blocked = checkpoint?.verification?.find(
     (v) => v.on_failure === "block" && v.exit_code !== 0,
   );
-  if (blocked) {
+  if (blocked && !reverify) {
     return {
       ok: false,
-      reason: `verification command "${blocked.name}" failed (exit ${blocked.exit_code}) — review is skipped by design when a block-policy gate fails`,
+      reason:
+        `verification command "${blocked.name}" failed (exit ${blocked.exit_code}) — review is skipped by design when a block-policy gate fails; ` +
+        `drop --no-verify so the rescue re-runs verification and decides afresh`,
     };
   }
 

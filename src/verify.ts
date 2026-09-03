@@ -84,6 +84,30 @@ export function buildCommandEnv(input: CommandEnvInput): Record<string, string> 
   };
 }
 
+/**
+ * Run-scoped vars that describe ONE dispatch/merge/verify invocation. When a
+ * dangeresque command runs inside another dangeresque command's child (this
+ * repo's own verification runs its test suite, which spawns gate commands), the
+ * outer invocation's values must not leak into the inner command's env — the
+ * overlay says which are present for THIS invocation, and absence is a
+ * contract consumers rely on (a dispatch gate has no worktree or artifact yet).
+ */
+export const RUN_SCOPED_ENV_KEYS = [
+  "DANGERESQUE_ISSUE",
+  "DANGERESQUE_MODE",
+  "DANGERESQUE_MERGE",
+  "DANGERESQUE_WORKTREE",
+  "DANGERESQUE_ARTIFACT",
+  "DANGERESQUE_ARTIFACT_JSON",
+] as const;
+
+/** `process.env` minus every run-scoped key, with `overlay` applied on top. */
+export function composeCommandEnv(overlay: Record<string, string>): NodeJS.ProcessEnv {
+  const base: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of RUN_SCOPED_ENV_KEYS) delete base[key];
+  return { ...base, ...overlay };
+}
+
 export const DEFAULT_VERIFY_TIMEOUT_MS = 300_000;
 export const DEFAULT_VERIFY_LOG_BYTES = 8 * 1024;
 export const DEFAULT_VERIFY_MODES = ["IMPLEMENT", "REFACTOR", "TEST", "VERIFY"];
@@ -118,8 +142,9 @@ export function shouldRunVerify(mode: string, config: VerifyConfig): boolean {
  * Run a single verification command synchronously in `worktreePath`.
  * Captures stdout/stderr (last `maxLogBytes` bytes), exit code, duration,
  * and a `timed_out` flag. Never throws; failures are recorded in the result.
- * Optional `env` is merged on top of `process.env` (gates use it to inject
- * DANGERESQUE_ISSUE / DANGERESQUE_MODE / DANGERESQUE_MERGE for consumer scripts).
+ * Optional `env` is merged on top of `process.env` with every run-scoped
+ * DANGERESQUE_* key scrubbed first (see `composeCommandEnv`), so consumer
+ * scripts see exactly this invocation's vars and never an enclosing run's.
  */
 export function runSingleCommand(
   command: VerifyCommand,
@@ -136,7 +161,7 @@ export function runSingleCommand(
     killSignal: "SIGKILL",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
-    env: env ? { ...process.env, ...env } : process.env,
+    env: env ? composeCommandEnv(env) : process.env,
   });
   const endedAt = Date.now();
 

@@ -290,6 +290,34 @@ test("runSingleCommand: env parameter passes vars to the child process", () => {
   }
 });
 
+test("runSingleCommand: env overlay scrubs an enclosing run's DANGERESQUE_* vars before applying", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dangeresque-verify-test-"));
+  const saved = { ...process.env };
+  try {
+    process.env.DANGERESQUE_WORKTREE = "/outer/worktree";
+    process.env.DANGERESQUE_ARTIFACT = "/outer/run.md";
+    process.env.DANGERESQUE_ARTIFACT_JSON = "/outer/run.json";
+    process.env.DANGERESQUE_MERGE = "1";
+    const capture = join(dir, "env.txt");
+    const cmd: VerifyCommand = {
+      name: "env-check",
+      cmd: `printf '%s|%s|%s|%s|%s' "$DANGERESQUE_ISSUE" "\${DANGERESQUE_WORKTREE-UNSET}" "\${DANGERESQUE_ARTIFACT-UNSET}" "\${DANGERESQUE_ARTIFACT_JSON-UNSET}" "\${DANGERESQUE_MERGE-UNSET}" > "${capture}"`,
+      on_failure: "block",
+      timeout_ms: 5000,
+    };
+    const result = runSingleCommand(cmd, dir, 8192, {
+      DANGERESQUE_ISSUE: "58",
+      DANGERESQUE_MODE: "IMPLEMENT",
+    });
+    assert.equal(result.exit_code, 0);
+    assert.equal(readFileSync(capture, "utf-8"), "58|UNSET|UNSET|UNSET|UNSET");
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runSingleCommand: without env parameter, child inherits process.env (no override)", () => {
   const dir = mkdtempSync(join(tmpdir(), "dangeresque-verify-test-"));
   try {
