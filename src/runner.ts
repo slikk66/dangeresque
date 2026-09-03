@@ -70,6 +70,19 @@ export function exitCodeFromCloseEvent(
   return 128 + signalNum;
 }
 
+/**
+ * Set only by `dangeresque resume`. Its presence is what makes a worker prompt
+ * a resume prompt — one dynamic block, one code path, both engines.
+ */
+export interface ResumeContext {
+  /**
+   * Absolute path to the artifact the dead attempt left behind (its markdown,
+   * or its eval JSON when the worker died before writing one). Handed to the
+   * worker verbatim so it reads the prior attempt before touching the tree.
+   */
+  priorArtifactPath: string;
+}
+
 export interface RunOptions {
   projectRoot: string;
   config: DangeresqueConfig;
@@ -81,6 +94,8 @@ export interface RunOptions {
   issueData: IssueData;
   /** Task mode: INVESTIGATE, IMPLEMENT, VERIFY, REFACTOR, TEST */
   mode?: string;
+  /** Set only on the `dangeresque resume` path. Absent on a fresh dispatch. */
+  resume?: ResumeContext;
 }
 
 export interface RunResult {
@@ -440,7 +455,35 @@ function buildTaskPrompt(opts: RunOptions, archivePath: string): string {
       `Phase 2 logs a warning when this section is missing — Phase 3 will hard-fail.`;
   }
 
+  // Last, so it is the final instruction the worker reads: it overrides the
+  // startup ordering in worker-prompt.md, and a resumed worker that restarts
+  // from scratch throws away exactly the work this verb exists to save.
+  if (opts.resume) {
+    prompt += buildResumeBlock(opts.resume);
+  }
+
   return prompt;
+}
+
+/**
+ * The ONE resume paragraph. Lives here rather than in `worker-prompt.md`
+ * because it is conditional on a dead attempt existing and must carry that
+ * attempt's real path — a static template cannot say either. Both engines
+ * compose their worker prompt through `buildTaskPrompt`, so this single block
+ * reaches claude and codex alike.
+ */
+function buildResumeBlock(resume: ResumeContext): string {
+  return (
+    `\n\n## Resume Context\n\n` +
+    `**This worktree already contains uncommitted work from a PRIOR attempt on this same work order.** ` +
+    `That attempt's worker died before it could commit; everything it produced is still sitting in the tree.\n\n` +
+    `Before you change anything:\n\n` +
+    `1. Run \`git status\` and \`git diff\` and read what is already there.\n` +
+    `2. Read the prior attempt's run artifact at: ${resume.priorArtifactPath}\n\n` +
+    `Then CONTINUE that work — do not restart it, and do not re-derive what is already in the tree. ` +
+    `Do not revert or rewrite an existing hunk unless your run artifact states why you did. ` +
+    `This section takes precedence over the Startup Sequence's ordering: read the tree and the prior artifact first.`
+  );
 }
 
 /**
@@ -578,6 +621,11 @@ export function buildClaudeWorkerArgs(
   }
 
   const { model, effort } = opts.plan.worker;
+  // Names a worktree git has ALREADY created — dangeresque has never asked
+  // claude to cut one (createWorktree runs first on `run`; `review` and
+  // `resume` re-enter an existing one). Claude's own help calls this "create a
+  // new git worktree", but it opens an existing name, which is what the review
+  // rescue has always relied on. `resume` newly relies on it over a DIRTY tree.
   args.push("--worktree", worktreeName);
   args.push("--model", model);
   if (effort) {
@@ -1076,19 +1124,34 @@ function executeInvocation(
   });
 }
 
-export async function runWorker(opts: RunOptions): Promise<RunResult> {
-  checkRemoteBehind(opts.projectRoot);
+interface WorkerTarget {
+  worktreeName: string;
+  branch: string;
+  worktreePath: string;
+}
 
-  const worktreeName = ensureDangeresquePrefix(opts.name ?? `${Date.now()}`);
-  const branch = `worktree-${worktreeName}`;
-  const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
+/**
+ * Everything a worker dispatch does once its worktree exists: mirror the
+ * issue's prior runs in, cut a fresh timestamped archive, prepare the engine,
+ * announce the run, and execute it.
+ *
+ * Shared verbatim by `runWorker` (which just created the worktree) and
+ * `resumeWorker` (which re-entered an existing one). The ONLY difference
+ * between a fresh dispatch and a resume is which of those two produced the
+ * worktree — everything downstream, including the artifact shape and the PID
+ * bookkeeping, must be identical or the recovery path would be the weaker one.
+ */
+async function executeWorkerPhase(
+  opts: RunOptions,
+  target: WorkerTarget,
+): Promise<RunResult> {
+  const { worktreeName, branch, worktreePath } = target;
 
-  // Always create a fresh worktree — throws if one already exists.
-  createWorktree(opts.projectRoot, worktreeName, branch);
-
-  // Carry prior runs for this issue into the new worktree. The runs dir is
+  // Carry prior runs for this issue into the worktree. The runs dir is
   // gitignored, so it doesn't ride the worktree's branch — dangeresque
   // mirrors it across at dispatch time so workers see prior-run history.
+  // Additive on a resume: the dead attempt's own artifact never reached the
+  // project root (only `merge` puts one there), so nothing overwrites it.
   mirrorIssueRuns(opts.projectRoot, worktreePath, opts.issueData.number);
 
   const archivePath = computeRunArchivePath(
@@ -1103,12 +1166,21 @@ export async function runWorker(opts: RunOptions): Promise<RunResult> {
   adapter.prepare(worktreePath, opts.config);
   const invocation = buildWorkerInvocation(opts, worktreeName, archivePath);
 
-  console.log(`\n🏗️  Starting worker in worktree: ${worktreeName}`);
+  console.log(
+    opts.resume
+      ? `\n♻️  Resuming worker in existing worktree: ${worktreeName}`
+      : `\n🏗️  Starting worker in worktree: ${worktreeName}`,
+  );
   console.log(`📋 Branch: ${branch}`);
   console.log(`⚙️  Engine: ${selection.engine}`);
   console.log(`🔧 Model: ${selection.model} (effort: ${selection.effort})`);
   console.log(`📂 Config: ${join(opts.projectRoot, CONFIG_DIR)}/`);
   console.log(`📝 Run artifact: ${relative(opts.projectRoot, archivePath)}`);
+  if (opts.resume) {
+    console.log(
+      `📄 Continuing: ${relative(opts.projectRoot, opts.resume.priorArtifactPath)}`,
+    );
+  }
   console.log(
     `\n📖 ${opts.mode ?? "INVESTIGATE"} running on #${opts.issueData.number} — to read the results:`,
   );
@@ -1133,6 +1205,77 @@ export async function runWorker(opts: RunOptions): Promise<RunResult> {
   // `runPostWorkerPhases` does, so `dangeresque review` (which never calls
   // runWorker) gets it too, and so it lands BEFORE the rebase either way.
   return { worktreeName, branch, exitCode: receipt.exitCode, receipt, archivePath };
+}
+
+export async function runWorker(opts: RunOptions): Promise<RunResult> {
+  checkRemoteBehind(opts.projectRoot);
+
+  const worktreeName = ensureDangeresquePrefix(opts.name ?? `${Date.now()}`);
+  const branch = `worktree-${worktreeName}`;
+  const worktreePath = join(opts.projectRoot, ".claude", "worktrees", worktreeName);
+
+  // Always create a fresh worktree — throws if one already exists.
+  createWorktree(opts.projectRoot, worktreeName, branch);
+
+  return executeWorkerPhase(opts, { worktreeName, branch, worktreePath });
+}
+
+export interface ResumeWorkerTarget {
+  worktreeName: string;
+  branch: string;
+}
+
+/**
+ * Dispatch a new worker attempt INTO an existing worktree whose previous worker
+ * died before it could commit (issue #110).
+ *
+ * The dirty tree is the whole point, so this deliberately does not rebase,
+ * stash, reset or clean anything the worker wrote. Both are safe to skip here:
+ * the pre-flight gate has already refused a stale local main, and
+ * `runPostWorkerPhases` captures the accumulated tree into a commit and rebases
+ * that commit onto current `origin/main` before the reviewer ever reads it.
+ *
+ * `createWorktree`'s no-silent-reuse invariant is untouched — this is a second,
+ * explicitly-named entry point rather than a conditional inside the first, so a
+ * `run` can never quietly land in an existing tree.
+ */
+export async function resumeWorker(
+  opts: RunOptions,
+  target: ResumeWorkerTarget,
+): Promise<RunResult> {
+  const worktreePath = join(
+    opts.projectRoot,
+    ".claude",
+    "worktrees",
+    target.worktreeName,
+  );
+  if (!existsSync(worktreePath)) {
+    throw new Error(
+      `Cannot resume: worktree does not exist at .claude/worktrees/${target.worktreeName}`,
+    );
+  }
+
+  clearStaleEngineState(worktreePath, opts.plan.worker.engine);
+
+  return executeWorkerPhase(opts, { ...target, worktreePath });
+}
+
+/**
+ * Drop orchestrator-owned engine state a dead run left behind, before resuming
+ * under a DIFFERENT engine.
+ *
+ * `.codex/` is dangeresque's own injection (the translated disallowedTools
+ * rules) plus codex session state; the codex adapter deletes it after its review
+ * pass, so a codex run that died never got that far. Resuming under claude would
+ * leave the directory untracked all the way through `captureWorkerChanges` —
+ * which `git reset`s it but only *deletes* it for codex — and the run would be
+ * scored `uncommitted_worker_changes` over a file dangeresque itself wrote.
+ *
+ * Only dangeresque-generated state is removed. Worker hunks are never touched.
+ */
+export function clearStaleEngineState(worktreePath: string, engine: Engine): void {
+  if (engine === "codex") return;
+  rmSync(join(worktreePath, ".codex"), { recursive: true, force: true });
 }
 
 export async function runReview(
@@ -1225,14 +1368,22 @@ export function postRunComment(opts: CommentOptions): void {
 
   let comment: string;
   if (workerExitCode !== 0) {
+    // Name the resume path FIRST. A worker that died mid-task (engine usage
+    // limit, session teardown) leaves its whole uncommitted diff in the
+    // worktree, and `discard` deletes it — pointing only at cleanup is how
+    // hours of real work got thrown away before issue #110.
     comment =
       `${tag} ❌ FAILED\n\n` +
       `Worker exited with code ${workerExitCode}. No review was run.\n\n` +
       `- Worktree: \`.claude/worktrees/${worktreeName}/\`\n` +
       `- Expected run artifact: \`${archiveRel}\` ` +
       `(${existsSync(archivePath) ? "partial output present" : "not written"})\n\n` +
-      `Inspect the worker session log with \`dangeresque logs worktree-${worktreeName}\`, ` +
-      `then \`dangeresque discard worktree-${worktreeName}\` to clean up.`;
+      `**Any uncommitted work the worker did is still in that worktree.** Inspect the ` +
+      `session log with \`dangeresque logs worktree-${worktreeName}\`, then choose one:\n\n` +
+      "```\n" +
+      `dangeresque resume  worktree-${worktreeName}   # continue the dead attempt in place\n` +
+      `dangeresque discard worktree-${worktreeName}   # throw the worktree AND its diff away\n` +
+      "```";
   } else if (!existsSync(archivePath)) {
     comment =
       `${tag} ⚠️  Worker exited cleanly but wrote no run artifact.\n\n` +

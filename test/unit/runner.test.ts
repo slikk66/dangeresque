@@ -24,8 +24,11 @@ import {
   buildReviewInvocation,
   readPromptWithLocal,
   exitCodeFromCloseEvent,
+  clearStaleEngineState,
+  resumeWorker,
   CODEX_RULES_RELPATH,
 } from "#dist/runner.js";
+import { mirrorIssueRuns } from "#dist/worktree.js";
 import type { RunOptions } from "#dist/runner.js";
 import type { DangeresqueConfig, PhaseConfig, RunPlan } from "#dist/config.js";
 
@@ -824,6 +827,225 @@ test("buildCodexWorkerArgs: prompt does NOT include '## Scope Declaration' stub 
     assert.doesNotMatch(result.prompt, /## Scope Declaration/);
   } finally {
     cleanup();
+  }
+});
+
+// --- Resume Context prompt block: dispatch-gated injection (issue #110) ---
+
+const PRIOR_ARTIFACT =
+  "/tmp/fake-wt/.dangeresque/runs/issue-43/2026-09-03T04-00-00-IMPLEMENT.md";
+
+function assertResumeBlock(prompt: string) {
+  assert.equal(
+    prompt.match(/## Resume Context/g)?.length,
+    1,
+    "exactly one Resume Context block — the worker must not get contradicting copies",
+  );
+  assert.ok(prompt.includes(PRIOR_ARTIFACT), "names the prior attempt's real path");
+  assert.match(prompt, /git status/);
+  assert.match(prompt, /git diff/);
+  assert.match(prompt, /do not restart/i);
+  assert.match(prompt, /uncommitted work from a PRIOR attempt/);
+  assert.match(prompt, /do not revert or rewrite an existing hunk unless/i);
+}
+
+test("buildClaudeWorkerArgs: a resumed run gets exactly one Resume Context block", () => {
+  const { opts, cleanup } = makeClaudeArgsFixture(true);
+  try {
+    const result = buildClaudeWorkerArgs(
+      { ...opts, resume: { priorArtifactPath: PRIOR_ARTIFACT } },
+      "dangeresque-implement-43",
+      "/tmp/fake-wt/.dangeresque/runs/issue-43/2026-09-03T09-00-00-IMPLEMENT.md",
+    );
+    assertResumeBlock(result.prompt);
+  } finally {
+    cleanup();
+  }
+});
+
+test("buildCodexWorkerArgs: engine parity — the same single Resume Context block", () => {
+  const { opts, cleanup } = makeCodexArgsFixture();
+  try {
+    const result = buildCodexWorkerArgs(
+      { ...opts, mode: "IMPLEMENT", resume: { priorArtifactPath: PRIOR_ARTIFACT } },
+      "dangeresque-implement-35",
+      "/tmp/fake-wt/.dangeresque/runs/issue-35/2026-09-03T09-00-00-IMPLEMENT.md",
+    );
+    assertResumeBlock(result.prompt);
+  } finally {
+    cleanup();
+  }
+});
+
+for (const engine of ["claude", "codex"] as const) {
+  test(`${engine} worker prompt carries NO Resume Context on a fresh dispatch`, () => {
+    const fixture =
+      engine === "claude" ? makeClaudeArgsFixture(true) : makeCodexArgsFixture();
+    try {
+      const archivePath = "/tmp/fake-wt/.dangeresque/runs/issue-1/2026-09-03T09-00-00-IMPLEMENT.md";
+      const prompt =
+        engine === "claude"
+          ? buildClaudeWorkerArgs(fixture.opts, "dangeresque-implement-43", archivePath).prompt
+          : buildCodexWorkerArgs(fixture.opts, "dangeresque-implement-35", archivePath).prompt;
+      assert.doesNotMatch(prompt, /## Resume Context/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+}
+
+test("Resume Context is the LAST instruction, after the Scope Declaration stub", () => {
+  // A resumed worker that restarts from scratch throws away exactly the work
+  // this verb exists to save, so the instruction not to must not be buried.
+  const { opts, cleanup } = makeClaudeArgsFixture(true);
+  try {
+    const { prompt } = buildClaudeWorkerArgs(
+      { ...opts, mode: "IMPLEMENT", resume: { priorArtifactPath: PRIOR_ARTIFACT } },
+      "dangeresque-implement-43",
+      "/tmp/fake-wt/.dangeresque/runs/issue-43/2026-09-03T09-00-00-IMPLEMENT.md",
+    );
+    assert.ok(prompt.indexOf("## Resume Context") > prompt.indexOf("## Scope Declaration"));
+  } finally {
+    cleanup();
+  }
+});
+
+// --- resume: the worktree is re-entered exactly as the dead worker left it ---
+
+test("clearStaleEngineState: a claude resume drops the dead codex run's injected .codex/", () => {
+  // Left in place it stays untracked through captureWorkerChanges (which resets
+  // it but only DELETES it for codex), and the run is scored
+  // uncommitted_worker_changes over a file dangeresque itself wrote.
+  const dir = makeRepo();
+  try {
+    writeCodexRulesFile(dir, ["Bash(git push *)"]);
+    assert.ok(existsSync(join(dir, CODEX_RULES_RELPATH)));
+
+    clearStaleEngineState(dir, "claude");
+
+    assert.equal(existsSync(join(dir, ".codex")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("clearStaleEngineState: a codex resume keeps .codex/ (its own engine's state)", () => {
+  const dir = makeRepo();
+  try {
+    writeCodexRulesFile(dir, ["Bash(git push *)"]);
+    clearStaleEngineState(dir, "codex");
+    assert.ok(existsSync(join(dir, CODEX_RULES_RELPATH)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("clearStaleEngineState: never touches worker output", () => {
+  const dir = makeRepo();
+  try {
+    writeFileSync(join(dir, "worker-was-here.ts"), "export const x = 1;\n");
+    clearStaleEngineState(dir, "claude");
+    assert.ok(existsSync(join(dir, "worker-was-here.ts")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resume pre-spawn work leaves the dead worker's dirty tree byte-identical", () => {
+  // `resumeWorker` touches the tree in exactly two ways before it spawns:
+  // clearStaleEngineState and mirrorIssueRuns. Neither may disturb the diff —
+  // no rebase, no stash, no reset, no checkout. The dirty tree IS the payload.
+  const projectRoot = makeRepo();
+  try {
+    const worktreePath = join(projectRoot, ".claude", "worktrees", "dangeresque-implement-866");
+    mkdirSync(worktreePath, { recursive: true });
+    execSync(`git worktree add -b worktree-dangeresque-implement-866 "${worktreePath}"`, {
+      cwd: projectRoot, encoding: "utf-8", stdio: "pipe",
+    });
+    const wtEnv = { cwd: worktreePath, encoding: "utf-8" as const, stdio: "pipe" as const };
+
+    // The three shapes a dead worker leaves behind: staged, unstaged, untracked.
+    writeFileSync(join(worktreePath, "tracked.ts"), "original\n");
+    // `dangeresque init` gitignores the runs dir in every consumer repo, which
+    // is why mirroring artifacts in never shows up as worker output.
+    writeFileSync(join(worktreePath, ".gitignore"), "node_modules/\ndist/\n.dangeresque/runs/\n");
+    execSync("git add tracked.ts .gitignore", wtEnv);
+    execSync('git commit -m "baseline"', wtEnv);
+    writeFileSync(join(worktreePath, "tracked.ts"), "worker edited this\n");
+    writeFileSync(join(worktreePath, "staged.ts"), "worker staged this\n");
+    execSync("git add staged.ts", wtEnv);
+    writeFileSync(join(worktreePath, "untracked.ts"), "worker never staged this\n");
+    writeCodexRulesFile(worktreePath, ["Bash(git push *)"]);
+
+    // The issue's merged history, as it sits in the project root at resume time.
+    const rootIssueDir = join(projectRoot, ".dangeresque", "runs", "issue-866");
+    mkdirSync(rootIssueDir, { recursive: true });
+    writeFileSync(join(rootIssueDir, "2026-09-01T00-00-00-INVESTIGATE.md"), "prior\n");
+
+    // The dead attempt's own partial artifact, worktree-only.
+    const wtIssueDir = join(worktreePath, ".dangeresque", "runs", "issue-866");
+    mkdirSync(wtIssueDir, { recursive: true });
+    const ownArtifact = join(wtIssueDir, "2026-09-03T04-00-00-IMPLEMENT.md");
+    writeFileSync(ownArtifact, "## Partial notes\n");
+
+    const headBefore = execSync("git rev-parse HEAD", wtEnv).trim();
+    const statusBefore = execSync("git status --porcelain --untracked-files=all", wtEnv);
+    const diffBefore = execSync("git diff HEAD", wtEnv);
+    const reflogBefore = execSync("git reflog --format=%gs", wtEnv);
+
+    clearStaleEngineState(worktreePath, "claude");
+    mirrorIssueRuns(projectRoot, worktreePath, 866);
+
+    assert.equal(execSync("git rev-parse HEAD", wtEnv).trim(), headBefore, "HEAD unmoved");
+    assert.equal(execSync("git diff HEAD", wtEnv), diffBefore, "staged + unstaged diff intact");
+    assert.equal(
+      execSync("git reflog --format=%gs", wtEnv),
+      reflogBefore,
+      "no rebase, reset or checkout ran",
+    );
+    assert.equal(
+      readFileSync(join(worktreePath, "untracked.ts"), "utf-8"),
+      "worker never staged this\n",
+    );
+
+    // Only the orchestrator-owned .codex/ leaves the porcelain listing.
+    const statusAfter = execSync("git status --porcelain --untracked-files=all", wtEnv);
+    assert.match(statusBefore, /\.codex\//);
+    assert.doesNotMatch(statusAfter, /\.codex\//);
+    assert.deepEqual(
+      statusAfter.split("\n").filter(Boolean),
+      statusBefore.split("\n").filter((l) => l.trim() && !l.includes(".codex/")),
+    );
+
+    // Mirroring is additive: prior history arrives, the dead attempt survives.
+    assert.equal(readFileSync(ownArtifact, "utf-8"), "## Partial notes\n");
+    assert.ok(existsSync(join(wtIssueDir, "2026-09-01T00-00-00-INVESTIGATE.md")));
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("resumeWorker: refuses a worktree that no longer exists", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "dangeresque-resume-missing-"));
+  try {
+    await assert.rejects(
+      resumeWorker(
+        {
+          projectRoot,
+          config: {} as DangeresqueConfig,
+          plan: {
+            worker: { engine: "claude", model: "m", effort: "max" },
+            review: { engine: "claude", model: "m", effort: "max" },
+          },
+          issueData: { number: 1, title: "t", body: "b", comments: [] },
+          mode: "IMPLEMENT",
+        },
+        { worktreeName: "dangeresque-implement-1", branch: "worktree-dangeresque-implement-1" },
+      ),
+      /Cannot resume: worktree does not exist/,
+    );
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
   }
 });
 

@@ -108,6 +108,35 @@ verdict is refused. `--force` overrides that, and records the verdict it
 overrode in the artifact — reach for it only when you know the earlier review
 itself was broken.
 
+## 7b-bis. If the WORKER died before it committed anything
+
+The other half of the same failure. The worker hits the engine's usage limit,
+loses its session, or crashes — hours into the task, with everything it produced
+still uncommitted in the worktree and nothing on the branch. **Do not discard
+that worktree; discard deletes the diff.** Continue it in place:
+
+```bash
+# Is this worktree resumable? Changes nothing, dispatches nothing.
+dangeresque resume implement-63 --dry-run
+
+# New worker, same worktree, the dead attempt's work still sitting there
+dangeresque resume implement-63
+```
+
+The worktree is re-entered exactly as the dead worker left it — no rebase, no
+stash, no reset, because the dirty tree is the whole point. The new worker's
+prompt carries a `Resume Context` block naming the prior attempt's run report and
+instructing it to continue rather than restart. From there the run flows through
+capture, rebase, verification, review, and `merge` like any other, and its
+artifact records `resumed_from` so the two attempts stay linked.
+
+`review` and `resume` are mutually exclusive by construction: `review` requires a
+worker that finished, `resume` requires one that did not. Point either at the
+other's case and it refuses and names the verb you actually want. `resume` also
+refuses while a process is still live in the worktree (`dangeresque stop` first),
+and when it cannot find a run artifact written by that branch's own attempt —
+prior runs mirrored in at dispatch are never mistaken for the dead one.
+
 ## 7c. If the reviewer rejected, but you disagree
 
 A reject blocks the merge. Two ways past it, and both leave an audit record —

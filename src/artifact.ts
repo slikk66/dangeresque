@@ -10,7 +10,7 @@ import type {
   ScopeReport,
 } from "./scope.js";
 
-export const ARTIFACT_SCHEMA_VERSION = "9";
+export const ARTIFACT_SCHEMA_VERSION = "10";
 
 // Modes whose worker output produces a code diff and must therefore carry a
 // `## Scope Declaration` section. Kept in sync with `src/runner.ts` (prompt
@@ -146,6 +146,17 @@ export interface RunArtifact {
   scope_declaration?: ScopeDeclarationEntry[];
   scope_report?: ScopeReport;
   migrated_from_version?: number;
+  /**
+   * Set only by `dangeresque resume`: the artifact the DEAD attempt this run
+   * continued left behind. A basename, not a path — both files are siblings in
+   * the same issue dir, and the absolute worktree path stops existing at merge.
+   *
+   * A resumed run gets a NEW `run_id`, unlike a review rescue, which keeps the
+   * old one. The distinction is real: a review rescue continues the same worker
+   * attempt, while a resume is a second billable engine attempt that must show
+   * up in `dangeresque stats` as its own run. This field is the lineage link.
+   */
+  resumed_from?: string;
   /** Set only by a `dangeresque merge --rescue`. Absent on every normal run. */
   rescue?: RescueRecord;
 }
@@ -178,6 +189,11 @@ export interface BuilderInit {
    * ahead of this builder's own events. Timestamps make the ordering explicit.
    */
   seedEvents?: LifecycleEvent[];
+  /**
+   * Basename of the artifact left by the dead attempt this run resumed. Set
+   * only by `dangeresque resume`; omitted entirely on every other run.
+   */
+  resumedFrom?: string;
 }
 
 export class ArtifactBuilder {
@@ -381,6 +397,9 @@ export class ArtifactBuilder {
         json: relative(this.init.projectRoot, jsonPath),
       },
       lifecycle_events: [...this.events],
+      ...(this.init.resumedFrom !== undefined
+        ? { resumed_from: this.init.resumedFrom }
+        : {}),
       ...(this.scopeBlock ? { scope_block: this.scopeBlock } : {}),
       ...(this.scopeDeclaration
         ? { scope_declaration: this.scopeDeclaration }

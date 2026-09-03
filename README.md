@@ -156,7 +156,10 @@ INVESTIGATE → read → discuss → stage → merge → push → IMPLEMENT → 
 
 Every issue starts with INVESTIGATE — even one-liners — to verify the hypothesis and land a research artifact the IMPLEMENT can cite. After every merge, push `main` to origin before dispatching the next run; worktrees branch from `origin/main` and stale local-only commits pollute review.
 
-If a review pass dies before producing a verdict (outside signal, session teardown, transient engine error), the worker's committed work is not lost and does not need redoing — `dangeresque review <branch>` re-runs only the review against the existing worktree.
+Crash recovery comes in two complementary verbs, and neither substitutes for the other:
+
+- **The review died, the worker finished.** `dangeresque review <branch>` re-runs only the review against the existing worktree; the worker's committed work is kept and does not need redoing.
+- **The worker itself died.** `dangeresque resume <branch>` dispatches a new worker into that same worktree with the dead attempt's uncommitted diff intact, told to continue rather than restart. Without it the only exit from an engine usage limit is `discard`, which deletes hours of real work.
 
 Full eight-step walkthrough with commands: [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
 

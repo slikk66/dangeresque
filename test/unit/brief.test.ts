@@ -58,6 +58,8 @@ test("BRIEF_MARKDOWN covers the workflow-relevant command surface", () => {
   // commit a7d4e20.
   const commands = [
     "dangeresque run --issue",
+    "dangeresque review <branch>",
+    "dangeresque resume <branch>",
     "dangeresque results",
     "dangeresque stage",
     "dangeresque merge",
@@ -99,6 +101,30 @@ test("BRIEF_MARKDOWN warns merge/discard have asymmetric artifact behavior", () 
   assert.ok(
     BRIEF_MARKDOWN.includes("DELETES the run report"),
     "BRIEF_MARKDOWN discard command line must disclose artifact-delete behavior",
+  );
+});
+
+test("BRIEF_MARKDOWN teaches both crash-recovery verbs and which phase each covers", () => {
+  // The whole failure mode issue #110 exists to fix is an orchestrator reading
+  // a dead worker's FAILED comment and reaching for `discard`, which deletes
+  // the uncommitted diff. The brief has to name the other exit, and has to make
+  // the review/resume split unambiguous.
+  assert.ok(BRIEF_MARKDOWN.includes("dangeresque resume <branch>"));
+  assert.ok(
+    /\*\*If a review dies, do NOT re-dispatch the worker\.\*\*/.test(BRIEF_MARKDOWN),
+    "review-death recovery paragraph missing",
+  );
+  assert.ok(
+    /\*\*If a WORKER dies, do NOT discard the worktree\.\*\*/.test(BRIEF_MARKDOWN),
+    "worker-death recovery paragraph missing",
+  );
+  assert.ok(
+    BRIEF_MARKDOWN.includes("`review` needs a worker that FINISHED, `resume` needs one that did NOT"),
+    "brief must state the exclusivity rule that tells an operator which verb to pick",
+  );
+  assert.ok(
+    BRIEF_MARKDOWN.includes("resumed_from"),
+    "brief must name the lineage field linking a resumed run to the attempt it continued",
   );
 });
 

@@ -97,6 +97,66 @@ test("ArtifactBuilder: missing archive → failure + no_run_artifact", () => {
   }
 });
 
+// --- resumed_from lineage (issue #110) ---
+
+function resumeBuilderFixture(resumedFrom?: string) {
+  const tmp = mkdtempSync(join(tmpdir(), "dangeresque-resume-artifact-"));
+  const archivePath = join(tmp, "2026-09-03T09-00-00-IMPLEMENT.md");
+  writeFileSync(archivePath, "# Results\n");
+  const builder = new ArtifactBuilder({
+    projectRoot: tmp,
+    issueNumber: 110,
+    issueUrl: null,
+    mode: "IMPLEMENT",
+    engine: "claude",
+    model: "m",
+    worktreeName: "dangeresque-implement-110",
+    branch: "worktree-dangeresque-implement-110",
+    archivePath,
+    ...(resumedFrom !== undefined ? { resumedFrom } : {}),
+  });
+  builder.setWorkerTiming(100, 200, 0);
+  return { tmp, builder };
+}
+
+test("ArtifactBuilder: a resumed run records resumed_from", () => {
+  const { tmp, builder } = resumeBuilderFixture("2026-09-03T04-00-00-IMPLEMENT.md");
+  try {
+    assert.equal(builder.build().resumed_from, "2026-09-03T04-00-00-IMPLEMENT.md");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: an ordinary run omits resumed_from entirely", () => {
+  const { tmp, builder } = resumeBuilderFixture();
+  try {
+    const artifact = builder.build();
+    assert.equal(artifact.resumed_from, undefined);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(artifact, "resumed_from"),
+      false,
+      "absent, not undefined — absence is what says 'this run resumed nothing'",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ArtifactBuilder: a resumed run gets its OWN run_id, not the dead attempt's", () => {
+  // A resume is a second billable engine attempt and must count as its own run
+  // in stats. `resumed_from` is the lineage link. (A review rescue is the
+  // opposite case: it preserves run_id because it continues the same attempt.)
+  const a = resumeBuilderFixture("prior.md");
+  const b = resumeBuilderFixture("prior.md");
+  try {
+    assert.notEqual(a.builder.build().run_id, b.builder.build().run_id);
+  } finally {
+    rmSync(a.tmp, { recursive: true, force: true });
+    rmSync(b.tmp, { recursive: true, force: true });
+  }
+});
+
 test("ArtifactBuilder: review skipped → verdict=skipped", () => {
   const tmp = mkdtempSync(join(tmpdir(), "dangeresque-test-"));
   try {

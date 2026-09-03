@@ -108,6 +108,11 @@ on branch `worktree-dangeresque-<name>`. `createWorktree` (see
 `src/runner.ts:createWorktree`) hard-fails if the target path already
 exists — there is no silent reuse. If a prior run wasn't merged or
 discarded, the CLI errors out and instructs the user to clean up first. The
+single exception is explicit and separately named: `dangeresque resume`
+(`resumeWorker`) re-enters ONE existing worktree to continue a worker that
+died there, and it is a distinct entry point rather than a flag on
+`createWorktree` precisely so `run` can never quietly land in an existing
+tree (see [Crash recovery](#crash-recovery-two-independently-re-runnable-phases)). The
 worktree is created from `origin/HEAD`, not local `HEAD`, so the worker
 always starts from what the remote considers the current tip (this also
 catches the "local main is ahead of origin" case with a warning; see
@@ -254,13 +259,20 @@ the rebase, the reviewer, or any success summary (see the "Hard-stop on
 worker failure" section in `src/cli.ts`). The worktree is left in place
 for inspection. A failed worker never produces a success artifact.
 
-### Crash recovery: the review is independently re-runnable
+### Crash recovery: two independently re-runnable phases
 
-A worker can succeed and commit its work only for the review pass to die
-without a verdict — an outside SIGTERM reaping the process group, a session
-teardown, a transient engine error. That run cannot merge (the gate has no
-verdict to read), but the expensive part is already done, so forcing a full
-re-dispatch would burn the whole cost to recover from a small failure.
+A run has two expensive phases and either can die on its own. Both are
+recoverable without re-dispatching the other, through one verb each. The
+verbs are mutually exclusive by construction — `review` requires a worker that
+FINISHED, `resume` requires one that did NOT — so each refuses the other's
+case and names the verb that actually applies.
+
+**The review died.** The worker succeeded and committed its work, then the
+review pass died without a verdict: an outside SIGTERM reaping the process
+group, a session teardown, a transient engine error. That run cannot merge
+(the gate has no verdict to read), but the expensive part is already done, so
+forcing a full re-dispatch would burn the whole cost to recover from a small
+failure.
 
 Two mechanisms make that recoverable:
 
@@ -286,6 +298,64 @@ as loudly as a worker failure — banner, an issue comment that says REVIEW
 INCOMPLETE and names the recovery command, and a non-zero exit. Previously
 this surfaced only as a footnote under a success-shaped summary, which read
 like a finished run.
+
+**The worker died (issue #110).** The mirror-image failure, and the more
+expensive one: the worker hits the engine's usage limit or loses its session
+hours into the task, before it could commit anything. The hard-stop path
+above deliberately preserves that state — no capture, no rebase, worktree
+left in place — so the entire diff survives, uncommitted, in the worktree.
+Until `resume` existed there was no verb that could get back into it: the
+pre-flight gate refused a same-issue dispatch, `createWorktree` refused the
+same name even under `--force`, and `discard` deleted the diff. The only
+remaining exit was reaching into the worktree by hand, which every consumer's
+worker rules forbid.
+
+**`dangeresque resume <branch>`** (`cmdResume` → `resumeWorker`) dispatches a
+new worker attempt into that worktree:
+
+- The tree is left exactly as the dead worker left it — no rebase, no stash,
+  no reset. The dirty tree IS the thing being recovered. It is safe because
+  the pre-flight gate has already refused a stale local main, and
+  `runPostWorkerPhases` captures the accumulated tree into a commit and
+  rebases *that* onto current `origin/main` before the reviewer reads it.
+- One dynamic `Resume Context` block is appended to the worker prompt by
+  `buildTaskPrompt`, naming the dead attempt's artifact and instructing the
+  worker to continue rather than restart. Both engines compose their prompt
+  through that function, so one block reaches claude and codex alike.
+- `runWorker` and `resumeWorker` share one private executor
+  (`executeWorkerPhase`), and `run` and `resume` share one completion path
+  (`completeWorkerRun` → `runPostWorkerPhases`). The only difference between
+  the two verbs is which of them produced the worktree.
+- The resumed run gets a NEW `run_id` and records `resumed_from` (the prior
+  artifact's basename) plus a `worker_resumed` lifecycle event. A review
+  rescue keeps its `run_id` because it continues the same worker attempt; a
+  resume is a second billable engine attempt and must count as its own run.
+
+Eligibility lives in `src/rescue.ts` (`assessWorkerResume`) and is
+unconditional — there is no `--force` lane, because every refusal describes a
+tree where resuming would destroy live work or re-run a worker that already
+finished. `--force` on this verb reaches the pre-flight and dispatch gates
+only.
+
+The subtle part is *attribution*, handled by `locateCurrentAttempt`. Dispatch
+mirrors an issue's prior runs into every worktree, so the newest same-mode
+artifact on disk is frequently a COPY of an earlier merged run. Selecting it
+would resume the wrong work and defeat the "no artifact ⇒ refuse" rule
+entirely. The ladder therefore runs strongest-first — the stale PID file's
+recorded archive, then an eval JSON whose branch/issue/mode are this run's,
+then a legacy markdown only when no JSON in the directory contradicts this
+branch and the file is not also present in the project root (a file in both
+roots was mirrored in at dispatch, by definition). No rung matching means
+refuse.
+
+Pre-flight is widened rather than bypassed. `runPreflightChecks` takes a
+`PreflightIntent`: a `fresh` dispatch wants zero same-issue worktrees, a
+`resume` wants exactly one and it must be the named branch. A second
+same-issue worktree still refuses on both paths, and the stale-main gate is
+unchanged. The gate was never "no worktree may exist" — it was always "the
+worktree state must match the dispatch", and making the intent explicit is
+what lets the recovery path keep a real gate instead of `--force`-ing through
+one asking the wrong question.
 
 ### The human is the merge gate
 
@@ -623,14 +693,24 @@ fall-through when reviewer is absent.
 Each decision below is a tradeoff, not a default. Listing them with
 rationale is the clearest hiring-signal part of this document.
 
-**Worktree-per-run, never worktree-reuse.** `createWorktree` hard-fails if
-the target path exists (see `src/runner.ts:createWorktree`). A reusable
-worktree would save the cost of creating a fresh branch for each run, but
-it would also make run artifacts, lockfiles, and stale modifications bleed
-across runs. The failure message directs the user to either `merge` or
-`discard` the prior worktree, forcing an explicit decision. **The
-tradeoff:** more branches to manage, at the cost of zero cross-run
-contamination.
+**Worktree-per-run, never implicit worktree-reuse.** `createWorktree`
+hard-fails if the target path exists (see `src/runner.ts:createWorktree`). A
+reusable worktree would save the cost of creating a fresh branch for each
+run, but it would also make run artifacts, lockfiles, and stale
+modifications bleed across runs. The failure message directs the user to
+`merge`, `discard`, or — when the prior worker died mid-task — `resume` the
+prior worktree, forcing an explicit decision. **The tradeoff:** more
+branches to manage, at the cost of zero cross-run contamination.
+
+Reuse is available in exactly one shape: `dangeresque resume`, a separate
+verb with its own entry point (`resumeWorker`), its own eligibility policy,
+and its own pre-flight intent. It was implemented that way rather than as
+`run --resume` deliberately. `run` is issue-centric and guarantees a fresh
+branch; `resume` is branch-centric and guarantees reuse of one existing
+checkout. Collapsing them would have meant a conditional inside
+`createWorktree`, which is exactly the silent-reuse door this decision
+closes. **The tradeoff:** one more verb on the command surface, in exchange
+for the two lifecycle transitions staying mutually exclusive and legible.
 
 **INVESTIGATE→IMPLEMENT as the canonical flow.** The
 `INVESTIGATE → read → discuss → stage → merge → IMPLEMENT` path is the
