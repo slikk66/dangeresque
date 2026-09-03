@@ -12,10 +12,12 @@ import {
   type RunPlan,
   type RunPlanOverrides,
 } from "./config.js";
-import { runWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, killActiveEngines, validateCodexModelEfforts, captureWorkerChanges, type ExecutionReceipt, type IssueData } from "./runner.js";
+import { runWorker, resumeWorker, runReview, fetchIssue, postRunComment, loadIssueFixture, formatIssueComments, killActiveEngines, validateCodexModelEfforts, captureWorkerChanges, type ExecutionReceipt, type IssueData, type RunResult } from "./runner.js";
 import {
   locateLatestRun,
+  locateCurrentAttempt,
   assessReviewRescue,
+  assessWorkerResume,
   recoverWorkerPhase,
 } from "./rescue.js";
 import {
@@ -79,7 +81,7 @@ import {
 import type { ScopeOpportunisticConfig } from "./config.js";
 import { detectDrift } from "./build-info.js";
 import { runDoctorChecks, formatDoctorReport } from "./doctor.js";
-import { relative, join } from "node:path";
+import { relative, join, basename } from "node:path";
 import { existsSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 
@@ -304,6 +306,9 @@ async function main() {
       break;
     case "review":
       await cmdReview(args.slice(1));
+      break;
+    case "resume":
+      await cmdResume(args.slice(1));
       break;
     case "results":
       await cmdResults(args.slice(1));
@@ -647,10 +652,70 @@ async function cmdRun(args: string[]) {
   }
   builder.recordEvent("worker_completed", { exit_code: workerResult.exitCode });
 
+  const outcome = await completeWorkerRun({
+    projectRoot,
+    config,
+    plan,
+    issueData,
+    issueNumber,
+    fixtureUsed,
+    mode: effectiveMode,
+    reviewEnabled: review,
+    verifyEnabled,
+    builder,
+    workerResult,
+    isStopRequested,
+  });
+
+  if (outcome.exitCode !== 0) {
+    process.exit(outcome.exitCode);
+  }
+}
+
+interface WorkerOutcomeContext {
+  projectRoot: string;
+  config: DangeresqueConfig;
+  plan: RunPlan;
+  issueData: IssueData;
+  issueNumber?: number;
+  fixtureUsed: boolean;
+  mode: string;
+  reviewEnabled: boolean;
+  verifyEnabled: boolean;
+  builder: ArtifactBuilder;
+  workerResult: RunResult;
+  isStopRequested: () => boolean;
+}
+
+/**
+ * What happens once a worker process exits, whichever verb dispatched it.
+ *
+ * A non-zero exit hard-stops: loud banner, FAIL comment, finalized `failure`
+ * artifact, and no scope check / rebase / review / success summary. A clean exit
+ * hands off to `runPostWorkerPhases`.
+ *
+ * Shared by `dangeresque run` and `dangeresque resume` so a resumed worker's
+ * failure reporting, artifact and gates are the same ones a fresh dispatch gets
+ * — the recovery path must never be the weaker one.
+ */
+async function completeWorkerRun(
+  ctx: WorkerOutcomeContext,
+): Promise<{ exitCode: number }> {
+  const {
+    projectRoot,
+    plan,
+    issueNumber,
+    fixtureUsed,
+    mode,
+    builder,
+    workerResult,
+    isStopRequested,
+  } = ctx;
+  const effectiveWorker = plan.worker;
+  const effectiveReview = plan.review;
+
   console.log(`\nWorker exited with code ${workerResult.exitCode}`);
 
-  // Hard-stop on worker failure: loud banner, FAIL comment, non-zero exit.
-  // No scope check, no rebase, no review, no success summary.
   if (workerResult.exitCode !== 0) {
     const banner = "!".repeat(60);
     console.error(`\n${banner}`);
@@ -662,7 +727,12 @@ async function cmdRun(args: string[]) {
     console.error(`!!`);
     console.error(`!!  Inspect: dangeresque logs ${workerResult.branch}`);
     console.error(`!!  Results: dangeresque results ${workerResult.branch}`);
-    console.error(`!!  Cleanup: dangeresque discard ${workerResult.branch}`);
+    // Anything the worker did before it died is still uncommitted in that
+    // worktree, and discard deletes it. Name the verb that keeps it FIRST
+    // (issue #110) — the cleanup path is the one that costs work, not the
+    // one that saves it.
+    console.error(`!!  Resume:  dangeresque resume ${workerResult.branch}   (continues the dead attempt in place)`);
+    console.error(`!!  Cleanup: dangeresque discard ${workerResult.branch}  (deletes the worktree AND its uncommitted diff)`);
     console.error(`${banner}\n`);
 
     // Skip the GitHub failure comment when the operator explicitly stopped
@@ -674,7 +744,7 @@ async function cmdRun(args: string[]) {
         postRunComment({
           projectRoot,
           issueNumber,
-          mode: effectiveMode,
+          mode,
           worktreeName: workerResult.worktreeName,
           archivePath: workerResult.archivePath,
           workerExitCode: workerResult.exitCode,
@@ -694,19 +764,19 @@ async function cmdRun(args: string[]) {
 
     finalizeArtifact(builder, projectRoot);
 
-    process.exit(workerResult.exitCode);
+    return { exitCode: workerResult.exitCode };
   }
 
-  const outcome = await runPostWorkerPhases({
+  return runPostWorkerPhases({
     projectRoot,
-    config,
+    config: ctx.config,
     plan,
-    issueData,
+    issueData: ctx.issueData,
     issueNumber,
     fixtureUsed,
-    mode: effectiveMode,
-    reviewEnabled: review,
-    verifyEnabled,
+    mode,
+    reviewEnabled: ctx.reviewEnabled,
+    verifyEnabled: ctx.verifyEnabled,
     builder,
     worktreeName: workerResult.worktreeName,
     branch: workerResult.branch,
@@ -714,10 +784,6 @@ async function cmdRun(args: string[]) {
     workerReceipt: workerResult.receipt,
     isStopRequested,
   });
-
-  if (outcome.exitCode !== 0) {
-    process.exit(outcome.exitCode);
-  }
 }
 
 interface PostWorkerContext {
@@ -1624,6 +1690,370 @@ async function cmdReview(args: string[]) {
     branch,
     archivePath: located!.mdPath,
     workerReceipt,
+    isStopRequested,
+  });
+
+  if (outcome.exitCode !== 0) {
+    process.exit(outcome.exitCode);
+  }
+}
+
+/**
+ * Dispatch a NEW worker attempt into an existing worktree whose worker died
+ * before it could commit (issue #110) — the sibling of `review` for the worker
+ * phase, and mutually exclusive with it by construction.
+ *
+ * Where `review` recovers a run whose worker FINISHED and whose review died,
+ * this recovers one whose worker did not: an engine usage limit, a session
+ * teardown, a crash. That worktree holds every uncommitted change the dead
+ * attempt produced, and before this verb existed the only exits were `discard`
+ * (which deletes the diff) or reaching into the worktree by hand (which every
+ * consumer's worker rules forbid).
+ *
+ * The tree is left exactly as the dead worker left it — no rebase, no stash, no
+ * reset. `runPostWorkerPhases` captures it into a commit and rebases that onto
+ * current origin/main before the reviewer sees anything.
+ */
+async function cmdResume(args: string[]) {
+  driftWarnIfStale();
+  const runStartedAtMs = Date.now();
+  const projectRoot = resolveProjectRoot();
+  const validation = validateSetup(projectRoot);
+  if (!validation.valid) {
+    console.error("Setup validation failed:");
+    for (const err of validation.errors) console.error(`  - ${err}`);
+    process.exit(1);
+  }
+  const config = loadConfig(projectRoot);
+
+  let review = true;
+  let verifyEnabled = true;
+  let force = false;
+  let dryRun = false;
+  let target: string | undefined;
+  let issueOverride: number | undefined;
+  let modeOverride: string | undefined;
+  const runOverrides: RunPlanOverrides = { worker: {}, review: {} };
+
+  const envEngine = process.env.DANGERESQUE_ENGINE?.toLowerCase();
+  if (envEngine && envEngine !== "claude" && envEngine !== "codex") {
+    console.error("DANGERESQUE_ENGINE must be one of: claude, codex");
+    process.exit(1);
+  }
+  if (envEngine === "claude" || envEngine === "codex") {
+    runOverrides.worker!.engine = envEngine;
+  }
+  const envReviewEngine = process.env.DANGERESQUE_REVIEW_ENGINE?.toLowerCase();
+  if (envReviewEngine && envReviewEngine !== "claude" && envReviewEngine !== "codex") {
+    console.error("DANGERESQUE_REVIEW_ENGINE must be one of: claude, codex");
+    process.exit(1);
+  }
+  if (envReviewEngine === "claude" || envReviewEngine === "codex") {
+    runOverrides.review!.engine = envReviewEngine;
+  }
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--no-review") {
+      review = false;
+    } else if (arg === "--no-verify") {
+      verifyEnabled = false;
+    } else if (arg === "--interactive" || arg === "--no-tmux") {
+      config.headless = false;
+    } else if (arg === "--force") {
+      force = true;
+    } else if (arg === "--dry-run") {
+      dryRun = true;
+    } else if (arg === "--engine" && args[i + 1]) {
+      const engine = args[++i].toLowerCase();
+      if (engine !== "claude" && engine !== "codex") {
+        console.error("--engine must be one of: claude, codex");
+        process.exit(1);
+      }
+      runOverrides.worker!.engine = engine;
+    } else if (arg === "--model" && args[i + 1]) {
+      runOverrides.worker!.model = args[++i];
+    } else if (arg === "--effort" && args[i + 1]) {
+      runOverrides.worker!.effort = args[++i];
+    } else if (arg === "--review-engine" && args[i + 1]) {
+      const engine = args[++i].toLowerCase();
+      if (engine !== "claude" && engine !== "codex") {
+        console.error("--review-engine must be one of: claude, codex");
+        process.exit(1);
+      }
+      runOverrides.review!.engine = engine;
+    } else if (arg === "--review-model" && args[i + 1]) {
+      runOverrides.review!.model = args[++i];
+    } else if (arg === "--review-effort" && args[i + 1]) {
+      runOverrides.review!.effort = args[++i];
+    } else if (arg === "--issue" && args[i + 1]) {
+      issueOverride = parseInt(args[++i], 10);
+      if (isNaN(issueOverride)) {
+        console.error("--issue requires a numeric issue number");
+        process.exit(1);
+      }
+    } else if (arg === "--mode" && args[i + 1]) {
+      modeOverride = args[++i].toUpperCase();
+    } else if (!arg.startsWith("-") && target === undefined) {
+      target = arg;
+    }
+  }
+
+  const worktrees = listWorktrees(projectRoot);
+  const chosen = await resolvePositionalOrPick(
+    target,
+    worktrees,
+    "finished",
+    "Select a worktree whose dead worker should be resumed",
+  );
+  if (!chosen) {
+    console.error(formatMissingTargetError("resume", "<branch>", worktrees));
+    process.exit(1);
+  }
+
+  let branch: string;
+  try {
+    assertInMainCheckout(projectRoot, "resume");
+    branch = resolveBranch(projectRoot, chosen);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+
+  const worktreeName = branch.replace("worktree-", "");
+  const worktreePath = join(projectRoot, ".claude", "worktrees", worktreeName);
+
+  const { issueNumber, mode } = resolveRunIdentity(worktreePath, branch, {
+    issueOverride,
+    modeOverride,
+  });
+
+  const refuse = (reason: string, hints: string[] = []): never => {
+    console.error(`ERROR: refusing to resume ${branch} because -`);
+    console.error(`- ${reason}`);
+    if (hints.length > 0) {
+      console.error("");
+      for (const hint of hints) console.error(hint);
+    }
+    process.exit(2);
+  };
+
+  if (!existsSync(worktreePath)) {
+    refuse(`its worktree is gone (${worktreePath})`, [
+      "Resume continues the uncommitted work inside a worktree. Nothing to recover here.",
+    ]);
+  }
+  if (issueNumber === undefined) {
+    refuse(`no issue number could be derived from the branch name or its worktree`, [
+      "Resume re-fetches the issue to rebuild the worker's prompt.",
+      `Name it explicitly: dangeresque resume ${branch} --issue <N>`,
+    ]);
+  }
+  if (mode === "UNKNOWN") {
+    refuse(`no mode could be derived from the branch name or its run artifacts`, [
+      `Name it explicitly: dangeresque resume ${branch} --mode IMPLEMENT`,
+    ]);
+  }
+
+  const info = worktrees.find((w) => w.branch === branch);
+  const attempt = locateCurrentAttempt({
+    projectRoot,
+    worktreePath,
+    issueNumber: issueNumber!,
+    mode,
+    branch,
+    worktreeName,
+    pidInfo: info?.pidInfo ?? readPidFile(worktreePath),
+  });
+  const assessment = assessWorkerResume({
+    mode,
+    attempt,
+    workerRunning: info?.running ?? false,
+  });
+  if (!assessment.ok) {
+    const hints = assessment.workerCompleted
+      ? SKIP_REVIEW_MODES.has(mode)
+        ? [
+            `That run is finished — read it and merge it:`,
+            `  dangeresque results ${branch}`,
+            `  dangeresque merge ${branch}`,
+          ]
+        : [
+            `The worker's output is intact. If the run has no verdict, the REVIEW is what died:`,
+            `  dangeresque review ${branch}`,
+            `Otherwise inspect it: dangeresque results ${branch}`,
+          ]
+      : [`Inspect the run: dangeresque results ${branch}`];
+    refuse(assessment.reason!, hints);
+  }
+
+  let plan: RunPlan;
+  try {
+    plan = resolveRunPlan(config, runOverrides);
+  } catch (err) {
+    console.error(`Run configuration invalid: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  const reviewScheduled = review && !SKIP_REVIEW_MODES.has(mode);
+  const scheduledEngines = new Set<Engine>([
+    plan.worker.engine,
+    ...(reviewScheduled ? [plan.review.engine] : []),
+  ]);
+  for (const engine of scheduledEngines) {
+    const runtimeValidation = validateEngineRuntime(engine, projectRoot);
+    if (!runtimeValidation.valid) {
+      console.error("Setup validation failed:");
+      for (const err of runtimeValidation.errors) console.error(`  - ${err}`);
+      process.exit(1);
+    }
+  }
+  const effortValidation = validateCodexModelEfforts(plan, undefined, reviewScheduled);
+  if (!effortValidation.valid) {
+    console.error("Codex model/effort validation failed:");
+    for (const err of effortValidation.errors) console.error(`  - ${err}`);
+    process.exit(1);
+  }
+
+  // Same pre-flight gates a fresh dispatch faces, asked with the right intent:
+  // this worktree's EXISTENCE is the precondition rather than the refusal, but
+  // a second same-issue worktree and a stale local main still block.
+  const preflight = runPreflightChecks(projectRoot, issueNumber!, mode, {
+    force,
+    intent: { kind: "resume", branch },
+  });
+  if (!preflight.ok) {
+    console.error(preflight.message);
+    process.exit(2);
+  }
+
+  let issueData: IssueData;
+  try {
+    issueData = fetchIssue(projectRoot, issueNumber!);
+  } catch (err) {
+    console.error(
+      `Failed to fetch issue #${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    console.error("Is `gh` installed and authenticated? Does the issue exist?");
+    process.exit(1);
+  }
+
+  // dispatchGate runs again, against the issue as it reads NOW. A resume is a
+  // new engine attempt on the same work order, so it must satisfy current
+  // policy: if a newer work order was posted after the crash, the dirty diff
+  // belongs to a superseded spec and refusing is correct. The built-in
+  // freshness check reads only `-INVESTIGATE.md` artifacts, so this run's own
+  // new IMPLEMENT timestamp cannot manufacture evidence for itself.
+  let dispatchGateForced = false;
+  if (config.dispatchGate) {
+    const gate = applyDispatchGate({
+      projectRoot,
+      issueNumber: issueNumber!,
+      mode,
+      config: config.dispatchGate,
+      force,
+      comments: issueData.comments,
+    });
+    if (!gate.ok) {
+      console.error(gate.message ?? "dispatchGate refused (no message).");
+      process.exit(2);
+    }
+    dispatchGateForced = force && config.dispatchGate.enabled;
+  }
+
+  let dirty: string[] = [];
+  try {
+    dirty = uncommittedPaths(worktreePath);
+  } catch {
+    /* reported as unknown below — never blocks the resume */
+  }
+
+  const priorArtifactPath = attempt!.artifactPath;
+  console.log(`\ndangeresque — worker resume${dryRun ? " (dry run)" : ""}`);
+  console.log(`  Project: ${projectRoot}`);
+  console.log(`  Issue: #${issueData.number} — ${issueData.title}`);
+  console.log(`  Branch:  ${branch}`);
+  console.log(`  Mode: ${mode}`);
+  console.log(`  Continuing: ${relative(projectRoot, priorArtifactPath)} (attributed via ${attempt!.attribution})`);
+  console.log(
+    `  Prior attempt: exit ${attempt!.artifact?.worker?.exit_code ?? "unrecorded"}, ` +
+      `${dirty.length} uncommitted path(s) waiting in the worktree`,
+  );
+  console.log(`  Engine: ${plan.worker.engine}`);
+  console.log(`  Model: ${plan.worker.model} (effort: ${plan.worker.effort})`);
+  console.log(`  Mode: ${config.headless ? "headless (-p)" : "interactive"}`);
+  console.log(`  Review pass: ${review ? "yes" : "no"}`);
+
+  if (dryRun) {
+    console.log(
+      `\nEligible for resume. Nothing was changed and no worker was dispatched.\n` +
+        `Run it for real with:\n  dangeresque resume ${branch}`,
+    );
+    return;
+  }
+
+  const isStopRequested = installStopHandler();
+
+  const workerStartedAtMs = Date.now();
+  const workerResult: RunResult = await resumeWorker(
+    {
+      projectRoot,
+      config,
+      plan,
+      name: worktreeName,
+      issueData,
+      mode,
+      resume: { priorArtifactPath },
+    },
+    { worktreeName, branch },
+  );
+  const workerEndedAtMs = Date.now();
+
+  const builder = new ArtifactBuilder({
+    projectRoot,
+    issueNumber,
+    mode,
+    engine: plan.worker.engine,
+    model: plan.worker.model,
+    effort: plan.worker.effort,
+    reviewEngine: plan.review.engine,
+    reviewModel: plan.review.model,
+    reviewEffort: plan.review.effort,
+    worktreeName: workerResult.worktreeName,
+    branch: workerResult.branch,
+    archivePath: workerResult.archivePath,
+    startedAtMs: runStartedAtMs,
+    // A NEW run_id, deliberately: this is a second billable engine attempt and
+    // must show up in `dangeresque stats` as its own run. `resumed_from` is the
+    // lineage link. (A review rescue keeps its run_id because it continues the
+    // SAME worker attempt — the opposite case.)
+    resumedFrom: basename(priorArtifactPath),
+  });
+  builder.setWorkerTiming(workerStartedAtMs, workerEndedAtMs, workerResult.exitCode);
+  builder.recordEvent("worker_resumed", {
+    resumed_from: basename(priorArtifactPath),
+    attribution: attempt!.attribution,
+    prior_run_id: attempt!.artifact?.run_id,
+    prior_worker_exit_code: attempt!.artifact?.worker?.exit_code,
+    uncommitted_paths_at_resume: dirty.length,
+  });
+  if (dispatchGateForced) {
+    builder.recordEvent("dispatch_gate_forced", { mode });
+  }
+  builder.recordEvent("worker_completed", { exit_code: workerResult.exitCode });
+
+  const outcome = await completeWorkerRun({
+    projectRoot,
+    config,
+    plan,
+    issueData,
+    issueNumber,
+    fixtureUsed: false,
+    mode,
+    reviewEnabled: review,
+    verifyEnabled,
+    builder,
+    workerResult,
     isStopRequested,
   });
 

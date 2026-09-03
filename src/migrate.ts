@@ -34,7 +34,7 @@ export function migrateArtifact(json: unknown): MigrateOneResult {
 
   if (!SUPPORTED_SOURCE_VERSIONS.has(version)) {
     throw new Error(
-      `unsupported source schema_version: ${version} (only v4/v5/v6/v7/v8 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
+      `unsupported source schema_version: ${version} (only v4/v5/v6/v7/v8/v9 → v${ARTIFACT_SCHEMA_VERSION} migration is implemented)`,
     );
   }
 
@@ -45,14 +45,27 @@ export function migrateArtifact(json: unknown): MigrateOneResult {
   if (fromVersion <= 5) next = stepV5toV6(next);
   if (fromVersion <= 6) next = stepV6toV7(next);
   if (fromVersion <= 7) next = stepV7toV8(next);
-  next = stepV8toV9(next);
+  if (fromVersion <= 8) next = stepV8toV9(next);
+  next = stepV9toV10(next);
   next.schema_version = ARTIFACT_SCHEMA_VERSION;
   next.migrated_from_version = fromVersion;
 
   return { migrated: true, result: next as unknown as RunArtifact };
 }
 
-const SUPPORTED_SOURCE_VERSIONS = new Set(["4", "5", "6", "7", "8"]);
+const SUPPORTED_SOURCE_VERSIONS = new Set(["4", "5", "6", "7", "8", "9"]);
+
+/**
+ * Adds the optional `resumed_from` lineage field (issue #110). Intentionally a
+ * no-op on data: the field exists only on a run dispatched by
+ * `dangeresque resume`, a verb that did not exist when any v9 artifact was
+ * written. Backfilling one would be inventing a lineage, not recording it —
+ * absent is the honest answer, and the field is optional precisely so absence
+ * reads as "this run resumed nothing".
+ */
+function stepV9toV10(obj: Record<string, unknown>): Record<string, unknown> {
+  return { ...obj };
+}
 
 /**
  * Adds `rescue.kind` (issue #104). Every rescue record that predates the

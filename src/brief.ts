@@ -104,6 +104,7 @@ workflow loop:
 |-------------------------------------|----------------------------------------------------------|
 | \`dangeresque run --issue <N>\`       | Dispatch a worker (default mode: INVESTIGATE)            |
 | \`dangeresque review <branch>\`       | Re-run ONLY the review on a finished worker whose review died; keeps the committed work. \`--dry-run\` reports eligibility; \`--force\` re-reviews a run that already has a verdict |
+| \`dangeresque resume <branch>\`       | Re-dispatch a worker into an existing worktree whose worker DIED mid-task; keeps the uncommitted work and continues it. \`--dry-run\` reports eligibility |
 | \`dangeresque results --issue <N>\`   | Read the latest archived run for an issue                |
 | \`dangeresque stage <N>\`             | Post a \`[staged]\` comment to steer the next worker       |
 | \`dangeresque merge <branch>\`        | Merge worktree into main; **KEEPS the run report**       |
@@ -153,6 +154,27 @@ review, artifact), so the result is indistinguishable from an uninterrupted run.
 It refuses a run that already has a verdict — that is crash recovery, not a
 re-roll of a decision you did not like.
 
+**If a WORKER dies, do NOT discard the worktree.** The other half of the same
+failure: the worker itself dies mid-task — an engine usage limit, a session
+teardown, a crash — before it could commit anything. Its whole diff is sitting
+uncommitted in the worktree, and \`dangeresque discard\` deletes it. Continue it
+in place instead:
+
+\`\`\`
+dangeresque resume <branch> --dry-run   # is it resumable?
+dangeresque resume <branch>             # new worker, same worktree, work intact
+\`\`\`
+
+The worktree is re-entered exactly as the dead worker left it — no rebase, no
+stash, no reset — and the worker's prompt gains a Resume Context block naming
+the prior attempt's run report and telling it to continue rather than restart.
+The run then flows through review and \`merge\` normally, with \`resumed_from\` on
+the new run artifact linking it to the attempt it continued.
+
+The two verbs are complementary and neither substitutes for the other:
+\`review\` needs a worker that FINISHED, \`resume\` needs one that did NOT. Each
+refuses the other's case and says which verb to use instead.
+
 **Don't truncate or close the orchestrator's stdout.** \`dangeresque run\` is a
 long-running orchestrator that streams output across multiple phases — worker
 session → pre-review verification → review session → JSON eval write. Piping
@@ -195,7 +217,8 @@ that can exit before the orchestrator does.
   dangeresque's built-in brief on every \`init\`. Project-specific rules
   belong in your \`CLAUDE.md\`.
 - **Do not re-use a worktree name.** Worktree creation hard-fails if the path
-  exists.
+  exists. \`dangeresque resume\` is the one and only way back into an existing
+  worktree, and it exists solely to continue a worker that died there.
 - **Do not read every prior run.** Read only the newest file under
   \`.dangeresque/runs/issue-<N>/\`.
 - **Do not reach for raw \`git worktree\`, \`kill <pid>\`, or \`cd <worktree>\`.**

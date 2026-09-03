@@ -51,10 +51,10 @@ Exit codes: 0 normal · 1 on FAIL or --strict WARN · 2 on internal error
 ```
 $ dangeresque migrate
 Migrated: 0
-Skipped (already at v9): 1
+Skipped (already at v10): 1
 ```
 
-Currently supported source versions: `v4`, `v5`, `v6`, `v7`, and `v8`. Older versions throw with an "unsupported source schema_version" error and require manual handling.
+Currently supported source versions: `v4`, `v5`, `v6`, `v7`, `v8`, and `v9`. Older versions throw with an "unsupported source schema_version" error and require manual handling.
 
 | Step | Effect |
 | --- | --- |
@@ -63,6 +63,7 @@ Currently supported source versions: `v4`, `v5`, `v6`, `v7`, and `v8`. Older ver
 | `v6 → v7` | Adds `review_engine` to reviewed artifacts, defaulting to the worker `engine` for historical same-engine runs. |
 | `v7 → v8` | Adds `scope_report.declaration_status`. Backfilled as `parsed` when the artifact recorded declaration rows, `unknown` when it did not — a v7 artifact cannot say whether an empty declaration means the worker wrote no section or we failed to read the one it wrote. |
 | `v8 → v9` | Adds `rescue.kind` (`micro_fix` \| `no_code_delta`) on artifacts that carry a rescue record. Stamped `micro_fix` — the second lane did not exist when these were written, so this is a fact about them rather than a guess. Runs that were never rescued are untouched; the field only exists on rescued runs. |
+| `v9 → v10` | Adds the optional `resumed_from` lineage field (issue #110). A deliberate data no-op: the field exists only on a run dispatched by `dangeresque resume`, a verb that did not exist when any v9 artifact was written. Backfilling one would invent a lineage rather than record it, and the field is optional precisely so absence reads as "this run resumed nothing". |
 
 Migrations write a `migrated_from_version` field on each touched artifact so downstream consumers can tell a freshly-migrated file from one originally written at the current version. Run-result `.md` files are untouched — they are operator narrative, not derived data.
 
@@ -101,6 +102,17 @@ query can tell "flagged but never declared" (`missing` — a worker-behaviour
 problem) from "flagged because we could not read the declaration"
 (`unreadable` — our problem). `unknown` appears only on artifacts migrated up
 from v7, which predate the field.
+
+`resumed_from` appears only on a run dispatched by `dangeresque resume` and
+carries the basename of the artifact the dead attempt it continued left behind.
+A basename rather than a path, because both files are siblings in the same issue
+directory and the absolute worktree path stops existing at merge. A resumed run
+carries a NEW `run_id` — it is a second billable engine attempt and counts as its
+own run in `dangeresque stats`, with `resumed_from` as the lineage link. (This is
+the opposite of a `dangeresque review` rescue, which preserves the original
+`run_id` because it continues the same worker attempt.) The corresponding
+`worker_resumed` lifecycle event records the same basename plus how the dead
+attempt was attributed to the branch.
 
 One failure category is not derived from any of those inputs:
 `uncommitted_worker_changes` marks a run that finished with work the branch's

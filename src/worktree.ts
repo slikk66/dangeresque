@@ -9,7 +9,7 @@ import {
   readdirSync,
   rmSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { CONFIG_DIR, RUNS_DIR, PID_FILE, type MergeGateConfig } from "./config.js";
 import {
   jsonPathForArchive,
@@ -606,17 +606,50 @@ export function listArchivedRuns(
 }
 
 /**
- * Read a specific run result file for an issue.
+ * Every attempt on an issue, as `.md` names — `listArchivedRuns` plus the
+ * attempts that only ever wrote their eval JSON (a worker killed before its
+ * first Write still gets a JSON from the failure path). `results` renders from
+ * this so a dead attempt is visible under "Previous runs"; the gates keep
+ * reading `listArchivedRuns`, because an attempt with no report is not a run
+ * that can satisfy a policy.
+ */
+export function listArchivedAttempts(
+  projectRoot: string,
+  issueNumber: number,
+): string[] {
+  const issueDir = getIssueRunsDir(projectRoot, issueNumber);
+  if (!existsSync(issueDir)) return [];
+  const entries = readdirSync(issueDir);
+  const names = new Set(entries.filter((f) => f.endsWith(".md")));
+  for (const f of entries) {
+    if (f.endsWith(".json")) names.add(f.replace(/\.json$/, ".md"));
+  }
+  return [...names].sort();
+}
+
+/**
+ * Read a specific run result file for an issue. An attempt that died before
+ * writing its report (JSON only) renders as a synthesized SUMMARY block from
+ * that JSON, so every listing path sees one shape.
  */
 export function readArchivedRun(
   projectRoot: string,
   issueNumber: number,
   filename: string,
 ): string {
-  return readFileSync(
-    join(getIssueRunsDir(projectRoot, issueNumber), filename),
-    "utf-8",
-  );
+  const mdPath = join(getIssueRunsDir(projectRoot, issueNumber), filename);
+  if (existsSync(mdPath)) return readFileSync(mdPath, "utf-8");
+  const jsonPath = jsonPathForArchive(mdPath);
+  const artifact = JSON.parse(readFileSync(jsonPath, "utf-8")) as Partial<RunArtifact>;
+  const exit = artifact.worker?.exit_code;
+  return [
+    "<!-- SUMMARY -->",
+    `Mode: ${artifact.mode ?? "UNKNOWN"} | Status: died before writing a report${exit !== undefined ? ` (worker exit ${exit})` : ""}`,
+    "Files: none recorded",
+    "<!-- /SUMMARY -->",
+    "",
+    `No markdown report exists for this attempt; its eval JSON is ${basename(jsonPath)}.`,
+  ].join("\n");
 }
 
 /**
@@ -1772,7 +1805,7 @@ export function getWorktreeResults(
   // Read artifacts from the worktree, not the project root — they only land
   // at the project root after `dangeresque merge`.
   const archived = issueNum
-    ? listArchivedRuns(targetWorktree.path, issueNum)
+    ? listArchivedAttempts(targetWorktree.path, issueNum)
     : [];
   const latestName =
     archived.length > 0 ? archived[archived.length - 1] : null;
@@ -1854,7 +1887,7 @@ export function getArchivedResults(
   issueNumber: number,
   showAll: boolean,
 ): string {
-  const archived = listArchivedRuns(projectRoot, issueNumber);
+  const archived = listArchivedAttempts(projectRoot, issueNumber);
   if (archived.length === 0) {
     return `No runs found for issue #${issueNumber}`;
   }
@@ -2005,9 +2038,26 @@ export async function stopWorktree(
 
 // --- run preflight gates ---
 
+/**
+ * What the caller is about to do with the issue's worktrees.
+ *
+ * Gate 1 below is not "no same-issue worktree may exist" — it is "the issue's
+ * worktree state must match the dispatch". A fresh run cuts a NEW worktree, so
+ * any existing one is a refusal. A resume re-enters ONE existing worktree, so
+ * that worktree's existence is the precondition rather than the failure. Making
+ * the intent explicit keeps the gate meaningful on both paths, instead of
+ * requiring `--force` to punch through a check that was simply asking the wrong
+ * question (issue #110).
+ */
+export type PreflightIntent =
+  | { kind: "fresh" }
+  | { kind: "resume"; branch: string };
+
 export interface PreflightOptions {
   /** Bypass all gates. */
   force?: boolean;
+  /** Defaults to `{ kind: "fresh" }`. */
+  intent?: PreflightIntent;
 }
 
 export interface PreflightResult {
@@ -2017,11 +2067,13 @@ export interface PreflightResult {
 }
 
 /**
- * Pre-run gates for `dangeresque run`. Refuses to dispatch a new worker when:
- *  - any existing worktree references the same issue (any mode, running or
- *    finished — the prior run must be merged or discarded first);
- *  - the local default branch is ahead of origin (the new worktree branches
- *    from origin/HEAD, so a stale local head produces phantom diff drift).
+ * Pre-dispatch gates for `dangeresque run` and `dangeresque resume`. Refuses when:
+ *  - the issue's worktree state does not match the dispatch intent (see
+ *    `PreflightIntent`): a fresh run wants zero same-issue worktrees, a resume
+ *    wants exactly one and it must be the named branch;
+ *  - the local default branch is ahead of origin (a fresh worktree branches
+ *    from origin/HEAD, and a resumed one is rebased onto it before review, so a
+ *    stale local head produces phantom diff drift either way).
  *
  * Repos without an `origin` remote silently skip the second gate. `--force`
  * bypasses both gates and runs unchecked.
@@ -2034,10 +2086,11 @@ export function runPreflightChecks(
 ): PreflightResult {
   if (opts.force) return { ok: true };
 
+  const intent: PreflightIntent = opts.intent ?? { kind: "fresh" };
   const failures: string[] = [];
   const remediations: string[] = [];
 
-  // Gate 1: same-issue worktree exists (any mode, any state). Through the full
+  // Gate 1: the issue's worktree state vs. the dispatch intent. Through the full
   // identity ladder, not the branch name alone — an existing worktree whose
   // `--name` the parser cannot read is exactly the one an operator is most
   // likely to be re-dispatching around, and matching on the name alone let it
@@ -2045,14 +2098,45 @@ export function runPreflightChecks(
   const sameIssue = listWorktrees(projectRoot).filter(
     (wt) => resolveRunIdentity(wt.path, wt.branch).issueNumber === issueNumber,
   );
-  for (const wt of sameIssue) {
-    failures.push(`issue ${issueNumber} already has a worktree: ${wt.branch}`);
-    remediations.push(
-      `  dangeresque merge ${wt.branch}     (keeps the run report in .dangeresque/runs/)`,
-    );
-    remediations.push(
-      `  dangeresque discard ${wt.branch}   (deletes the run report along with the worktree)`,
-    );
+  if (intent.kind === "resume") {
+    if (!sameIssue.some((wt) => wt.branch === intent.branch)) {
+      failures.push(
+        `${intent.branch} is not a registered worktree for issue ${issueNumber} — ` +
+          `resume re-enters that issue's own dead worktree, and this branch is not one of them`,
+      );
+      remediations.push(
+        `  dangeresque status                          (list the registered worktrees)`,
+      );
+    }
+    // A second worktree on the same issue means the recovery target is not the
+    // issue's only lineage, and merging the resumed one later would race the
+    // other. Same refusal a fresh run gets, for the same reason.
+    for (const wt of sameIssue.filter((wt) => wt.branch !== intent.branch)) {
+      failures.push(
+        `issue ${issueNumber} has a second worktree besides the resume target: ${wt.branch}`,
+      );
+      remediations.push(
+        `  dangeresque merge ${wt.branch}     (keeps the run report in .dangeresque/runs/)`,
+      );
+      remediations.push(
+        `  dangeresque discard ${wt.branch}   (deletes the run report along with the worktree)`,
+      );
+    }
+  } else {
+    for (const wt of sameIssue) {
+      failures.push(`issue ${issueNumber} already has a worktree: ${wt.branch}`);
+      remediations.push(
+        `  dangeresque merge ${wt.branch}     (keeps the run report in .dangeresque/runs/)`,
+      );
+      remediations.push(
+        `  dangeresque discard ${wt.branch}   (deletes the run report along with the worktree)`,
+      );
+      // The dead-worker case this gate fires on most often has a third exit
+      // that neither merge nor discard covers, and discard destroys the diff.
+      remediations.push(
+        `  dangeresque resume ${wt.branch}    (its worker died mid-task — continue it in place)`,
+      );
+    }
   }
 
   // Gate 2: local default branch ahead of origin/HEAD. Mirrors the
@@ -2076,7 +2160,8 @@ export function runPreflightChecks(
 
   if (failures.length === 0) return { ok: true };
 
-  const lines: string[] = [`ERROR: refusing to run ${mode} because -`];
+  const verb = intent.kind === "resume" ? "resume" : "run";
+  const lines: string[] = [`ERROR: refusing to ${verb} ${mode} because -`];
   for (const f of failures) lines.push(`- ${f}`);
   lines.push("");
   lines.push("Fix one of these:");

@@ -21,6 +21,8 @@ Execute these steps IN ORDER before doing anything else:
 5. If there are prior runs in your run directory, read the most recent one for context (skip if none or if prior-run context isn't useful for your mode)
 6. Identify your Mode (provided in the initial prompt) and confirm you understand the constraints for that mode
 
+**Exception — resumed runs.** When your task prompt ends with a `## Resume Context` section, `dangeresque resume` put you into a worktree that already holds uncommitted work from a prior attempt whose worker died mid-task. That section overrides the ordering above: inspect `git status` / `git diff` and read the named prior artifact FIRST, then run the rest of this sequence. Continue that work — do not restart it, and do not revert an existing hunk without saying why in your run result file. The section is generated per-run and carries the prior artifact's real path; it appears only on a resumed run.
+
 ## Mode-Specific Behavior
 
 ### INVESTIGATE

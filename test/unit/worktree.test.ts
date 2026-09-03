@@ -35,6 +35,7 @@ import {
   rebaseWorktreeOntoOrigin,
   type WorktreeInfo,
 } from "#dist/worktree.js";
+import { initProject } from "#dist/init.js";
 
 test("extractIssueNumber: dangeresque-prefixed branch → number", () => {
   assert.equal(extractIssueNumber("worktree-dangeresque-investigate-63"), 63);
@@ -1143,6 +1144,79 @@ test("getWorktreeResults: structured header precedes diff summary when JSON pres
   }
 });
 
+test("getWorktreeResults: a resumed run lists the dead attempt under Previous runs", () => {
+  // `resume` writes an ordinary new timestamped artifact into the same issue
+  // dir, so the existing two-block rendering carries both attempts with no
+  // special-casing — that is the point of not reusing the prior artifact.
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-110",
+      "worktree-dangeresque-implement-110",
+    );
+    writeRunArtifacts(worktreePath, 110, "2026-09-03T04-00-00", "IMPLEMENT", {
+      jsonOverrides: { summary: "IMPLEMENT failure | verdict=unknown | file=dead.md" },
+    });
+    writeRunArtifacts(worktreePath, 110, "2026-09-03T09-00-00", "IMPLEMENT", {
+      jsonOverrides: {
+        resumed_from: "2026-09-03T04-00-00-IMPLEMENT.md",
+        summary: "IMPLEMENT success | verdict=accept | file=resumed.md",
+      },
+    });
+
+    const out = getWorktreeResults(dir, "worktree-dangeresque-implement-110");
+    const previousIdx = out.indexOf("--- Previous runs ---");
+    const latestIdx = out.indexOf("--- Latest run: 2026-09-03T09-00-00-IMPLEMENT.md ---");
+    assert.notEqual(previousIdx, -1, "the dead attempt must still be listed");
+    assert.notEqual(latestIdx, -1, "the resumed run is the latest");
+    // Exactly one prior entry, and it sits in the Previous-runs block.
+    const previousBlock = out.slice(previousIdx, latestIdx);
+    assert.match(previousBlock, /Run 1 \(IMPLEMENT\)/);
+    assert.doesNotMatch(previousBlock, /Run 2 \(IMPLEMENT\)/);
+    // The resumed run's own JSON carries the lineage link back to it.
+    const resumedJson = JSON.parse(
+      readFileSync(
+        join(worktreePath, ".dangeresque", "runs", "issue-110", "2026-09-03T09-00-00-IMPLEMENT.json"),
+        "utf-8",
+      ),
+    );
+    assert.equal(resumedJson.resumed_from, "2026-09-03T04-00-00-IMPLEMENT.md");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("getWorktreeResults: a dead attempt that only wrote its eval JSON is still listed under Previous runs", () => {
+  // A worker killed before its first Write leaves no markdown; the failure path
+  // still writes the JSON. That attempt is resumable, so it must be visible.
+  const dir = makeRepo();
+  try {
+    const worktreePath = addWorktree(
+      dir,
+      "dangeresque-implement-110",
+      "worktree-dangeresque-implement-110",
+    );
+    const dead = writeRunArtifacts(worktreePath, 110, "2026-09-03T04-00-00", "IMPLEMENT", {
+      jsonOverrides: { worker: { exit_code: 1 } },
+    });
+    rmSync(dead.mdPath);
+    writeRunArtifacts(worktreePath, 110, "2026-09-03T09-00-00", "IMPLEMENT", {
+      jsonOverrides: { resumed_from: "2026-09-03T04-00-00-IMPLEMENT.md" },
+    });
+
+    const out = getWorktreeResults(dir, "worktree-dangeresque-implement-110");
+    const previousIdx = out.indexOf("--- Previous runs ---");
+    const latestIdx = out.indexOf("--- Latest run: 2026-09-03T09-00-00-IMPLEMENT.md ---");
+    assert.notEqual(previousIdx, -1);
+    assert.notEqual(latestIdx, -1);
+    const previousBlock = out.slice(previousIdx, latestIdx);
+    assert.match(previousBlock, /Run 1 \(IMPLEMENT[^)]*\): died before writing a report \(worker exit 1\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("getWorktreeResults: header omitted when JSON artifact missing", () => {
   const dir = makeRepo();
   try {
@@ -1439,8 +1513,100 @@ test("runPreflightChecks: blocks when same-issue worktree exists", () => {
     // so the choice list must disclose the artifact-loss asymmetry (#64).
     assert.match(result.message!, /keeps the run report/);
     assert.match(result.message!, /deletes the run report/);
+    // Neither of those two exits covers the dead-worker case, and discard
+    // destroys the diff — name the third exit too (issue #110).
+    assert.match(result.message!, /dangeresque resume worktree-dangeresque-investigate-77/);
+    assert.match(result.message!, /continue it in place/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- runPreflightChecks: resume intent (issue #110) ---
+
+test("runPreflightChecks: resume intent accepts the issue's own worktree as its target", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(dir, "dangeresque-implement-110", "worktree-dangeresque-implement-110");
+
+    // Gate 1 asked with the right question: for a resume, this worktree's
+    // existence is the PRECONDITION, not the refusal.
+    const resume = runPreflightChecks(dir, 110, "IMPLEMENT", {
+      intent: { kind: "resume", branch: "worktree-dangeresque-implement-110" },
+    });
+    assert.equal(resume.ok, true);
+
+    // ...and a fresh dispatch onto the same issue still refuses it.
+    const fresh = runPreflightChecks(dir, 110, "IMPLEMENT");
+    assert.equal(fresh.ok, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runPreflightChecks: resume intent refuses a SECOND same-issue worktree", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(dir, "dangeresque-implement-111", "worktree-dangeresque-implement-111");
+    addWorktree(dir, "dangeresque-implement-111-b", "worktree-dangeresque-implement-111-b");
+
+    const result = runPreflightChecks(dir, 111, "IMPLEMENT", {
+      intent: { kind: "resume", branch: "worktree-dangeresque-implement-111" },
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /refusing to resume IMPLEMENT/);
+    assert.match(result.message!, /second worktree besides the resume target/);
+    assert.match(result.message!, /worktree-dangeresque-implement-111-b/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runPreflightChecks: resume intent refuses a branch that is not the issue's worktree", () => {
+  const dir = makeRepo();
+  try {
+    addWorktree(dir, "dangeresque-implement-112", "worktree-dangeresque-implement-112");
+
+    const result = runPreflightChecks(dir, 112, "IMPLEMENT", {
+      intent: { kind: "resume", branch: "worktree-dangeresque-implement-999" },
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /is not a registered worktree for issue 112/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runPreflightChecks: resume still refuses when local main is ahead of origin", () => {
+  // A resumed run's commit is rebased onto origin/main before review, so a
+  // stale local head produces the same phantom drift a fresh run would.
+  const { local, remote } = makeRepoWithRemote();
+  try {
+    addWorktree(local, "dangeresque-implement-113", "worktree-dangeresque-implement-113");
+    writeFileSync(join(local, "ahead.txt"), "ahead\n");
+    execSync("git add ahead.txt", env(local));
+    execSync('git commit -m "ahead"', env(local));
+
+    const result = runPreflightChecks(local, 113, "IMPLEMENT", {
+      intent: { kind: "resume", branch: "worktree-dangeresque-implement-113" },
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /local main is 1 commit ahead/);
+    assert.doesNotMatch(
+      result.message!,
+      /already has a worktree/,
+      "the same-issue gate must NOT fire on the resume target itself",
+    );
+
+    // --force is the documented bypass, exactly as on the fresh path.
+    const forced = runPreflightChecks(local, 113, "IMPLEMENT", {
+      force: true,
+      intent: { kind: "resume", branch: "worktree-dangeresque-implement-113" },
+    });
+    assert.equal(forced.ok, true);
+  } finally {
+    rmSync(local, { recursive: true, force: true });
+    rmSync(remote, { recursive: true, force: true });
   }
 });
 
@@ -2493,6 +2659,132 @@ test("cli run: a --mode that cannot appear in a branch name is refused up front"
     const stderr = err.stderr.toString();
     assert.match(stderr, /refusing to dispatch with --mode "A\.B"/);
     assert.match(stderr, /letters only/);
+  }
+});
+
+// --- cli resume: end-to-end refusals (issue #110) ---
+//
+// These drive the real binary through cmdResume's whole front half — arg
+// parsing, branch resolution, the identity ladder, attribution, eligibility,
+// and refusal formatting — which no in-process test covers. They stop short of
+// dispatch, which needs a live engine and `gh`.
+
+function resumeCliFixture(): { projectRoot: string; worktreePath: string } {
+  const projectRoot = makeRepo();
+  initProject(projectRoot);
+  const worktreePath = addWorktree(
+    projectRoot,
+    "dangeresque-implement-110",
+    "worktree-dangeresque-implement-110",
+    { advance: false },
+  );
+  return { projectRoot, worktreePath };
+}
+
+/** The eval JSON a run writes about itself, as cmdRun finalizes it. */
+function seedEval(
+  root: string,
+  stamp: string,
+  over: Record<string, unknown> = {},
+): void {
+  const dir = join(root, ".dangeresque", "runs", "issue-110");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, `${stamp}-IMPLEMENT.json`),
+    JSON.stringify({
+      run_id: "prior",
+      issue_number: 110,
+      mode: "IMPLEMENT",
+      branch: "worktree-dangeresque-implement-110",
+      worktree_name: "dangeresque-implement-110",
+      worker: { exit_code: 1 },
+      ...over,
+    }),
+  );
+}
+
+function runResumeCli(projectRoot: string): { status: number; stderr: string } {
+  try {
+    execFileSync(
+      process.execPath,
+      [resolve("dist", "cli.js"), "resume", "worktree-dangeresque-implement-110"],
+      { cwd: projectRoot, stdio: "pipe" },
+    );
+    return { status: 0, stderr: "" };
+  } catch (err: any) {
+    return { status: err.status, stderr: err.stderr.toString() };
+  }
+}
+
+test("cli resume: refuses a worker that finished, and points at review instead", () => {
+  const { projectRoot, worktreePath } = resumeCliFixture();
+  try {
+    seedRun(worktreePath, 110, "2026-09-03T04-00-00", "IMPLEMENT");
+    seedEval(worktreePath, "2026-09-03T04-00-00", { worker: { exit_code: 0 } });
+
+    const { status, stderr } = runResumeCli(projectRoot);
+    assert.equal(status, 2, "gate refusal, not an error");
+    assert.match(stderr, /refusing to resume worktree-dangeresque-implement-110/);
+    assert.match(stderr, /already completed \(exit 0\)/);
+    assert.match(stderr, /dangeresque review worktree-dangeresque-implement-110/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("cli resume: refuses when a mirrored PRIOR run is the only artifact present", () => {
+  // The CHALLENGE-IN-WRITING case, end to end. Dispatch mirrors the issue's
+  // merged runs into every worktree; picking one up would resume the wrong work
+  // AND turn the "no artifact ⇒ refuse" rule into a no-op.
+  const { projectRoot, worktreePath } = resumeCliFixture();
+  try {
+    for (const root of [projectRoot, worktreePath]) {
+      seedRun(root, 110, "2026-09-01T00-00-00", "IMPLEMENT");
+      seedEval(root, "2026-09-01T00-00-00", {
+        run_id: "an-earlier-merged-run",
+        branch: "worktree-dangeresque-implement-110-round1",
+        worktree_name: "dangeresque-implement-110-round1",
+        worker: { exit_code: 0 },
+      });
+    }
+
+    const { status, stderr } = runResumeCli(projectRoot);
+    assert.equal(status, 2);
+    assert.match(stderr, /this branch's own attempt/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("cli resume: a dead worker's own artifact clears eligibility", () => {
+  // The positive control for the mirrored-prior test above: byte-identical
+  // fixture plus the artifact THIS branch's attempt actually wrote, and a
+  // FINISHED mirrored prior that would refuse on its own. Only the presence of
+  // the dead attempt differs, so flipping the outcome isolates the variable.
+  //
+  // Assertions stop at "no resume-policy refusal" deliberately: everything past
+  // eligibility needs a live engine and `gh`, and pinning those would make the
+  // test a probe of the host rather than of the gate.
+  const { projectRoot, worktreePath } = resumeCliFixture();
+  try {
+    seedRun(worktreePath, 110, "2026-09-01T00-00-00", "IMPLEMENT");
+    seedEval(worktreePath, "2026-09-01T00-00-00", {
+      branch: "worktree-dangeresque-implement-110-round1",
+      worktree_name: "dangeresque-implement-110-round1",
+      worker: { exit_code: 0 },
+    });
+    seedRun(worktreePath, 110, "2026-09-03T04-00-00", "IMPLEMENT");
+    seedEval(worktreePath, "2026-09-03T04-00-00");
+
+    const { stderr } = runResumeCli(projectRoot);
+    assert.doesNotMatch(stderr, /refusing to resume/);
+    assert.doesNotMatch(stderr, /this branch's own attempt/);
+    assert.doesNotMatch(stderr, /already completed/);
+    // The one refusal that WOULD be a bug here: the setup that got this far
+    // must not then be rejected by the pre-flight gate over its own worktree.
+    assert.doesNotMatch(stderr, /already has a worktree/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
   }
 });
 

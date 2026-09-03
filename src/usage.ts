@@ -17,6 +17,7 @@ ${engineLine}
 Commands:
   run [options]                        Execute worker + review pass
   review <branch> [options]            Re-run ONLY the review pass on a finished worker whose review died (killed process, engine error) — keeps the committed work; refuses a run that already has a verdict unless --force
+  resume <branch> [options]            Re-dispatch a worker INTO an existing worktree whose worker died mid-task (usage limit, crash) — keeps the uncommitted diff and continues it; refuses a worker that finished (that is 'review')
   logs <branch> [options]              Pretty-print session transcript
   results <branch>                     Show run results from a worktree
   results --issue <N> [--all]          Show archived results for an issue
@@ -88,11 +89,33 @@ Review options (crash recovery — the worker's committed output is kept):
                     resolved from the branch name or the worktree's artifacts
   --review-engine <name> / --review-model <model> / --review-effort <level>
 
+Resume options (crash recovery — the worker's UNCOMMITTED work is kept):
+  The worktree is re-entered exactly as the dead worker left it: no rebase, no
+  stash, no reset. The worker prompt gains a Resume Context block naming the
+  prior attempt's artifact and telling the worker to continue, not restart. The
+  run then flows through review and merge like any other. Refused when a process
+  is still live, when no artifact from THIS branch's own attempt exists, or when
+  the worker actually finished (use 'review' for that).
+  --dry-run         Report whether the worktree is resumable; dispatch nothing
+  --no-review       Skip the review pass
+  --no-verify       Skip pre-review verification commands
+  --interactive     Run interactively (default: headless with -p)
+  --force           Bypass the pre-flight gates and dispatchGate's built-in
+                    policy. Never waives resume eligibility itself — a live
+                    process, a missing artifact and a finished worker all still
+                    refuse
+  --issue <N> / --mode <MODE>   Name the run's identity when it cannot be
+                    resolved from the branch name or the worktree's artifacts
+  --engine <name> / --model <model> / --effort <level>
+  --review-engine <name> / --review-model <model> / --review-effort <level>
+
 Examples:
   dangeresque run --issue 63
   dangeresque run --issue 63 --mode IMPLEMENT
   dangeresque run --issue 63 --mode IMPLEMENT --engine codex --review-engine claude
   dangeresque review worktree-dangeresque-implement-63
+  dangeresque resume worktree-dangeresque-implement-63 --dry-run
+  dangeresque resume worktree-dangeresque-implement-63
   dangeresque merge worktree-dangeresque-implement-63
   dangeresque merge worktree-dangeresque-implement-63 --rescue --reason "reviewer rejected on a stale line number; it endorsed the code"
   dangeresque results investigate-63

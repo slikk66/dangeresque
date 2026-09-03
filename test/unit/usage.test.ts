@@ -52,6 +52,25 @@ for (const engine of ["claude", "codex"] as const) {
   });
 }
 
+test("help distinguishes the two crash-recovery verbs by which phase died", () => {
+  // `review` and `resume` are mutually exclusive and an operator staring at a
+  // dead run has to pick correctly from --help alone (issue #110).
+  const help = usageForEngine("claude");
+  assert.match(help, /resume <branch> \[options\]/);
+  assert.match(help, /keeps the uncommitted diff and continues it/);
+  assert.match(help, /refuses a worker that finished \(that is 'review'\)/);
+
+  const resumeOptions = help.slice(help.indexOf("Resume options"));
+  assert.match(resumeOptions, /--dry-run/);
+  assert.match(resumeOptions, /--force/);
+  assert.match(resumeOptions, /--engine <name>/);
+  assert.match(resumeOptions, /--review-engine <name>/);
+  assert.match(resumeOptions, /--issue <N> \/ --mode <MODE>/);
+  assert.match(resumeOptions, /no rebase, no\s+stash, no reset/);
+  assert.match(resumeOptions, /Never waives resume eligibility itself/);
+  assert.match(help, /dangeresque resume worktree-dangeresque-implement-63/);
+});
+
 test("Codex help documents native worker/review effort and GPT-5.5 limits", () => {
   const help = usageForEngine("codex");
   assert.match(help, /--effort <level>/);

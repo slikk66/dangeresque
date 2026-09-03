@@ -32,13 +32,17 @@ export {
 
 export {
   runWorker,
+  resumeWorker,
   runReview,
   fetchIssue,
   loadIssueFixture,
   postRunComment,
   captureWorkerChanges,
+  clearStaleEngineState,
   type RunOptions,
   type RunResult,
+  type ResumeContext,
+  type ResumeWorkerTarget,
   type ExecutionReceipt,
   type IssueData,
   type WorkerCaptureResult,
@@ -53,23 +57,34 @@ export {
   uncommittedPaths,
   formatUncommittedPaths,
   rebaseWorktreeOntoOrigin,
+  runPreflightChecks,
   findCommitsAfter,
   type WorktreeInfo,
   type WorktreeOpResult,
   type WorktreePhase,
   type RebaseOutcome,
   type MergeRescueRequest,
+  type PreflightIntent,
+  type PreflightOptions,
+  type PreflightResult,
 } from "./worktree.js";
 
 export {
   locateLatestRun,
+  locateCurrentAttempt,
   assessReviewRescue,
+  assessWorkerResume,
   recoverWorkerPhase,
   parseArchiveTimestampMs,
   type LocatedRun,
   type ReviewRescueAssessment,
   type AssessReviewRescueOptions,
   type RecoveredWorkerPhase,
+  type ResumeAttribution,
+  type WorkerResumeAttempt,
+  type WorkerResumeAssessment,
+  type AssessWorkerResumeOptions,
+  type LocateCurrentAttemptOptions,
 } from "./rescue.js";
 
 export { initProject } from "./init.js";
