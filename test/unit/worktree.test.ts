@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execSync, execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -34,6 +34,7 @@ import {
   formatUncommittedPaths,
   rebaseWorktreeOntoOrigin,
   type WorktreeInfo,
+  NON_ARTIFACT_DIRS,
 } from "#dist/worktree.js";
 import { initProject } from "#dist/init.js";
 
@@ -2803,5 +2804,46 @@ test("cli run: a lettered custom --mode is still allowed", () => {
     const stderr = err.stderr.toString();
     assert.doesNotMatch(stderr, /--mode/, "must not be rejected for its mode");
     assert.match(stderr, /A task source is required/);
+  }
+});
+
+test("mirrorIssueRuns: skips dependency caches and survives being run twice over a .bin symlink", () => {
+  // A worker probe that pointed npm_config_cache inside the runs dir leaves
+  // node_modules/.bin symlinks behind; cpSync over an existing copy threw
+  // EEXIST and killed the resume before the engine launched.
+  const src = mkdtempSync(join(tmpdir(), "dangeresque-mirror-src-"));
+  const dest = mkdtempSync(join(tmpdir(), "dangeresque-mirror-dest-"));
+  try {
+    const issueDir = join(src, ".dangeresque", "runs", "issue-715");
+    mkdirSync(issueDir, { recursive: true });
+    writeFileSync(join(issueDir, "2026-09-03T05-53-21-IMPLEMENT.md"), "## partial\n");
+    writeFileSync(join(issueDir, "2026-09-03T05-53-21-IMPLEMENT.json"), "{}\n");
+    const binTarget = join(issueDir, "npm-cache", "_npx", "abc", "node_modules", "pkg", "bin");
+    mkdirSync(binTarget, { recursive: true });
+    writeFileSync(join(binTarget, "tool.js"), "");
+    const binDir = join(issueDir, "npm-cache", "_npx", "abc", "node_modules", ".bin");
+    mkdirSync(binDir, { recursive: true });
+    symlinkSync(join("..", "pkg", "bin", "tool.js"), join(binDir, "tool"));
+
+    mirrorIssueRuns(src, dest, 715);
+    mirrorIssueRuns(src, dest, 715); // the second dispatch/resume — used to throw EEXIST
+
+    const destIssue = join(dest, ".dangeresque", "runs", "issue-715");
+    assert.ok(existsSync(join(destIssue, "2026-09-03T05-53-21-IMPLEMENT.md")));
+    assert.ok(existsSync(join(destIssue, "2026-09-03T05-53-21-IMPLEMENT.json")));
+    assert.equal(existsSync(join(destIssue, "npm-cache")), false, "caches are not artifacts");
+
+    // Same copier on the merge-direction mirror.
+    const back = mkdtempSync(join(tmpdir(), "dangeresque-mirror-back-"));
+    try {
+      assert.deepEqual(mirrorAllIssueRuns(src, back), ["issue-715"]);
+      assert.equal(existsSync(join(back, ".dangeresque", "runs", "issue-715", "npm-cache")), false);
+      assert.ok(NON_ARTIFACT_DIRS.has("node_modules"));
+    } finally {
+      rmSync(back, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+    rmSync(dest, { recursive: true, force: true });
   }
 });

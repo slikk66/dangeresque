@@ -556,7 +556,25 @@ export function mirrorIssueRuns(
   if (!existsSync(srcDir)) return;
   const destDir = getIssueRunsDir(destRoot, issueNumber);
   mkdirSync(destDir, { recursive: true });
-  cpSync(srcDir, destDir, { recursive: true, force: true });
+  copyRunsTree(srcDir, destDir);
+}
+
+/**
+ * Directory names that are never run artifacts. Workers are told to keep
+ * scratch under `.dangeresque/runs/`, and a probe sandbox that sets
+ * `npm_config_cache` there leaves a dependency cache full of `.bin` symlinks
+ * behind — mirroring that a second time (dispatch, resume) died on EEXIST and
+ * took the run down with it (bubble-craps #715 resume, 2026-09-03).
+ */
+export const NON_ARTIFACT_DIRS = new Set(["node_modules", "npm-cache", ".npm-cache", ".yarn", ".cache"]);
+
+/** The ONE copier both mirror directions use: artifacts yes, caches never. */
+export function copyRunsTree(srcDir: string, destDir: string): void {
+  cpSync(srcDir, destDir, {
+    recursive: true,
+    force: true,
+    filter: (src) => !NON_ARTIFACT_DIRS.has(basename(src)),
+  });
 }
 
 /**
@@ -583,10 +601,7 @@ export function mirrorAllIssueRuns(
   const destRunsDir = getRunsDir(destRoot);
   mkdirSync(destRunsDir, { recursive: true });
   for (const name of issueDirs) {
-    cpSync(join(srcRunsDir, name), join(destRunsDir, name), {
-      recursive: true,
-      force: true,
-    });
+    copyRunsTree(join(srcRunsDir, name), join(destRunsDir, name));
   }
   return issueDirs;
 }
