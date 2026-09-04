@@ -572,7 +572,9 @@ test("buildCodexWorkerArgs: returns {args, prompt}; args ends with '-'; prompt c
 
     assert.ok(result.args.includes("exec"));
     assert.ok(result.args.includes("--json"));
-    assert.ok(result.args.includes("--full-auto"));
+    assert.ok(result.args.includes("-s"));
+    assert.equal(result.args[result.args.indexOf("-s") + 1], "workspace-write");
+    assert.ok(result.args.includes("approval_policy=never"));
     assert.ok(result.args.includes("codex-model-worker"));
     assert.ok(result.args.includes('model_reasoning_effort="xhigh"'));
   } finally {
@@ -618,7 +620,9 @@ test("buildCodexReviewArgs: returns {args, prompt}; args ends with '-'; prompt c
 
     assert.ok(result.args.includes("exec"));
     assert.ok(result.args.includes("--json"));
-    assert.ok(result.args.includes("--full-auto"));
+    assert.ok(result.args.includes("-s"));
+    assert.equal(result.args[result.args.indexOf("-s") + 1], "workspace-write");
+    assert.ok(result.args.includes("approval_policy=never"));
     assert.ok(result.args.includes("codex-model-review"));
     assert.ok(result.args.includes('model_reasoning_effort="high"'));
   } finally {

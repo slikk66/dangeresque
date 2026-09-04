@@ -80,7 +80,7 @@
 
 ## Engines
 
-- Two phase-selectable engines: `claude` (default, uses `claude` CLI) and `codex` (uses `codex exec --json --full-auto`).
+- Two phase-selectable engines: `claude` (default, uses `claude` CLI) and `codex` (uses `codex exec --json -s workspace-write -c approval_policy=never`).
 - Standing provider pins live under `.dangeresque/config.json` `engineDefaults`; `worker` and `review` select engines, with CLI/env overrides per phase.
 - Narrow engine adapters live in `runner.ts`; orchestration consumes an immutable resolved run plan.
 

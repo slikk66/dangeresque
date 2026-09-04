@@ -143,7 +143,7 @@ export interface WorkerCaptureResult {
  *
  * Runs for BOTH engines and BEFORE anything reads the branch (issue #93).
  * Neither engine can be trusted to have committed its own work:
- * - codex under `--full-auto` runs in a sandbox that denies writes to the
+ * - codex under `-s workspace-write` runs in a sandbox that denies writes to the
  *   linked-worktree gitdir at `<main-checkout>/.git/worktrees/<name>/`, so its
  *   `git add`/`git commit` always fail. This has always been true.
  * - claude workers usually self-commit, but a commit command the permission
@@ -803,7 +803,8 @@ export function buildCodexWorkerArgs(
   const args = [
     "exec",
     "--json",
-    "--full-auto",
+    "-s", "workspace-write",
+    "-c", "approval_policy=never",
     "--model", model,
     "-c", codexReasoningConfig(effort),
     "-c", "sandbox_workspace_write.network_access=true",
@@ -842,7 +843,8 @@ export function buildCodexReviewArgs(
   const args = [
     "exec",
     "--json",
-    "--full-auto",
+    "-s", "workspace-write",
+    "-c", "approval_policy=never",
     "--model", reviewModel,
     "-c", codexReasoningConfig(reviewEffort),
     "-c", "sandbox_workspace_write.network_access=true",
