@@ -121,7 +121,7 @@ catches the "local main is ahead of origin" case with a warning; see
 ### Layer 2 — Permission Allowlist
 
 Workers are launched with `--permission-mode acceptEdits` (claude) or
-`--full-auto` (codex) plus engine-specific command-gating derived from the
+`-s workspace-write -c approval_policy=never` (codex) plus engine-specific command-gating derived from the
 same config. The defaults (see `src/config.ts:DEFAULT_CONFIG`) allow
 read/write inside the repo, `git status|diff|log|add|commit|branch`, and
 web access (`WebSearch`, `WebFetch`). They explicitly disallow `git push`,
@@ -498,7 +498,7 @@ phases once. A narrow adapter seam in `src/runner.ts` selects between
   canonical + `.local.md` prompt content and concatenates it with the task
   description. The result is piped via stdin
   (`exec -`) rather than argv (see
-  `src/runner.ts:buildCodexWorkerArgs`). Codex runs with `--full-auto` —
+  `src/runner.ts:buildCodexWorkerArgs`). Codex runs with `-s workspace-write -c approval_policy=never` —
   its safe automation mode, *not* a dangerous bypass — and streams JSONL
   to a dangeresque-owned log file under `.dangeresque/` inside the
   worktree.
@@ -512,7 +512,7 @@ Unsupported pairs and `ultra` fail loudly.
 #93).** Neither engine can be relied on to commit its own output, for
 different reasons:
 
-- **codex** runs with `--full-auto` inside a sandbox that explicitly marks
+- **codex** runs with `-s workspace-write -c approval_policy=never` inside a sandbox that explicitly marks
   the linked-worktree gitdir at `<main-checkout>/.git/worktrees/<name>/` as
   read-only, so `git add` / `git commit` from inside a codex worker always
   fail with `Operation not permitted` on `index.lock`. The restriction is
@@ -561,7 +561,7 @@ Enabling `sandbox_workspace_write.network_access=true` on the codex worker
 widens its blast radius from "workspace-write filesystem only" to
 "workspace-write filesystem + unrestricted network egress." The tradeoff
 is accepted as parity with claude's existing `WebFetch` allowlist: the
-codex worker is already trusted at the content level via `--full-auto`
+codex worker is already trusted at the content level via `-s workspace-write -c approval_policy=never`
 (and claude's equivalent via `acceptEdits`), so gating its outbound
 connections while its file writes are already unrestricted would be a
 half-measure. Destructive shell commands remain blocked under both

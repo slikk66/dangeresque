@@ -38,7 +38,7 @@
 Dangeresque supports two interchangeable execution engines:
 
 - `claude` (default): uses `claude` CLI with native Claude session tracking.
-- `codex`: uses `codex exec --json --full-auto` in the same worktree model.
+- `codex`: uses `codex exec --json -s workspace-write -c approval_policy=never` in the same worktree model.
 
 Select per-project in `.dangeresque/config.json`:
 
@@ -57,7 +57,7 @@ Or override per-run with `--engine`, `--model`, `--effort`, `--review-engine`, `
 
 Resolution order is CLI phase model/effort, phase config model/effort, then the selected `engineDefaults` pin. Changing only `--engine` or `--review-engine` therefore switches model and effort with the provider instead of carrying an incompatible string across engines. Omitting `review` inherits the resolved worker phase. Legacy flat `engine`, `model`, `codexModel`, and related fields fail loudly; `dangeresque doctor` detects them before dispatch.
 
-Codex uses `-c model_reasoning_effort="<effort>"` for every Codex phase. Before dispatch, dangeresque reads the installed Codex model catalog and fails when any scheduled Codex phase selects an unsupported pair. GPT-5.4 and GPT-5.5 support `low`, `medium`, `high`, and `xhigh`, but not `max`. `ultra` is always rejected because it enables multi-agent delegation rather than only increasing single-agent reasoning. Codex runs use `--full-auto` (safe automation mode), not dangerous bypass flags. MCP on **Claude Code** uses your existing Claude setup; MCP on **Codex** is configured in `~/.codex/config.toml` under `[mcp_servers]` — keep entries aligned across both tools for equivalent behavior.
+Codex uses `-c model_reasoning_effort="<effort>"` for every Codex phase. Before dispatch, dangeresque reads the installed Codex model catalog and fails when any scheduled Codex phase selects an unsupported pair. GPT-5.4 and GPT-5.5 support `low`, `medium`, `high`, and `xhigh`, but not `max`. `ultra` is always rejected because it enables multi-agent delegation rather than only increasing single-agent reasoning. Codex runs use `-s workspace-write -c approval_policy=never` (safe automation mode), not dangerous bypass flags. MCP on **Claude Code** uses your existing Claude setup; MCP on **Codex** is configured in `~/.codex/config.toml` under `[mcp_servers]` — keep entries aligned across both tools for equivalent behavior.
 
 ## Permissions
 

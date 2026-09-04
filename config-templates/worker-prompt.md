@@ -169,7 +169,7 @@ Why: workers run inside an isolated git worktree under `.claude/worktrees/danger
 
 Under the **claude** engine, a `PreToolUse` hook rejects `Write`/`Edit`/`NotebookEdit` calls whose `file_path` is not prefixed by your worktree path. Rejection is exit code 2, with a message naming the offending path so you can re-route. The check is intentionally simple — it does NOT resolve symlinks or `..` traversal. The threat model is misrouted-but-well-meaning workers (you), not adversarial evasion.
 
-Under the **codex** engine, the `--full-auto` workspace-write sandbox enforces the same boundary at the engine layer; no additional hook needed.
+Under the **codex** engine, the `-s workspace-write -c approval_policy=never` sandbox enforces the same boundary at the engine layer; no additional hook needed.
 
 Your run result file path (`<worktree>/.dangeresque/runs/issue-<N>/…`) is inside your worktree and passes the check. If a Write is rejected, the message is fed back to you — re-route to a worktree-relative absolute path and try again.
 

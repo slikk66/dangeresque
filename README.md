@@ -129,7 +129,7 @@ Example `worker-prompt.local.md`:
 Dangeresque supports two interchangeable execution engines:
 
 - `claude` (default): uses `claude` CLI with native Claude session tracking.
-- `codex`: uses `codex exec --json --full-auto` in the same worktree model.
+- `codex`: uses `codex exec --json -s workspace-write -c approval_policy=never` in the same worktree model.
 
 Select per-project in `.dangeresque/config.json`:
 
